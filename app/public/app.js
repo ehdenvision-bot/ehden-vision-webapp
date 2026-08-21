@@ -35,6 +35,31 @@ function toast(message, isError = false) {
   setTimeout(() => t.remove(), 3500);
 }
 
+function initials(name) {
+  return (name || "?").split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+}
+
+// Maps a status string to the legacy app's chip vocabulary
+// (Active/Blocked/Ended/Archived for projects, open/other for reserves).
+function statusChip(status) {
+  const s = (status || "").toLowerCase();
+  let cls = "chip-ended";
+  if (s === "active" || s === "actif") cls = "chip-active";
+  else if (s === "blocked" || s === "bloqué") cls = "chip-blocked";
+  else if (s === "archived" || s === "archivé") cls = "chip-archived";
+  else if (s === "open") cls = "chip-open";
+  return el("span", { class: `status-pill ${cls}`, text: status || "—" });
+}
+
+const PAGE_TITLES = {
+  projects: ["Projects", "Portfolio overview"],
+  buildings: ["Bâtiments", "Buildings, units & common areas"],
+  reserves: ["Réserves", "Punch-list / defect tracking"],
+  edl: ["EDL", "État des lieux — unit notes & photos"],
+  users: ["Utilisateurs", "Team & role administration"],
+  logs: ["Logs", "Activity history"],
+};
+
 // ---- Auth ----
 
 async function boot() {
@@ -56,6 +81,7 @@ function showApp() {
   $("#app-screen").hidden = false;
   $("#who-name").textContent = currentUser.fullName;
   $("#who-role").textContent = currentUser.role || "—";
+  $("#who-avatar").textContent = initials(currentUser.fullName);
   $("#users-tab").hidden = currentUser.role !== "Admin";
   renderTab();
 }
@@ -81,9 +107,9 @@ $("#logout-btn").addEventListener("click", async () => {
 
 // ---- Tabs ----
 
-document.querySelectorAll(".tab").forEach((btn) => {
+document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".nav-item[data-tab]").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     activeTab = btn.dataset.tab;
     renderTab();
@@ -92,6 +118,9 @@ document.querySelectorAll(".tab").forEach((btn) => {
 
 async function renderTab() {
   const content = $("#content");
+  const [title, subtitle] = PAGE_TITLES[activeTab] || [activeTab, ""];
+  $("#page-title").textContent = title;
+  $("#page-subtitle").textContent = subtitle;
   content.innerHTML = "<p class='muted'>Loading…</p>";
   try {
     if (activeTab === "projects") return renderProjects(content);
@@ -146,7 +175,7 @@ async function renderProjects(content) {
     table.appendChild(el("tr", {}, [
       el("td", { text: p.code }),
       el("td", { text: p.name }),
-      el("td", {}, [el("span", { class: "status-pill", text: p.status })]),
+      el("td", {}, [statusChip(p.status)]),
       el("td", { text: p.city || "—" }),
       el("td", { text: p.units ?? "—" }),
       el("td", { text: p.progressPct != null ? `${p.progressPct}%` : "—" }),
@@ -269,7 +298,7 @@ async function renderReserves(content) {
         el("td", { text: r.kind }),
         el("td", { text: r.unit?.identifiant || r.commonArea?.identifiant || r.facade?.identifiant || "—" }),
         el("td", { text: r.description || "—" }),
-        el("td", {}, [el("span", { class: "status-pill", text: r.status })]),
+        el("td", {}, [statusChip(r.status)]),
         el("td", { text: r.cleared ? "Yes" : "No" }),
       ]));
     }
@@ -350,7 +379,7 @@ async function renderUsers(content) {
       el("td", { text: u.email }),
       el("td", { text: u.role || "—" }),
       el("td", { text: u.team || "—" }),
-      el("td", {}, [el("span", { class: "status-pill", text: u.status })]),
+      el("td", {}, [statusChip(u.status)]),
     ]));
   }
   panel.appendChild(table);

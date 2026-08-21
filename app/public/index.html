@@ -3,42 +3,88 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Chantier WebApp</title>
+<title>Ehden Vision</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
 
 <div id="login-screen" class="screen">
   <form id="login-form" class="login-card">
-    <h1>Chantier WebApp</h1>
-    <p class="hint">Sign in</p>
-    <label>Email<input type="email" id="login-email" required autocomplete="username" /></label>
-    <label>Password<input type="password" id="login-password" required autocomplete="current-password" /></label>
+    <div class="login-badge"><span class="material-symbols-outlined">engineering</span></div>
+    <h1 class="brand-title">Ehden Vision</h1>
+    <p class="hint">Sign in to your account</p>
+    <label>Email
+      <div class="input-icon-row">
+        <span class="material-symbols-outlined">mail</span>
+        <input type="email" id="login-email" required autocomplete="username" />
+      </div>
+    </label>
+    <label>Password
+      <div class="input-icon-row">
+        <span class="material-symbols-outlined">lock</span>
+        <input type="password" id="login-password" required autocomplete="current-password" />
+      </div>
+    </label>
     <button type="submit">Log in</button>
     <p id="login-error" class="error"></p>
   </form>
 </div>
 
 <div id="app-screen" class="screen" hidden>
-  <header class="topbar">
-    <div class="brand">Chantier WebApp</div>
-    <div class="who">
-      <span id="who-name"></span>
-      <span id="who-role" class="badge"></span>
-      <button id="logout-btn" class="link-btn">Log out</button>
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <img src="/assets/logo.png" alt="Ehden Vision" />
+      <span class="name">Ehden Vision</span>
     </div>
-  </header>
+    <nav class="sidebar-nav">
+      <div class="nav-kicker">Principal</div>
+      <button class="nav-item active" data-tab="projects">
+        <span class="material-symbols-outlined">dashboard</span> Projects
+      </button>
 
-  <nav class="tabs">
-    <button data-tab="projects" class="tab active">Projects</button>
-    <button data-tab="buildings" class="tab">Buildings</button>
-    <button data-tab="reserves" class="tab">Reserves</button>
-    <button data-tab="edl" class="tab">EDL</button>
-    <button data-tab="users" class="tab" id="users-tab">Users</button>
-    <button data-tab="logs" class="tab">Logs</button>
-  </nav>
+      <div class="nav-kicker">Outils Projet</div>
+      <button class="nav-item" data-tab="buildings">
+        <span class="material-symbols-outlined">apartment</span> Bâtiments
+      </button>
+      <button class="nav-item" data-tab="reserves">
+        <span class="material-symbols-outlined">construction</span> Réserves
+      </button>
+      <button class="nav-item" data-tab="edl">
+        <span class="material-symbols-outlined">fact_check</span> EDL
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="nav-item" data-tab="users" id="users-tab">
+        <span class="material-symbols-outlined">group</span> Utilisateurs
+      </button>
+      <button class="nav-item" data-tab="logs">
+        <span class="material-symbols-outlined">history</span> Logs
+      </button>
+    </div>
+  </aside>
 
-  <main id="content"></main>
+  <div class="main-col">
+    <header class="topbar">
+      <div>
+        <p class="page-title" id="page-title">Projects</p>
+        <p class="page-subtitle" id="page-subtitle">Construction site management</p>
+      </div>
+      <div class="who">
+        <div class="who-text">
+          <div class="name" id="who-name"></div>
+          <div class="role" id="who-role"></div>
+        </div>
+        <div class="avatar" id="who-avatar"></div>
+        <button id="logout-btn" class="link-btn">
+          <span class="material-symbols-outlined" style="font-size:16px">logout</span> Log out
+        </button>
+      </div>
+    </header>
+    <main id="content"></main>
+  </div>
 </div>
 
 <script src="/app.js"></script>
