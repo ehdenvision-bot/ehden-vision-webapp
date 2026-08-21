@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chantier WebApp</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="login-screen" class="screen">
+  <form id="login-form" class="login-card">
+    <h1>Chantier WebApp</h1>
+    <p class="hint">Sign in</p>
+    <label>Email<input type="email" id="login-email" required autocomplete="username" /></label>
+    <label>Password<input type="password" id="login-password" required autocomplete="current-password" /></label>
+    <button type="submit">Log in</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+
+<div id="app-screen" class="screen" hidden>
+  <header class="topbar">
+    <div class="brand">Chantier WebApp</div>
+    <div class="who">
+      <span id="who-name"></span>
+      <span id="who-role" class="badge"></span>
+      <button id="logout-btn" class="link-btn">Log out</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="projects" class="tab active">Projects</button>
+    <button data-tab="buildings" class="tab">Buildings</button>
+    <button data-tab="reserves" class="tab">Reserves</button>
+    <button data-tab="edl" class="tab">EDL</button>
+    <button data-tab="users" class="tab" id="users-tab">Users</button>
+    <button data-tab="logs" class="tab">Logs</button>
+  </nav>
+
+  <main id="content"></main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

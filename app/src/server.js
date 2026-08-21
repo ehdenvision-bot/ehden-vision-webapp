@@ -23,27 +23,10 @@ app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "./upl
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-app.get("/", (_req, res) => {
-  res.json({
-    name: "chantier-webapp API",
-    status: "ok",
-    note: "No frontend yet (see app/TODO.md Phase 5) — this is an API-only server.",
-    endpoints: [
-      "GET /health",
-      "POST /api/auth/login",
-      "GET /api/auth/me",
-      "GET /api/projects",
-      "GET /api/buildings",
-      "GET /api/reserves",
-      "GET /api/edl/notes/:unitId",
-      "GET /api/users",
-      "GET /api/logs",
-      "POST /api/schedule/shift-task",
-    ],
-  });
-});
-
 app.use("/api", routes);
+
+// Minimal built-in frontend (vanilla JS, no build step) — see app/public/.
+app.use(express.static(path.resolve("public")));
 
 app.use(errorHandler);
 

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../middleware/errorHandler.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireCanEdit } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -21,24 +21,24 @@ router.get("/:id", async (req, res) => {
   res.json(project);
 });
 
-router.post("/", async (req, res) => {
-  const { code, name, address, status, startDate, endDate } = req.body;
+router.post("/", requireCanEdit, async (req, res) => {
+  const { code, name, owner, status, startDate, endDate, city, country, units, description } = req.body;
   const project = await prisma.project.create({
-    data: { code, name, address, status, startDate, endDate },
+    data: { code, name, owner, status, startDate, endDate, city, country, units, description },
   });
   res.status(201).json(project);
 });
 
-router.put("/:id", async (req, res) => {
-  const { name, address, status, startDate, endDate } = req.body;
+router.put("/:id", requireCanEdit, async (req, res) => {
+  const { name, owner, status, startDate, endDate, city, country, units, description, progressPct } = req.body;
   const project = await prisma.project.update({
     where: { id: req.params.id },
-    data: { name, address, status, startDate, endDate },
+    data: { name, owner, status, startDate, endDate, city, country, units, description, progressPct },
   });
   res.json(project);
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireCanEdit, async (req, res) => {
   await prisma.project.delete({ where: { id: req.params.id } });
   res.status(204).send();
 });

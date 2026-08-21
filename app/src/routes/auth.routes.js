@@ -46,7 +46,17 @@ router.post(
 
     res
       .cookie("token", token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" })
-      .json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role?.name } });
+      .json({
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          role: user.role?.name || null,
+          canEdit: user.role?.canEdit ?? false,
+          isClientRole: user.role?.isClientRole ?? true,
+        },
+      });
   }
 );
 
@@ -60,7 +70,14 @@ router.get("/me", requireAuth, async (req, res) => {
     include: { role: true },
   });
   if (!user) throw new ApiError(404, "User not found");
-  res.json({ id: user.id, email: user.email, fullName: user.fullName, role: user.role?.name });
+  res.json({
+    id: user.id,
+    email: user.email,
+    fullName: user.fullName,
+    role: user.role?.name || null,
+    canEdit: user.role?.canEdit ?? false,
+    isClientRole: user.role?.isClientRole ?? true,
+  });
 });
 
 export default router;
