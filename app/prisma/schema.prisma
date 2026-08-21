@@ -145,6 +145,12 @@ model Unit {
   unitTypeConfig String? // "Config.Logement" -> UnitTypeRoomConfig.code
   surfaceM2      Decimal? @db.Decimal(8, 2)
 
+  // "Suivi & Planning" block from Locataires.html — shared shape across
+  // Unit/CommonArea/Facade (mirrors the legacy per-view Planning sheets).
+  planningStatus String? // Aucun / Info / Attention / Bloquant
+  notePublic     String?
+  notePrivate    String?
+
   tenants        Tenant[]
   reserves       Reserve[] @relation("ReserveUnit")
   edlNotes       EdlNote[]
@@ -155,17 +161,20 @@ model Unit {
 }
 
 model Tenant {
-  id         String  @id @default(uuid())
-  unitId     String
-  unit       Unit    @relation(fields: [unitId], references: [id])
-  lastName   String?
-  firstName  String?
-  street     String?
-  city       String?
-  phone      String?
-  email      String?
-  moveInDate DateTime?
-  isCurrent  Boolean @default(true)
+  id           String  @id @default(uuid())
+  unitId       String
+  unit         Unit    @relation(fields: [unitId], references: [id])
+  lastName     String?
+  firstName    String?
+  street       String?
+  city         String?
+  phoneFixed   String?
+  phoneMobile1 String?
+  phoneMobile2 String?
+  email        String?
+  email2       String?
+  moveInDate   DateTime?
+  isCurrent    Boolean @default(true)
 }
 
 model UnitTypeRoomConfig {
@@ -188,6 +197,10 @@ model CommonArea {
   typeRef     String? // -> CommonAreaType.abbreviation
   abbreviation String?
 
+  planningStatus String?
+  notePublic     String?
+  notePrivate    String?
+
   reserves        Reserve[] @relation("ReserveCommonArea")
   scheduleEntries ScheduleEntry[] @relation("ScheduleCommonArea")
   taskProgress    TaskProgress[]  @relation("TaskProgressCommonArea")
@@ -208,6 +221,10 @@ model Facade {
   trame       String?
   part        String? // "Partie"
   type        String? // -> FacadeType
+
+  planningStatus String?
+  notePublic     String?
+  notePrivate    String?
 
   reserves        Reserve[] @relation("ReserveFacade")
   scheduleEntries ScheduleEntry[] @relation("ScheduleFacade")
@@ -282,10 +299,13 @@ model CalendarException {
   project   Project  @relation(fields: [projectId], references: [id])
   date      DateTime @db.Date
   description String?
-  type      String? // Fixe / Personnalisé
+  // Oui = auto-calculated French public/company holiday (date/desc locked,
+  // only isWorkingDay is togglable); Non = user-added custom holiday
+  // (fully editable). Matches Settings_Code.js's typeFixe column exactly.
+  isFixed      Boolean @default(false)
   isWorkingDay Boolean @default(false)
 
-  @@unique([projectId, date])
+  @@unique([projectId, date, description])
 }
 
 // Normalized replacement for the wide date-grid "Planning*" sheets

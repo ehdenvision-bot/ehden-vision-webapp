@@ -166,3 +166,80 @@ Next recommended action:
   relying on curl+code-review alone
 - Wire EDL photo upload, work-fields, and the scheduling engine into the frontend (currently
   API-only)
+
+---
+
+## 2026-08-21 - Full React frontend rebuild replacing the vanilla-JS v1
+
+Status: completed
+
+Owner/agent: Claude (main thread) + 9 forked subagents (5 sequential/parallel for legacy-page
+analysis, 4 parallel for page implementation)
+
+Files changed:
+
+- `app/frontend/` — new React app (Vite + Tailwind v4 + React Router + TanStack Query): routing
+  shell (`App.jsx`, `main.jsx`, `ProtectedRoute.jsx`, `Layout.jsx`), auth pages (`Login.jsx`,
+  `ResetRequest.jsx`, `Reset.jsx`, `SupportLogin.jsx`, `Support.jsx`, `AuthCardShell.jsx`),
+  `Portfolio.jsx`, `Dashboard.jsx`, `Locataires.jsx`, `Reserves.jsx`, `Edl.jsx`, `Users.jsx`,
+  `Logs.jsx`, `Settings.jsx`, `Planning.jsx`, plus `lib/api.js`, `lib/AuthContext.jsx`,
+  `lib/useCurrentProject.js`, `components/StatusChip.jsx`
+- `app/public/` deleted entirely (superseded vanilla frontend)
+- `app/src/server.js` — serves `frontend/dist` in production with SPA fallback, no longer
+  serves `app/public/`
+- `app/src/routes/auth.routes.js` — added `/reset-request` + `/reset`
+- `app/src/routes/buildings.routes.js` — added `/locataires/:projectId` bootstrap +
+  contact/planning-write routes
+- `app/src/routes/edl.routes.js` — added work-field admin CRUD
+- `app/src/routes/reserves.routes.js` — added `unitId` filter
+- `app/src/routes/schedule.routes.js` — added disciplines/teams/task-types/cycles/entries CRUD
+- `app/src/routes/settings.routes.js` (new) — holiday calendar (French-holiday Gauss calculation
+  ported from `Settings_Code.js`, custom holiday CRUD)
+- `app/src/lib/mailer.js` (new) — nodemailer wrapper, logs to console if SMTP unconfigured
+- `app/prisma/schema.prisma` + migration `20260821130000_locataires_planning_and_calendar_fields`
+  — added planning/note fields to Unit/CommonArea/Facade, split Tenant phone fields, changed
+  `CalendarException.type` to `isFixed: Boolean`
+
+Server/live-system changes:
+
+- None beyond the running dev server (restarted after each batch of backend changes)
+
+Verification:
+
+- `cd app/frontend && npx vite build` — clean, 92 modules, no errors
+- curl end-to-end tests of every new/changed API endpoint (reset flow, locataires bootstrap +
+  contact update, disciplines CRUD, holiday calendar including a real Easter-date check for
+  2026 against the actual calendar, work-field CRUD, reserves unitId filter) — all correct
+- Manual code review of all 4 forked-subagent-built pages (Edl.jsx, Users.jsx, Logs.jsx,
+  Settings.jsx, Planning.jsx) against their directives and the established API contracts — no
+  material issues found, one unused variable removed from Planning.jsx
+- Server restart + SPA-fallback routing check (unknown client route → 200 index.html, `/api/*`
+  and `/uploads/*` NOT swallowed by the catch-all, static assets serve with correct
+  content-type, CSP headers compatible with Google Fonts + self-hosted JS/CSS)
+
+Notes:
+
+- User's request evolved over the session: "full publish with frontend as is" (vanilla-JS v1) →
+  "work the frontend visuals same as the webapp" (restyled to match legacy design) → "read all
+  html files and replicate them in the frontend" + "frontend will be react + plugins" (full
+  React rebuild). Each pivot was treated as superseding the prior approach, not layering on it —
+  the vanilla frontend was deleted, not kept as a fallback, once the React version was verified.
+- Delegation pattern: analysis forks (read legacy code, produce a condensed spec) were run before
+  and separately from implementation forks (write React code against an already-verified
+  backend + already-extracted spec) — kept each fork's job narrow and let later forks build on
+  earlier forks' findings via shared conversation context (forks inherit full context) rather
+  than re-deriving the same analysis multiple times.
+- `prisma migrate dev` doesn't work non-interactively in this sandbox even for a trivial change —
+  worked around via `prisma migrate diff --script` + manual `psql` apply + `migrate resolve
+  --applied`. Documented in `agents/runbook.md`.
+- Settings.html (legacy) turned out to contain an unrelated, unfinished "Workspace" feature, not
+  the actual settings page — the Settings.jsx UI had to be designed fresh against
+  `Settings_Code.js`'s function signatures instead of copied from legacy markup.
+
+Next recommended action:
+
+- Get real visual/browser confirmation from the user — no browser automation tool was available
+  this session (`claude-in-chrome` extension not connected), so nothing has actually been looked
+  at rendered, only verified via build success + API testing + code review
+- `UserProjectAccess` enforcement is the highest-value remaining backend gap (see
+  `agents/decisions.md`)

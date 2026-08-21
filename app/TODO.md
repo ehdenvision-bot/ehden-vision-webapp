@@ -98,7 +98,15 @@ ErrorLog/PermissionAuditLog, PlanAsset.
       project via `unit/commonArea/facade → building → projectId`, and a
       `code` is auto-generated on create (`genCode()`) since the legacy
       `A-L-000001`/`R-L-000001` sequence numbering wasn't ported.
-- [ ] Configurations (dropdown lists / app settings) CRUD
+- [x] Password-reset flow (`/api/auth/reset-request`, `/api/auth/reset`)
+- [x] Locataires CRUD (buildings/units/common-areas/facades planning +
+      contact fields) — see Phase 5
+- [x] Schedule engine CRUD (disciplines/teams/task-types/cycles/entries)
+- [x] Holiday calendar (`/api/settings/holidays/*`)
+- [x] EDL work-field admin CRUD (`/api/edl/work-fields`)
+- [ ] Configurations (dropdown lists / app settings) CRUD — the `AppSetting`
+      model exists but has no routes; distinct from the holiday-calendar
+      settings above
 - [ ] `UserProjectAccess` enforcement (currently any authenticated user can
       read any project — source app scoped by `Access` sheet, not yet
       wired into route queries)
@@ -107,26 +115,77 @@ ErrorLog/PermissionAuditLog, PlanAsset.
       more broadly)
 - [ ] Cascading interventions/EDL correction workflow from `EDL_Code.js`
       (`gsCorrectIntervention*`) not yet ported
+- [ ] Task-instance status update endpoint (`gsUpdateTaskStatus` equivalent)
+      — Planning UI has a read-only placeholder for this, see Phase 5
+- [ ] `processProjectGeneration` (Planning date-grid regeneration) — no
+      endpoint yet, see Phase 5
 
-## Phase 5 — Frontend
-- [x] v1 shipped "as is": a minimal built-in frontend at `app/public/`
-      (plain HTML/CSS/vanilla JS, no build step, no framework), served
-      directly by Express as static files at `/`. Covers: login, Projects
-      (list/create), Buildings/Units (list/create), Reserves (list,
-      filter by project), EDL notes (view/edit per unit), Users (admin
-      read-only list), Logs (activity feed). Auth uses the same
-      httpOnly-cookie session as the API (`credentials: "same-origin"`
-      fetch calls) — no separate token handling needed since it's
-      same-origin. UI gates edit forms on `currentUser.canEdit` and hides
-      the Users tab for non-Admins.
-- [ ] Not yet in the UI: EDL photo upload, work-fields, scheduling
-      (`/api/schedule`), user create/edit forms, project edit/delete,
-      reserve create/edit beyond the basic list, error-log viewer.
-- [ ] This is intentionally not a 1:1 recreation of the legacy pages
-      (login/reset, project portfolio + dashboard, mobile views,
-      planning UI) — revisit whether a real SPA (React/Vite) is worth it
-      once the API surface is more complete, or keep extending this
-      vanilla version.
+## Phase 5 — Frontend — React rebuild, replaces the earlier vanilla-JS v1
+The original vanilla-JS/no-build frontend (`app/public/`) has been removed
+and replaced by a real React app at `app/frontend/` (Vite + Tailwind v4 +
+React Router + TanStack Query — see `app/README.md`). This was a deliberate
+rebuild ("frontend will be react + plugins"), not an incremental extension
+of the vanilla version.
+
+Every legacy HTML page (`extracted/Web APP/apps-script-src/*.html`, 27
+files) was read and structurally specified (5 parallel forked analyses)
+before building, to match the real "Ehden Vision" design system and page
+layouts rather than inventing new ones — see `agents/decisions.md` for the
+exact scope agreed per page.
+
+- [x] Auth flow: Login, ResetRequest, Reset (new backend routes
+      `/api/auth/reset-request` + `/api/auth/reset`, anti-enumeration
+      response matching the legacy behavior, nodemailer-backed), SupportLogin
+- [x] Shared chrome: Sidebar (exact 17-item legacy nav list + icons,
+      Bientôt-disponible state for unbuilt legacy pages), Header, Support page
+- [x] Portfolio (project picker grid, search + status filter chips)
+- [x] Dashboard (stats bar + quick-actions)
+- [x] Locataires (3-tab Locataires/Communs/Façades table + filters + edit
+      modal — required a schema migration adding `planningStatus`/
+      `notePublic`/`notePrivate` to Unit/CommonArea/Facade and splitting
+      `Tenant.phone`→`phoneFixed`/`phoneMobile1`/`phoneMobile2` +
+      `email`/`email2`, plus new `/api/buildings/locataires/:projectId`
+      bootstrap + contact/planning-write routes)
+- [x] Reserves (list + create)
+- [x] EDL (3 tabs: Notes with photo upload, Travaux dynamic work-fields
+      form, Réserves) — new `/api/edl/work-fields` admin CRUD,
+      `/api/reserves?unitId=` filter added
+- [x] Users (admin CRUD) + Logs (activity + error log viewer)
+- [x] Settings (holiday calendar: French-holidays auto-calculation ported
+      from `Settings_Code.js`'s Gauss algorithm, custom holiday CRUD,
+      working-day toggle) — new `/api/settings/holidays/*` routes;
+      schema's `CalendarException.type` replaced with `isFixed: Boolean`
+      to match the legacy `typeFixe` semantics exactly
+- [x] Planning — deliberately scoped-down v1 (see the fork's own
+      recommendation, agreed before building): a read-only entity×task-type
+      grid instead of a true day-by-day Gantt, a simple reschedule panel
+      calling the already-ported `shiftTaskWithDomino` directly (no
+      contiguity-radar 5-strategy picker), and CRUD modals for
+      Disciplines/Équipes/Tâches (Cycles, dependency-link editing,
+      Interventions plan-pin sub-system, drag-and-drop, Excel export, print
+      view all deferred — see the header comment in `Planning.jsx`). New
+      `/api/schedule/{disciplines,teams,task-types,cycles,entries}` CRUD
+      routes.
+
+**Deliberately out of scope for this pass** (flagged during page analysis,
+not silently dropped):
+- Mobile variants of every page (`*Mobile.html`) — desktop-only per the
+  original design-system extraction's own recommendation
+- Planning's contiguity-radar reschedule strategy picker, Cycles
+  dependency-link editor (FS/SS + lag), Interventions plan-pin marking
+  sub-system
+- EDL's interactive pin-on-plan-image placement (reserves are created via
+  a plain form instead)
+- `processProjectGeneration` (regenerating the whole Planning date-grid
+  when a project's date range changes) — no backend endpoint exists yet,
+  and there's no legacy `Settings.html` layout to reference (that file
+  turned out to contain an unrelated, unfinished "Workspace" feature, not
+  the settings page — confirmed while reading it for this work)
+- Task-instance status updates from the Planning UI (`gsUpdateTaskStatus`
+  was never ported to a REST endpoint — the status field renders read-only
+  in the reschedule panel with an explicit tooltip, not silently ignored)
+- `Rapport`/`RapportMobile`/`SettingsMobile` — no matching legacy HTML
+  exists in the export at all (see Phase 0)
 
 ## Phase 6 — Hardening
 - [ ] Input validation on all routes (express-validator is a dependency,

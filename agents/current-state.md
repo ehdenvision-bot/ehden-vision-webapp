@@ -12,60 +12,82 @@ A construction-site-management web app (projects → buildings → units/common-
 per-project scheduling engine, reserves/punch-list tracking, EDL — état des lieux / move-in-out
 inspections — RBAC, activity logs), branded **"Ehden Vision"**. Originally a Google Apps Script
 web app backed by 7 Google Sheets spreadsheets (as DB) and Google Drive (as file storage). Being
-migrated to Node.js + Express + PostgreSQL (Prisma), developed locally in this sandbox.
+migrated to Node.js + Express + PostgreSQL (Prisma) + React, developed locally in this sandbox.
 
 - Legacy source: `extracted/Web APP/` (unzipped client export) —
   `extracted/Web APP/WepAPP.json` is the raw clasp export;
   `extracted/Web APP/apps-script-src/` is that same export flattened to plain `.js`/`.html`
-  files for reading; the 11 `.xlsx` files are point-in-time snapshots of the live Sheets.
-- New app: `app/` — plain Express app (no monorepo/build step), Prisma ORM, vanilla-JS frontend
-  served as static files from `app/public/`. See `app/README.md` for setup, `app/TODO.md` for
+  files for reading (all 27 HTML pages + 11 server modules read and specified this session); the
+  11 `.xlsx` files are point-in-time snapshots of the live Sheets.
+- New app: `app/` — Express API (`app/src/`) + a separate React frontend (`app/frontend/`, Vite +
+  Tailwind v4 + React Router + TanStack Query). See `app/README.md` for setup, `app/TODO.md` for
   the phase-by-phase migration plan (this file is the narrative; `app/TODO.md` is the checklist —
   keep both in sync when either changes).
 
-## What's built (2026-08-21 session)
+## What's built, in build order (2026-08-21 session — a single long session)
 
 1. **Analysis**: parsed the Apps Script export (routing, auth model, all 11 server modules) and
-   the 11 xlsx schema files via two parallel forked subagents, condensed into `app/TODO.md`
-   Phase 0 and used to design `app/prisma/schema.prisma` (~25 models).
+   the 11 xlsx schema files via two parallel forked subagents, used to design
+   `app/prisma/schema.prisma` (~25 models).
 2. **Local dev stack, working end to end**: Postgres 17 installed natively (no Docker daemon in
-   this sandbox), migrated (`app/prisma/migrations/20260821093802_init`), seeded
-   (`admin@example.com` / `changeme123`, 11 roles matching the legacy Permissions sheet).
-3. **API**: Express + JWT (httpOnly cookie) auth with a `canEdit` role gate mirroring the legacy
-   `assertCanEdit_`. Routes: auth, projects, buildings/units, reserves, EDL (notes + photo upload
-   + dynamic work-fields), users/roles admin, activity/error logs.
+   this sandbox), migrated, seeded (`admin@example.com` / `changeme123`, 11 roles matching the
+   legacy Permissions sheet).
+3. **Core API**: Express + JWT (httpOnly cookie) auth with a `canEdit` role gate mirroring the
+   legacy `assertCanEdit_`. Routes: auth, projects, buildings/units, reserves, EDL, users/roles
+   admin, activity/error logs.
 4. **Scheduling engine**: domino-shift reschedule + two-phase analyze/execute task-type deletion,
-   ported from the legacy `Planing_Code.js` via a scoped `codex exec` task run in an isolated git
-   worktree (branch `codex/schedule-domino-shift`), reviewed and merged into `master`.
-5. **Two real schema/route bugs found and fixed** by actually running end-to-end curl tests
-   (not just `node --check`): `projects.routes.js` and `reserves.routes.js` still referenced
-   fields from an early draft schema (`address`, `title`, `priority`, `assigneeId`, a direct
-   `projectId` on `Reserve`) that don't exist in the final `schema.prisma`. Rewritten to match.
-6. **Frontend v1**: a minimal built-in frontend at `app/public/` — plain HTML/CSS/vanilla JS, no
-   build step, no framework, served directly by Express as static files, same-origin
-   cookie-based auth (no separate token handling needed). Covers Projects, Buildings/Units,
-   Reserves, EDL notes, Users (read-only), Logs.
-7. **Frontend restyled to match the legacy app's actual design system** (not guessed): a forked
-   subagent read the legacy HTML/CSS (`ClientLib.html`, `Header.html`, `Sidebar.html`,
-   `Login.html`, `ProjectDashboard.html`, etc.) and extracted the real design system — Tailwind
-   utility classes + Google Fonts (Inter, Material Symbols Outlined), brand name "Ehden Vision",
-   primary blue `#0d59f2` / corporate blue `#004595`, sidebar (280px) + header (64px) admin
-   shell, status chips (`chip-active`/`chip-blocked`/`chip-ended`/`chip-archived`). Ported into
-   `app/public/style.css`/`index.html`/`app.js` as plain CSS custom properties (the legacy app
-   has no `:root` variable block — it's all inline Tailwind config, consolidated here).
-8. **Access documented** in `app/README.md`: local dev URL/credentials, and an explicit
-   placeholder (not fabricated credentials) for the intended production host,
-   `michel.optima-tech.info`.
+   ported from the legacy `Planing_Code.js` via a scoped `codex exec` task in an isolated git
+   worktree, reviewed and merged.
+5. **Vanilla-JS frontend v1, then fully replaced** — see next section. The vanilla version
+   (`app/public/`) no longer exists; superseded, not extended.
+6. **Full React rebuild** ("read all html files and replicate them in the frontend", stack
+   settled mid-task as "react + plugins" → confirmed Vite/Tailwind v4/Router/Query): all 27
+   legacy HTML pages read via 5 parallel forked analyses (auth/portfolio/support/header/sidebar;
+   dashboard/locataires; settings; planning; EDL) before writing any code. Pages built: Login,
+   ResetRequest, Reset, SupportLogin, Support, Portfolio, Dashboard, Locataires (3-tab
+   units/common-areas/facades + edit modal), Reserves, EDL (3-tab notes/travaux/réserves),
+   Users, Logs, Settings (holiday calendar), Planning (scoped-down v1 Gantt). Four of these
+   (EDL, Users+Logs, Settings, Planning) were built by parallel forked subagents against the
+   shared, already-verified API and design conventions, then reviewed.
+7. **New backend routes added to support the rebuild**: `/api/auth/reset-request` +
+   `/api/auth/reset` (password reset, nodemailer-backed, anti-enumeration),
+   `/api/buildings/locataires/:projectId` + contact/planning-write routes,
+   `/api/schedule/{disciplines,teams,task-types,cycles,entries}` CRUD,
+   `/api/settings/holidays/*` (French-holiday auto-calculation ported from
+   `Settings_Code.js`'s Gauss algorithm + custom holiday CRUD), `/api/edl/work-fields` admin CRUD,
+   `/api/reserves?unitId=` filter.
+8. **Schema changes found necessary while building real pages** (migration
+   `20260821130000_locataires_planning_and_calendar_fields`): `Unit`/`CommonArea`/`Facade` gained
+   `planningStatus`/`notePublic`/`notePrivate`; `Tenant.phone` split into
+   `phoneFixed`/`phoneMobile1`/`phoneMobile2` + `email2`; `CalendarException.type` replaced with
+   `isFixed: Boolean` and its unique constraint widened to `[projectId, date, description]`.
+9. **Two real schema/route bugs found and fixed earlier in the session** by actually running
+   end-to-end curl tests (not just `node --check`): `projects.routes.js`/`reserves.routes.js`
+   referenced fields from an early draft schema that no longer existed. Rewritten to match.
+10. **Access documented** in `app/README.md`: local dev URLs/credentials (API :3000, frontend
+    dev server :5173), and an explicit placeholder (not fabricated credentials) for the intended
+    production host, `michel.optima-tech.info`.
+
+## Deliberately deferred (not silently dropped — see `app/TODO.md` Phase 5 for the full list)
+
+Mobile page variants; Planning's contiguity-radar reschedule strategy picker, Cycles
+dependency-link editor (FS/SS + lag), and Interventions plan-pin sub-system; EDL's interactive
+pin-on-plan-image placement; `processProjectGeneration` (Planning date-grid regeneration, no
+endpoint exists); task-instance status updates from the Planning UI (no endpoint exists, shown
+read-only with a tooltip, not silently broken); `UserProjectAccess` enforcement; a generic
+`AppSetting`/Configurations CRUD (distinct from the holiday-calendar settings that do exist).
+
+## Not visually confirmed
+
+No browser automation tool has been available in this session (`claude-in-chrome` reports the
+extension isn't connected) — every page was verified via a clean `vite build`, curl-based
+end-to-end API testing, and manual code review, but never actually rendered and looked at. The
+user should confirm visually before treating the frontend as fully done.
 
 ## Sandbox-specific facts learned this session
 
 See `CLAUDE.md`'s "sandbox-specific gotchas" section — no Docker daemon, `node --watch` doesn't
 reliably detect file changes here, `pkill -f` is unreliable (kill by PID instead), server must
-bind `0.0.0.0` for the sandbox's external proxy to reach it.
-
-## Not yet done
-
-See `app/TODO.md` for the full list. Highest-value next items: `UserProjectAccess` enforcement
-(any authenticated user can currently read any project), Configurations CRUD, EDL photo
-upload/work-fields/scheduling wired into the frontend, and a decision on whether this vanilla-JS
-frontend is the long-term answer or a placeholder for a real SPA.
+bind `0.0.0.0` for the sandbox's external proxy to reach it, `prisma migrate dev` doesn't work
+non-interactively (use `prisma migrate diff --script` + apply manually + `migrate resolve
+--applied`, see `agents/runbook.md`).

@@ -55,6 +55,28 @@ router.get("/work-fields", async (_req, res) => {
   res.json(fields);
 });
 
+router.post("/work-fields", requireCanEdit, async (req, res) => {
+  const { code, targetEntityType, subCategory, discipline, workType, applicableRooms, fieldType, fieldDetails, options } = req.body;
+  const field = await prisma.workFieldDefinition.create({
+    data: { code, targetEntityType, subCategory, discipline, workType, applicableRooms, fieldType, fieldDetails, options },
+  });
+  res.status(201).json(field);
+});
+
+router.put("/work-fields/:id", requireCanEdit, async (req, res) => {
+  const { targetEntityType, subCategory, discipline, workType, applicableRooms, fieldType, fieldDetails, options } = req.body;
+  const field = await prisma.workFieldDefinition.update({
+    where: { id: req.params.id },
+    data: { targetEntityType, subCategory, discipline, workType, applicableRooms, fieldType, fieldDetails, options },
+  });
+  res.json(field);
+});
+
+router.delete("/work-fields/:id", requireCanEdit, async (req, res) => {
+  await prisma.workFieldDefinition.delete({ where: { id: req.params.id } });
+  res.status(204).send();
+});
+
 router.get("/work-values/:unitId", async (req, res) => {
   const values = await prisma.workFieldValue.findMany({
     where: { unitId: req.params.unitId },

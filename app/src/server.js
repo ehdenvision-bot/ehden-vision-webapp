@@ -6,6 +6,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import path from "node:path";
+import fs from "node:fs";
 
 import routes from "./routes/index.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -25,8 +26,17 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.use("/api", routes);
 
-// Minimal built-in frontend (vanilla JS, no build step) — see app/public/.
-app.use(express.static(path.resolve("public")));
+// Production build of the React frontend (app/frontend). In local dev, run
+// `npm run dev` inside app/frontend instead (Vite dev server on its own
+// port, proxying /api and /uploads back to this server — see
+// app/frontend/vite.config.js) rather than relying on this static serve.
+const frontendDist = path.resolve("frontend/dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get(/^(?!\/api|\/uploads).*/, (_req, res) => {
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+}
 
 app.use(errorHandler);
 

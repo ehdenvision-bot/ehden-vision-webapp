@@ -7,6 +7,7 @@ import edlRoutes from "./edl.routes.js";
 import userRoutes from "./users.routes.js";
 import logRoutes from "./logs.routes.js";
 import scheduleRoutes from "./schedule.routes.js";
+import settingsRoutes from "./settings.routes.js";
 
 const router = Router();
 
@@ -18,7 +19,6 @@ router.use("/edl", edlRoutes);
 router.use("/users", userRoutes);
 router.use("/logs", logRoutes);
 router.use("/schedule", scheduleRoutes);
-
-// TODO: configurations CRUD.
+router.use("/settings", settingsRoutes);
 
 export default router;

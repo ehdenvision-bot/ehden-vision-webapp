@@ -6,17 +6,6 @@ Resolved decisions move to the archive section at the bottom.
 
 ## Open Decisions
 
-### Frontend: keep extending the vanilla-JS build, or move to a real SPA?
-Raised 2026-08-21. The user asked to "full publish with frontend as is," which was interpreted
-as: ship a working frontend against the current API without a build pipeline, rather than wait
-on a framework decision. Delivered as plain HTML/CSS/vanilla JS served statically from
-`app/public/`, restyled to match the legacy app's actual design system (see
-`agents/current-state.md`). This covers Projects/Buildings/Reserves/EDL-notes/Users/Logs but not
-EDL photo upload, work-fields, or the scheduling engine. Not yet decided: whether to keep
-extending this by hand, or switch to React/Vite once the API surface is more complete. Lean
-toward continuing vanilla as long as it stays manageable — revisit if per-page logic starts
-duplicating significantly.
-
 ### `UserProjectAccess` enforcement not wired into route queries
 The schema has a `UserProjectAccess` join table (mirroring the legacy "Access" sheet:
 `User Email | Projects ID`) but no route currently checks it — any authenticated user can read
@@ -44,6 +33,52 @@ fresh pull via the Sheets API before any real cutover, not a migration off these
 ---
 
 ## Resolved Decisions
+
+### Frontend rebuilt in React, replacing the earlier vanilla-JS v1 — 2026-08-21
+The vanilla-JS v1 (see the now-removed open decision above) covered Projects/Buildings/Reserves/
+EDL-notes/Users/Logs but was explicitly flagged as undecided long-term. The user then asked to
+"read all html files and replicate them in the frontend" — a full-fidelity rebuild — and mid-task
+specified "frontend will be react + plugins," settling the stack question. Confirmed with the
+user: Vite + Tailwind v4 + React Router + TanStack Query, plain JS (no TypeScript).
+
+Approach: all 27 legacy HTML files (`extracted/Web APP/apps-script-src/*.html`) were read via 5
+parallel forked analyses (auth/portfolio/support/header/sidebar; dashboard/locataires; settings;
+planning; EDL) before writing any frontend code, to replicate real layouts/labels/behavior rather
+than inventing new ones. The old `app/public/` vanilla frontend was deleted entirely (not kept
+as a fallback) once the React build was verified working end-to-end via curl-based API testing
+and a clean `vite build`.
+
+Four of the biggest remaining pages (EDL, Users+Logs, Settings, Planning) were built via
+parallel forked subagents against a shared, already-verified backend API and established design
+conventions (see `agents/current-state.md`) — each reviewed for correctness against its own
+directive before being accepted; all four matched their API contracts and design system with no
+material issues found on review.
+
+**Explicitly scoped down, not silently dropped** (see `app/TODO.md` Phase 5 for the full list):
+mobile page variants, Planning's contiguity-radar reschedule strategy picker and Cycles
+dependency-link editor and Interventions plan-pin sub-system, EDL's interactive pin-on-plan
+placement, `processProjectGeneration`, task-instance status updates from Planning. Each of these
+was a deliberate scoping call made by the analysis fork that read the relevant legacy code,
+carried into the build directive, and left as a visible code comment (e.g. `Planning.jsx`'s
+header) rather than a silent gap.
+
+**Schema changes required by the rebuild** (not anticipated when the original Prisma schema was
+drafted, found while building real pages against real legacy behavior):
+`Unit`/`CommonArea`/`Facade` gained `planningStatus`/`notePublic`/`notePrivate` (the legacy
+"Suivi & Planning" block shared across all three entity types); `Tenant.phone` split into
+`phoneFixed`/`phoneMobile1`/`phoneMobile2` plus `email2` (the legacy contact-fields form has 3
+phone fields and 2 emails); `CalendarException.type` (a free string) replaced with
+`isFixed: Boolean` to match `Settings_Code.js`'s actual `typeFixe` Oui/Non semantics, and its
+unique constraint widened from `[projectId, date]` to `[projectId, date, description]` since the
+legacy code allows multiple holidays matched by date+description pairs. Migration
+`20260821130000_locataires_planning_and_calendar_fields`.
+
+**Not visually confirmed in a real browser** — no browser automation tool was available this
+session (`claude-in-chrome` reported the extension isn't connected, same limitation as the
+earlier vanilla-frontend session). Verification was via: a clean `vite build` (92 modules, no
+errors), curl-based end-to-end testing of every API endpoint the frontend calls, and manual code
+review of all built pages against their directives. The user should visually confirm in a real
+browser before treating this as fully done.
 
 ### Local Postgres via native install, not Docker Compose — 2026-08-21
 `docker-compose.yml` was written first but this sandbox has no Docker daemon

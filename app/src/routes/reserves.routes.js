@@ -23,12 +23,13 @@ function genCode(kind) {
 }
 
 router.get("/", async (req, res) => {
-  const { projectId, status, kind } = req.query;
+  const { projectId, status, kind, unitId } = req.query;
   const reserves = await prisma.reserve.findMany({
     where: {
       ...byProject(projectId),
       ...(status ? { status } : {}),
       ...(kind ? { kind } : {}),
+      ...(unitId ? { unitId } : {}),
     },
     include: { unit: true, commonArea: true, facade: true, discipline: true, team: true },
     orderBy: { createdAt: "desc" },

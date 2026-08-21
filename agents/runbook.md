@@ -34,6 +34,36 @@ npm run db:seed          # first time only
 node src/server.js       # foreground, or see "Backgrounding" below
 ```
 
+Frontend (separate terminal): `cd app/frontend && npm install && npm run dev` — Vite dev server
+on :5173, proxies `/api` and `/uploads` to :3000 (see `app/frontend/vite.config.js`). To check
+the production-style single-process setup instead: `cd app && npm run build:frontend` then hit
+:3000 directly (Express serves `frontend/dist` if it exists, see `app/src/server.js`).
+
+### `prisma migrate dev` doesn't work non-interactively in this sandbox
+
+It errors with "Prisma Migrate has detected that the environment is non-interactive" even for a
+trivial schema change. Confirmed workaround (used for migration
+`20260821130000_locataires_planning_and_calendar_fields`):
+
+```bash
+mkdir -p prisma/migrations/<timestamp>_<name>
+npx prisma migrate diff \
+  --from-url "$(grep DATABASE_URL .env | cut -d= -f2- | tr -d '\"')" \
+  --to-schema-datamodel prisma/schema.prisma --script \
+  > prisma/migrations/<timestamp>_<name>/migration.sql
+
+# review the generated SQL, then actually apply it:
+PGPASSWORD=chantier psql -h localhost -U chantier -d chantier \
+  -f prisma/migrations/<timestamp>_<name>/migration.sql
+
+# mark it applied in Prisma's migration history (does NOT run the SQL —
+# only run this AFTER applying the SQL above yourself, not instead of it):
+npx prisma migrate resolve --applied <timestamp>_<name>
+
+npx prisma generate
+npx prisma migrate status   # should say "Database schema is up to date!"
+```
+
 ## Backgrounding the dev server
 
 `node --watch` does **not** reliably detect file changes in this sandbox's filesystem (confirmed

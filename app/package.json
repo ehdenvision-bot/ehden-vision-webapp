@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "build:frontend": "npm --prefix frontend run build",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
