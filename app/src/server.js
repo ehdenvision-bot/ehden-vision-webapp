@@ -23,11 +23,31 @@ app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "./upl
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+app.get("/", (_req, res) => {
+  res.json({
+    name: "chantier-webapp API",
+    status: "ok",
+    note: "No frontend yet (see app/TODO.md Phase 5) — this is an API-only server.",
+    endpoints: [
+      "GET /health",
+      "POST /api/auth/login",
+      "GET /api/auth/me",
+      "GET /api/projects",
+      "GET /api/buildings",
+      "GET /api/reserves",
+      "GET /api/edl/notes/:unitId",
+      "GET /api/users",
+      "GET /api/logs",
+      "POST /api/schedule/shift-task",
+    ],
+  });
+});
+
 app.use("/api", routes);
 
 app.use(errorHandler);
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`chantier-webapp API listening on http://localhost:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`chantier-webapp API listening on http://0.0.0.0:${port}`);
 });
