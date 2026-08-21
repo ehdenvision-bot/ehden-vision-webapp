@@ -8,9 +8,16 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-function signToken(user, permissions) {
+function signToken(user) {
   return jwt.sign(
-    { sub: user.id, email: user.email, roleId: user.roleId, permissions },
+    {
+      sub: user.id,
+      email: user.email,
+      roleId: user.roleId,
+      roleName: user.role?.name || null,
+      canEdit: user.role?.canEdit ?? false,
+      isClientRole: user.role?.isClientRole ?? true,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
   );
@@ -27,15 +34,15 @@ router.post(
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { role: { include: { permissions: true } } },
+      include: { role: true },
     });
-    if (!user || !user.isActive) throw new ApiError(401, "Invalid credentials");
+    if (!user || user.status !== "Actif") throw new ApiError(401, "Invalid credentials");
+    if (!user.passwordHash) throw new ApiError(401, "Invalid credentials");
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) throw new ApiError(401, "Invalid credentials");
 
-    const permissions = user.role?.permissions.map((p) => p.code) || [];
-    const token = signToken(user, permissions);
+    const token = signToken(user);
 
     res
       .cookie("token", token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" })
