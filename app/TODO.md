@@ -86,13 +86,18 @@ ErrorLog/PermissionAuditLog, PlanAsset.
       definitions + values
 - [x] Users + roles admin (list/create/update, admin-only)
 - [x] Logs: activity log + error log, read/filterable
-- [ ] Scheduling engine (`/api/schedule`) — in progress, see
-      `codex/schedule-domino-shift` branch/worktree
-      (`../webapp-worktrees/schedule-domino-shift`): porting
-      `gsShiftTaskWithDomino` (domino reschedule), two-phase
-      analyze/execute task-type deletion, cascade-update logic from
-      `Planing_Code.js`. Review diff and merge into `main` when done —
-      do NOT merge unreviewed.
+- [x] Scheduling engine (`/api/schedule`): domino-shift reschedule, two-phase
+      analyze/execute task-type deletion — ported from `Planing_Code.js` via
+      a scoped Codex task in an isolated worktree, reviewed, and merged.
+- [x] Fixed: `projects.routes.js` and `reserves.routes.js` originally
+      referenced stale fields from an early schema draft (`address`,
+      `title`, `priority`, `assigneeId`, direct `projectId` on `Reserve`)
+      that don't exist in the final `schema.prisma` — caught via manual
+      end-to-end curl testing, not caught by `node --check` (syntax-only).
+      Rewrote both to match the real schema; `Reserve` is now filtered by
+      project via `unit/commonArea/facade → building → projectId`, and a
+      `code` is auto-generated on create (`genCode()`) since the legacy
+      `A-L-000001`/`R-L-000001` sequence numbering wasn't ported.
 - [ ] Configurations (dropdown lists / app settings) CRUD
 - [ ] `UserProjectAccess` enforcement (currently any authenticated user can
       read any project — source app scoped by `Access` sheet, not yet
@@ -103,10 +108,25 @@ ErrorLog/PermissionAuditLog, PlanAsset.
 - [ ] Cascading interventions/EDL correction workflow from `EDL_Code.js`
       (`gsCorrectIntervention*`) not yet ported
 
-## Phase 5 — Frontend (not started, needs a decision)
-- [ ] Server-rendered (EJS/Handlebars) vs SPA (React/Vite) — TBD with user
-- [ ] Recreate: login/reset, project portfolio + dashboard, buildings
-      ("Locataires"), planning (desktop/mobile), EDL, settings/admin
+## Phase 5 — Frontend
+- [x] v1 shipped "as is": a minimal built-in frontend at `app/public/`
+      (plain HTML/CSS/vanilla JS, no build step, no framework), served
+      directly by Express as static files at `/`. Covers: login, Projects
+      (list/create), Buildings/Units (list/create), Reserves (list,
+      filter by project), EDL notes (view/edit per unit), Users (admin
+      read-only list), Logs (activity feed). Auth uses the same
+      httpOnly-cookie session as the API (`credentials: "same-origin"`
+      fetch calls) — no separate token handling needed since it's
+      same-origin. UI gates edit forms on `currentUser.canEdit` and hides
+      the Users tab for non-Admins.
+- [ ] Not yet in the UI: EDL photo upload, work-fields, scheduling
+      (`/api/schedule`), user create/edit forms, project edit/delete,
+      reserve create/edit beyond the basic list, error-log viewer.
+- [ ] This is intentionally not a 1:1 recreation of the legacy pages
+      (login/reset, project portfolio + dashboard, mobile views,
+      planning UI) — revisit whether a real SPA (React/Vite) is worth it
+      once the API surface is more complete, or keep extending this
+      vanilla version.
 
 ## Phase 6 — Hardening
 - [ ] Input validation on all routes (express-validator is a dependency,
