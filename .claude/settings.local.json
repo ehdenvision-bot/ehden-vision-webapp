@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/coder/project/**)",
+      "Read(//home/coder/**)",
+      "Bash(find / -maxdepth 3 -iname \"*webapp*.zip\")",
+      "Bash(unzip -o -q \"Web APP-20260821T091510Z-1-001.zip\" -d extracted)",
+      "Bash(python3 -c \"import openpyxl; print\\('openpyxl ok'\\)\")",
+      "Bash(python3 -c \"import pandas; print\\('pandas ok'\\)\")",
+      "Bash(psql --version)"
+    ]
+  }
+}

@@ -1,0 +1,1564 @@
+<script>
+
+  // =========================================================
+  // 1. GLOBAL STATE & CONFIGURATION
+  // =========================================================
+  
+  const PROJECT_ID = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId : "";
+  const APP_USER_EMAIL = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user.email : "Email inconnu";
+
+  // Global states for sorting and visibility
+  window.currentSortCol = 'id';
+  window.currentSortDir = 'asc';
+  window.detailsVisible = false; // Tracks if collapsible columns are currently open
+  window.lastPlanningData = null; // Caches data so we don't fetch from server on every sort
+  window.loadedStartDate = null; // Suivi de la date de début actuellement chargée
+  window.loadedEndDate = null;   // Suivi de la date de fin actuellement chargée
+  const urlParamsGlobal = new URLSearchParams(window.location.search);
+  let currentView = urlParamsGlobal.get('currentView') || (typeof APP_DATA !== 'undefined' && APP_DATA.currentView ? APP_DATA.currentView : null) || localStorage.getItem('currentView') || 'locataires';
+  window.currentView = currentView;
+
+  window.isEditModeActive = false;
+  window.selectedEditItem = null;    // Stores what the user clicked (ID, Task, or Dot)
+
+  window.projectStart = null;
+  window.projectEnd = null;
+  window.currentCenterDate = new Date();
+
+  let currentScale = 1.0;
+  window.planningData = [];
+  window.selectedFilters = {}; // Doit être global
+
+  window.currentSelectionId = null;
+
+  window.masterProjectCalendar = null;
+  window.calendarLoadingState = 'idle';
+
+  const isAuthorized = APP_DATA.isAuthorized || false;
+  const canEdit = APP_DATA.canEdit || false;
+  const isClient = APP_DATA.isClient;
+  const projectStatus = APP_DATA.projectStatus;
+
+  const storedClientView = localStorage.getItem('isClientViewActive');
+  window.isClientViewActive = storedClientView !== null 
+      ? storedClientView === 'true' 
+      : (typeof APP_DATA !== 'undefined' && APP_DATA.isClientViewActive === true);
+
+  window.viewConfigs = {
+    locataires: [
+      { id: 'id', label: 'ID', width: 120, type: 'id' },
+      { id: 'batiment', label: 'Bât.', width: 45, type: 'detail', filterable: true },
+      { id: 'hall', label: 'Hall', width: 45, type: 'detail', filterable: true },
+      { id: 'etage', label: 'Etage', width: 45, type: 'detail', filterable: true },
+      { id: 'empilement', label: 'Empil.', width: 45, type: 'detail', filterable: true },
+      { id: 'type', label: 'Type', width: 45, type: 'detail', filterable: true },
+      { id: 'config', label: 'Config.', width: 45, type: 'detail', filterable: true },
+      { id: 'porte', label: 'Porte', width: 45, type: 'detail', filterable: false },
+      { id: 'nom', label: 'Résident', width: 180, type: 'name' }
+    ],
+    communs: [
+      { id: 'id', label: 'ID', width: 120, type: 'id' },
+      { id: 'batiment', label: 'Bât.', width: 45, type: 'detail', filterable: true },
+      { id: 'hall', label: 'Hall', width: 45, type: 'detail', filterable: true },
+      { id: 'etage', label: 'Etage', width: 45, type: 'detail', filterable: true },
+      { id: 'description', label: 'Description', width: 180, type: 'name', filterable: true }
+    ],
+    facades: [
+      { id: 'id', label: 'ID', width: 120, type: 'id' },
+      { id: 'batiment', label: 'Bât.', width: 45, type: 'detail', filterable: true },
+      { id: 'hall', label: 'Hall', width: 45, type: 'detail', filterable: true },
+      { id: 'orientation', label: 'Orientation', width: 45, type: 'detail', filterable: true },
+      { id: 'type', label: 'Type', width: 45, type: 'detail', filterable: true }, 
+      { id: 'trame', label: 'Trame', width: 120, type: 'name' , filterable: true },
+      { id: 'partie', label: 'Partie', width: 45, type: 'partie' }
+    ]
+  };
+
+  // Fonction globale de formatage de date (YYYY-MM-DD)
+  const toYMD = (d) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // =========================================================
+  // 2. INITIALIZATION & NAVIGATION UI
+  // =========================================================
+  const userBtn = document.getElementById('userMenuBtn');
+  const userMenu = document.getElementById('userMenu');
+  const navBtn = document.getElementById('navMenuBtn');
+  const navMenu = document.getElementById('navMenu');
+
+  if (userBtn) userBtn.onclick = (e) => { e.stopPropagation(); userMenu.classList.toggle('hidden'); navMenu.classList.add('hidden'); };
+  if (navBtn) navBtn.onclick = (e) => { e.stopPropagation(); navMenu.classList.toggle('hidden'); userMenu.classList.add('hidden'); };
+  document.onclick = (e) => {
+    if (userMenu && !userBtn.contains(e.target) && !userMenu.contains(e.target)) userMenu.classList.add('hidden');
+    if (navMenu && !navBtn.contains(e.target) && !navMenu.contains(e.target)) navMenu.classList.add('hidden');
+  };
+
+  // Sidebar State Management
+  const sidebar = document.getElementById('mainSidebar');
+  const toggleBtn = document.getElementById('toggleSidebar');
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      sidebar.classList.toggle('collapsed');
+      localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    };
+  }
+  if (localStorage.getItem('sidebarCollapsed') === 'true') sidebar?.classList.add('collapsed');
+
+  // =========================================================
+  // 3. ON LOAD
+  // =========================================================
+
+  window.onload = () => {
+
+    // 1. VERROUILLAGE IMMÉDIAT DE L'INTERFACE DÈS L'OUVERTURE
+    showLoading('Initialisation...', 'Chargement de l\'application en cours');
+
+    let initialView = currentView;
+    
+    // Sécurité : Si la valeur n'existe pas dans la config du planning, on force 'locataires'
+    if (!['locataires', 'communs', 'facades'].includes(initialView)) {
+        initialView = 'locataires';
+    }
+
+    window.currentView = initialView;
+    currentView = initialView; // Synchronisation avec la variable globale
+
+    // ========= USER / HEADER =========
+    const currentUser = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user : null;
+    if (!currentUser) {
+      window.top.location.replace(BASE_URL + "?page=login");
+      return;
+    }
+
+    // 2. Initialisation de l'interface et des données statiques
+    injectHeaderButtons();
+    if (!isClient) {
+      injectClientViewToggle();
+    }
+
+    safeSetText('u_name', currentUser.name);
+    safeSetText('u_role', currentUser.role);
+    safeSetText('u_initials', currentUser.name.substring(0,2).toUpperCase());
+    safeSetText('topProjectName', (typeof APP_DATA !== 'undefined' && APP_DATA.projectName) ? APP_DATA.projectName : "Projet");
+    safeSetText('pageMainTitle', "Planning de Chantier");
+    safeSetText('pageSubTitle', "Vue chronologique des interventions.");
+
+    if (canEdit) {
+      const deleteBtn = document.getElementById('deleteTasksBtn');
+      if (deleteBtn) {
+        deleteBtn.classList.remove('hidden');
+        deleteBtn.classList.add('flex');
+      }
+
+      const excelBtn = document.getElementById('excelBtn');
+      if (excelBtn) {
+        excelBtn.classList.remove('hidden');
+        excelBtn.classList.add('flex');
+      }
+
+      const ajouterTxt = document.getElementById('ajouter-text');
+      const ajouterMen = document.getElementById('ajouter-menu');
+      if (ajouterTxt) ajouterTxt.classList.remove('hidden');
+      if (ajouterMen) ajouterMen.classList.remove('hidden');
+    }
+
+    // Fetch tasks and bounds
+    google.script.run
+      .withSuccessHandler(startupData => {
+        window.currentTasksData = startupData.tasks;
+        if (typeof currentTasksData !== 'undefined') currentTasksData = startupData.tasks;
+        if (typeof currentDisciplines !== 'undefined') currentDisciplines = startupData.disciplines || [];
+        if (typeof currentCyclesData !== 'undefined') currentCyclesData = startupData.cycles || [];
+        if (typeof currentEquipes !== 'undefined') currentEquipes = startupData.equipes || [];
+
+        window.projectStart = new Date(startupData.bounds.start);
+        window.projectEnd   = new Date(startupData.bounds.end);
+
+        rebuildAddMenuFromCache();
+
+        // 4. Trigger the main planning load
+        switchView(window.currentView);
+      })
+      .withFailureHandler(err => {
+        console.error("❌ ERROR STARTUP:", err);
+    
+        showModal({
+          icon: 'error',
+          title: 'Impossible d\'initialiser l\'application',
+          text: err.message
+        });
+      })
+      .gsGetAppStartupData(APP_DATA.token);
+  };
+
+  // =========================================================
+  // 4. MOTEUR DE CHANGEMENT DE VUE
+  // =========================================================
+
+  function switchView(view) {
+    currentView = view;
+    window.currentView = view;
+    localStorage.setItem('currentView', view);
+
+    // Mise à jour silencieuse du paramètre dans l'URL du navigateur
+    if (window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('currentView', view);
+      window.history.replaceState({ path: url.href }, '', url.href);
+    }
+
+    // A. Mise à jour visuelle des onglets
+    ['locataires', 'communs', 'facades'].forEach(v => {
+      const btnId = `btnTab${v.substring(0, 3).charAt(0).toUpperCase() + v.substring(1, 3)}`; 
+      const btn = document.getElementById(btnId);
+      if(btn) {
+        btn.className = (v === view)
+          ? 'px-6 py-1.5 rounded-lg text-[11px] font-black transition-all bg-white shadow-sm text-primary'
+          : 'px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary';
+      }
+    });
+
+    // B. Reconstruction Automatique de l'Interface (Filtres & Menu)
+    buildDynamicUI();
+
+    // C. Chargement des données du backend pour la nouvelle vue
+    loadPlanningAroundDate(window.currentCenterDate || new Date());
+  }
+
+  function buildDynamicUI() {
+    const config = window.viewConfigs[window.currentView];
+
+    // 1. Génération des Filtres
+    let filterHtml = `<div class="flex gap-3 items-center">`;
+  
+    config.filter(c => c.filterable).forEach(c => {
+      // CORRECTION : L'id parent et l'id list sont générés proprement dans la div relative
+      filterHtml += `
+        <div class="relative" id="parent-${c.id}">
+          <button onclick="toggleFilterDropdown('list-${c.id}')" class="h-9 px-3 bg-white border border-slate-200 rounded-xl text-[10px] font-bold flex items-center gap-2 min-w-[70px] justify-between shadow-sm">
+            <span id="label-${c.id}">${c.label}</span>
+            <span class="material-symbols-outlined text-[16px]">expand_more</span>
+          </button>
+          <div id="list-${c.id}" class="hidden absolute top-11 left-0 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-[120] p-2 max-h-60 overflow-y-auto"></div>
+        </div>
+      `;
+    });
+
+    // Ajout du bouton réinitialiser à la fin de la liste des filtres
+    filterHtml += `
+        <button id="global-reset-btn" onclick="resetAllFilters()" 
+        class="hidden flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-[10px] font-black uppercase hover:bg-red-100 transition-colors ml-2">
+          <span class="material-symbols-outlined text-sm">filter_alt_off</span>
+          Réinitialiser
+        </button>               
+      </div>
+    `;
+
+    const filterContainer = document.getElementById('filterBarContainer');
+    if(filterContainer) filterContainer.innerHTML = filterHtml;
+
+    // 2. Génération du menu Affichage Détails
+    let detailsHtml = `
+      <div id="detailsMenu" class="hidden absolute left-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-slate-100 z-[200] p-1">
+        <div class="flex items-center justify-between p-2 border-b border-slate-50 mb-1 bg-slate-50/50 rounded-t-xl">
+          <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Affichage</p>
+            <div class="flex gap-2">
+              <button onclick="toggleAllDetails(true)" class="text-[9px] font-black text-primary hover:text-primary-dark uppercase">Tout voir</button>
+              <span class="text-slate-300 text-[9px]">|</span>
+              <button onclick="toggleAllDetails(false)" class="text-[9px] font-black text-red-500 hover:text-red-700 uppercase">Tout masquer</button>
+            </div>
+          </div>
+  
+          <div class="space-y-0.5 p-1">
+    `;
+  
+    config.filter(c => c.type === 'detail').forEach(c => {
+      detailsHtml += `
+        <label class="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-pointer text-xs font-bold text-slate-700 transition-colors">
+          <input type="checkbox" data-col="${c.id}" onchange="toggleColumn('${c.id}', this.checked)" class="rounded text-primary focus:ring-primary w-4 h-4 border-slate-300"> ${c.label}
+        </label>
+      `;
+    });
+
+    detailsHtml += `
+        </div>
+      </div>
+    `;
+
+    const detailsContainer = document.getElementById('detailsMenuContainer');
+    if(detailsContainer) detailsContainer.innerHTML = detailsHtml;
+  }
+
+  // FIX 2 & 6: rebuildAddMenuFromCache — builds the add-menu from local caches, no server call.
+  // Call this after any save instead of populateAddMenu().
+  function rebuildAddMenuFromCache() {
+    const selectTop = document.getElementById('add-component-select');
+    const selectSidebar = document.getElementById('add-component-select-sidebar');
+
+    const tasks  = (typeof currentTasksData !== 'undefined' && currentTasksData) ? currentTasksData : (window.currentTasksData || []);
+    const cycles = (typeof currentCyclesData !== 'undefined' && currentCyclesData) ? currentCyclesData : [];
+
+    let html = '<option value="" disabled selected>Choisir une tâche ou un cycle...</option>';
+
+    if (tasks && tasks.length > 0) {
+      const sorted = [...tasks].sort((a, b) => a.abbr.localeCompare(b.abbr));
+      html += '<optgroup label="─── TÂCHES INDIVIDUELLES ───">';
+      sorted.forEach(t => {
+        html += `<option value="TASK|${t.abbr}">${t.abbr} - ${t.descCourte || ''}</option>`;
+      });
+      html += '</optgroup>';
+    }
+
+    if (cycles && cycles.length > 0) {
+      const sorted = [...cycles].sort((a, b) => a.nom.localeCompare(b.nom));
+      html += '<optgroup label="─── CYCLES COMPLETS ───">';
+      sorted.forEach(c => {
+        html += `<option value="CYCLE|${c.nom}">${c.nom}</option>`;
+      });
+      html += '</optgroup>';
+    }
+
+    if (selectTop) selectTop.innerHTML = html;
+    if (selectSidebar) selectSidebar.innerHTML = html;
+  }
+
+  function populateAddMenu() {
+    const selectTop = document.getElementById('add-component-select');
+    const selectSidebar = document.getElementById('add-component-select-sidebar');
+    
+    if (selectTop) selectTop.innerHTML = '<option value="" disabled>Mise à jour...</option>';
+    if (selectSidebar) selectSidebar.innerHTML = '<option value="" disabled>Mise à jour...</option>';
+
+    google.script.run
+      .withSuccessHandler(data => {
+        let html = '<option value="" disabled selected>Choisir une tâche ou un cycle...</option>';
+  
+        if (data.tasks && data.tasks.length > 0) {
+          data.tasks.sort((a, b) => a.abbr.localeCompare(b.abbr));
+          html += '<optgroup label="─── TÂCHES INDIVIDUELLES ───">';
+          data.tasks.forEach(t => {
+            html += `<option value="TASK|${t.abbr}">${t.abbr} - ${t.descCourte || ''}</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        if (data.cycles && data.cycles.length > 0) {
+          data.cycles.sort((a, b) => a.nom.localeCompare(b.nom));
+          html += '<optgroup label="─── CYCLES COMPLETS ───">';
+          data.cycles.forEach(c => {
+            html += `<option value="CYCLE|${c.nom}">${c.nom}</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        if (selectTop) selectTop.innerHTML = html;
+        if (selectSidebar) selectSidebar.innerHTML = html;
+      })
+      .withFailureHandler(err => {
+        showModal({ icon: 'error', title: 'Erreur', text: err.message });
+      })
+      .gsGetComponentsForMenu(APP_DATA.token, APP_DATA.projectId);
+  }
+
+  function injectHeaderButtons() {
+    const actionArea = document.getElementById('headerActionArea');
+    if (!actionArea) return;
+
+    actionArea.innerHTML = `
+      <div class="flex items-center gap-3">
+        <div class="flex bg-slate-200/50 p-1 rounded-xl w-fit shadow-inner border border-slate-300/50">
+          <button onclick="switchView('locataires')" id="btnTabLoc" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all bg-white shadow-sm text-primary">LOCATAIRES</button>
+          <button onclick="switchView('communs')" id="btnTabCom" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">COMMUNS</button>
+          <button onclick="switchView('facades')" id="btnTabFac" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">FACADES</button>
+        </div>
+      </div>`;
+  }
+
+
+  // =========================================================
+  // 5. CHARGEMENT AUTOUR D'UNE DATE (-10j / +40j) AVEC LIMITES
+  // =========================================================
+
+  function loadPlanningAroundDate(targetDate) {
+
+    // Show Loading Message
+    showLoading('Chargement...', 'Récupération des données du planning');
+
+    targetDate.setHours(0,0,0,0);
+    window.currentCenterDate = new Date(targetDate);
+  
+    // Fenêtre demandée : -10 jours et +40 jours (Total 50 jours)
+    let start = new Date(targetDate); start.setDate(start.getDate() - 10);
+    let end = new Date(targetDate);   end.setDate(end.getDate() + 40);
+
+    // --- LIMITATION AUX BORNES DU PROJET (CLAMP) ---
+    if (window.projectStart && window.projectEnd) {
+      if (start < window.projectStart) {
+          start = new Date(window.projectStart);
+          end = new Date(start);
+          end.setDate(end.getDate() + 50); // Garde la fenêtre de 50 jours
+      }
+      if (end > window.projectEnd) {
+          end = new Date(window.projectEnd);
+          start = new Date(end);
+          start.setDate(start.getDate() - 50); // Garde la fenêtre de 50 jours
+      }
+    }
+
+    // UI Feedback
+    document.getElementById('current-view-label').textContent = 
+      targetDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
+    google.script.run
+      .withSuccessHandler(data => {
+        window.lastPlanningData = data;
+        window.loadedStartDate = start;
+        window.loadedEndDate = end;
+      
+        renderPlanningHeader(data.headers);
+        renderPlanningRows(data);
+        updateTimelineUI();
+
+        Swal.close();
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Impossible de charger les données',
+          text: err.message
+        });
+        appErrorLog(err, "loadPlanningAroundDate", {
+          targetDate: (targetDate instanceof Date) ? targetDate.toISOString().split('T')[0] : targetDate,
+          calculatedStart: (start instanceof Date) ? start.toISOString().split('T')[0] : start,
+          calculatedEnd: (end instanceof Date) ? end.toISOString().split('T')[0] : end,
+          view: window.currentView,
+          batimentFilter: window.currentFilter || "Aucun",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetPlanningWindow(APP_DATA.token, APP_DATA.projectId, toYMD(start), toYMD(end), window.currentView || 'locataires', window.currentFilter || "", isClient);
+  }
+
+  //MISE À JOUR VISUELLE DE LA BARRE ET ANNOTATION DES MOIS
+  function updateTimelineUI() {
+    if (!window.projectStart || !window.projectEnd) return;
+    const total = window.projectEnd - window.projectStart;
+  
+    // Position Fenêtre Bleue
+    const left = ((window.loadedStartDate - window.projectStart) / total) * 100;
+    const width = ((window.loadedEndDate - window.loadedStartDate) / total) * 100;
+  
+    const winEl = document.getElementById('timeline-window');
+    winEl.style.left = Math.max(0, left) + "%";
+    winEl.style.width = width + "%";
+
+    // Position Aujourd'hui (Ligne Rouge)
+    const todayPos = ((new Date().setHours(0,0,0,0) - window.projectStart) / total) * 100;
+    document.getElementById('timeline-today').style.left = todayPos + "%";
+
+    // --- ANNOTATION DES MOIS SUR LA TIMELINE ---
+    const container = document.getElementById('timeline-container');
+  
+    // On ne dessine les mois qu'une seule fois pour ne pas surcharger le navigateur
+    if (!container.dataset.monthsDrawn) {
+      let current = new Date(window.projectStart);
+      current.setDate(1); // On se place au 1er du mois
+      if (current < window.projectStart) current.setMonth(current.getMonth() + 1);
+
+      while (current <= window.projectEnd) {
+        const posPct = ((current - window.projectStart) / total) * 100;
+          
+        // Petit trait séparateur
+        const tick = document.createElement('div');
+        tick.className = 'absolute top-0 bottom-0 w-px bg-slate-200 z-0 pointer-events-none';
+        tick.style.left = posPct + '%';
+        container.appendChild(tick);
+
+        // Texte du mois (ex: "janv.", "févr.")
+        const label = document.createElement('div');
+        label.className = 'absolute top-0 bottom-0 flex items-center text-[9px] font-bold text-slate-400/80 z-0 pointer-events-none select-none uppercase tracking-widest';
+        label.style.left = `calc(${posPct}% + 4px)`; // Décalé de 4px à droite du trait
+        label.textContent = current.toLocaleDateString('fr-FR', { month: 'short' });
+        container.appendChild(label);
+
+        current.setMonth(current.getMonth() + 1); // Mois suivant
+      }
+      container.dataset.monthsDrawn = "true"; // Marqueur pour ne pas les redessiner
+    }
+  }
+
+  // =========================================================
+  // 6. RENDER THE 3-TIER DYNAMIC HEADER
+  // =========================================================
+
+  function renderPlanningHeader(headers) {
+    const thead = document.querySelector(".gantt-table thead");
+    thead.innerHTML = "";
+    const { workingDays, months, weeks, weekdays, quant, dates } = headers;
+    const config = window.viewConfigs[window.currentView]; // Récupère la config active
+
+    // --- Lignes 1 & 2 (Mois & Semaines) ---
+    function buildMergedRow(values, className, topOffset, title) {
+      const colCount = getVisibleLeftColsCount();
+      let html = `<tr class="${className} border-b border-slate-400" style="height: 20px;">`;
+      // Use the dynamic count of visible columns for colspan
+      html += `<th colspan="${colCount}" class="js-header-label sticky-col bg-slate-50 text-[10px] font-black text-primary px-4 text-left uppercase border-b border-slate-400" 
+               style="position: sticky; top: ${topOffset}px; left: 0; z-index: 90;">${title}</th>`;
+
+      let spanStart = 0;
+      for (let i = 0; i < dates.length; i++) {
+        if (values[i] !== values[i + 1]) {
+          const span = i - spanStart + 1;
+          html += `<th class="cell-day bg-white border-r border-b border-slate-400 text-center text-[10px]" colspan="${span}" 
+                     style="position: sticky; top: ${topOffset}px; z-index: 50;">${values[i]}</th>`;
+          spanStart = i + 1;
+        }
+      }
+      return html + `</tr>`;
+    }
+
+    // --- Ligne 3 (Jours & Titres Colonnes) ---
+    // FIX 3: row3 is built first so we can assign all rows to thead.innerHTML in one shot below.
+    let row3 = `<tr class="bg-white shadow-sm border-t border-slate-400" style="height: 40px;">`;
+  
+    // Génération dynamique des colonnes de gauche selon la vue 
+    config.forEach(col => {
+      const isNameCol = (col.type === 'name');
+      const isDetail = (col.type === 'detail');
+      const stickyClass = isNameCol ? 'sticky-name border-r' : (col.id === 'id' ? 'sticky-id' : `col-${col.id}`);
+      const display = isDetail ? 'display:none;' : ''; // Les détails sont masqués par défaut [cite: 3]
+    
+      row3 += `<th onclick="setSort('${col.id}')" 
+                 class="sticky-col ${stickyClass} ${isDetail ? 'detail-node' : ''} border-b border-slate-400 text-[10px] font-black uppercase text-slate-400 cursor-pointer hover:bg-slate-50" 
+                 style="position: sticky; top: 40px; z-index: 80; background:white; ${display}">
+                 ${col.label}
+             </th>`;
+    });
+
+    // Colonnes Dates
+    const todayLocalStr = new Date().toLocaleDateString('fr-CA');
+    dates.forEach((d, i) => {
+      const isToday = d === todayLocalStr;
+      const isNonWorking = (String(workingDays[i]).trim() === "0");
+      
+      // Identify weekends safely (supports French abbreviations like 'sa', 'di', 'sam', 'dim')
+      const isWeekend = ['sa', 'di', 'sam', 'dim'].some(w => String(weekdays[i]).toLowerCase().startsWith(w));
+      
+      // Inject double-click event and cursor pointer if it's a weekend
+      const toggleEvent = isWeekend ? `ondblclick="promptToggleWorkingDay('${d}', ${isNonWorking})"` : '';
+      const interactiveCls = (isWeekend && canEdit) ? 'cursor-pointer hover:opacity-80' : '';
+
+      const cls = `cell-day text-[10px] font-bold border-b border-slate-400 
+                ${isToday ? 'bg-today-header text-white is-today-column' : 'bg-white'} 
+                ${!isToday && isNonWorking ? 'bg-non-working text-slate-400' : ''} ${interactiveCls}`;
+    
+      row3 += `<th class="${cls}" data-date="${d}" ${toggleEvent} title="${isWeekend && canEdit ? 'Double-cliquer pour modifier le statut (ouvré/chômé)' : ''}" style="position: sticky; top: 40px; z-index: 50;">
+                <span class="uppercase opacity-50 text-[8px]">${weekdays[i]}</span><br>${quant[i]}
+             </th>`;
+    });
+
+    // FIX 3: Single innerHTML assignment — avoids 3x serialize+parse that innerHTML += causes.
+    thead.innerHTML = buildMergedRow(months, "text-slate-500 font-bold", 0, "Mois")
+                    + buildMergedRow(weeks, "text-slate-400 font-medium", 20, "Semaines")
+                    + row3 + `</tr>`;
+
+    syncHeaderWithCheckboxes();
+    updateStickyOffsets();
+  }
+
+  //Ensures Row 3 and Body cells match the checkboxes
+  function syncHeaderWithCheckboxes() {
+    const config = window.viewConfigs[window.currentView];
+    config.filter(c => c.type === 'detail').forEach(col => {
+      const cb = document.querySelector(`#detailsMenu input[data-col="${col.id}"]`);
+      const isVisible = cb ? cb.checked : false;
+      document.querySelectorAll(`.col-${col.id}`).forEach(c => c.style.display = isVisible ? 'table-cell' : 'none');
+    });
+  }
+
+  // Calcule les largeurs "sticky" dynamiquement
+  function updateStickyOffsets() {
+    const config = window.viewConfigs[window.currentView];
+    const idCol = config.find(c => c.type === 'id');
+    let currentOffset = idCol ? idCol.width : 120; // Démarre après l'ID
+
+    config.filter(c => c.type === 'detail').forEach(col => {
+      const cells = document.querySelectorAll(`.col-${col.id}`);
+      if (cells.length > 0 && cells[0].style.display !== 'none') {
+        cells.forEach(c => { c.style.left = currentOffset + 'px'; });
+        currentOffset += col.width;
+      }
+    });
+
+    // Pousse la colonne Nom/Description/Trame au bon endroit
+    document.querySelectorAll('.sticky-name').forEach(cell => {
+      cell.style.left = currentOffset + 'px';
+    });
+
+    const newColSpan = getVisibleLeftColsCount();
+    document.querySelectorAll('.js-header-label').forEach(headerCell => {
+      headerCell.setAttribute('colspan', newColSpan);
+    });
+  }
+
+  function setSort(col) {
+    if (window.currentSortCol === col) {
+        window.currentSortDir = window.currentSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        window.currentSortCol = col;
+        window.currentSortDir = 'asc';
+    }
+    
+    if (window.lastPlanningData) {
+        renderPlanningRows(window.lastPlanningData);
+    }
+    
+    updateSortArrows();
+  }
+
+  function updateSortArrows() {
+    document.querySelectorAll('.sort-arrow').forEach(el => el.remove());
+    
+    const ths = document.querySelectorAll(".gantt-table thead tr:last-child th");
+    ths.forEach(th => {
+        const onClickAttr = th.getAttribute('onclick') || "";
+        if (onClickAttr.includes(`'${window.currentSortCol}'`)) {
+            const arrow = document.createElement('span');
+            arrow.className = 'sort-arrow material-symbols-outlined text-[14px] align-middle ml-1 text-primary';
+            arrow.textContent = window.currentSortDir === 'asc' ? 'arrow_upward' : 'arrow_downward';
+            th.appendChild(arrow);
+        }
+    });
+  }
+
+  function getVisibleLeftColsCount() {
+    const config = window.viewConfigs[window.currentView];
+    // On compte l'ID + le Nom (toujours présents) + les détails dont la case est cochée
+    return config.filter(col => {
+      if (col.type === 'id' || col.type === 'name') return true;
+      if (col.type === 'detail') {
+        const cb = document.querySelector(`#detailsMenu input[data-col="${col.id}"]`);
+        return cb ? cb.checked : false;
+      }
+      return false;
+    }).length;
+  }
+
+  // =========================================================
+  // 7. DYNAMIC ROW RENDER (Planning Body)
+  // =========================================================
+
+  function renderPlanningRows(data) {
+    initFilters(data);
+    const tbody = document.querySelector(".gantt-table tbody");
+    tbody.innerHTML = "";
+
+    const planning = data.planning || [];
+    const logements = data.logements || {};
+    const dates = data.headers?.dates || [];
+    const workingDays = data.headers?.workingDays || [];
+    const repairs = data.repairs || {};
+    const notes = data.notes || {};
+    
+    const config = window.viewConfigs[window.currentView];
+    let rows = planning.map(p => ({ ...p, meta: logements[p.id] || {} }));
+  
+    const sortCol = window.currentSortCol;
+    const sortDir = window.currentSortDir === 'asc' ? 1 : -1;
+
+    // --- 1. CALCUL DES COMPTEURS ---
+    const groupCounts = {};
+    rows.forEach(row => {
+        let val;
+        if (['id', 'batiment', 'hall', 'porte'].includes(sortCol)) {
+            const bat = row.meta.batiment ? `Bâtiment ${row.meta.batiment}` : "";
+            const hall = row.meta.hall ? ` - Hall ${row.meta.hall}` : "";
+            val = `${bat}${hall}`;
+        } else {
+            // Logique spécifique : Autorise 0 seulement pour 'etage'
+            let rawVal = row.meta[sortCol];
+            if ((rawVal !== undefined && rawVal !== null && rawVal !== "") || (rawVal === 0 && sortCol === 'etage')) {
+                val = rawVal;
+            } else {
+                val = "Non défini";
+            }
+            
+            if (sortCol === 'type' && window.currentView === 'locataires' && val !== "Non défini") val = "L" + val;
+            if ((sortCol === 'description' || sortCol === 'trame') && val !== "Non défini") {
+                val = String(val).split(' - ')[0].trim();
+            }
+        }
+        groupCounts[val] = (groupCounts[val] || 0) + 1;
+    });
+    
+    // --- Tri dynamique (Inchangé) ---
+    rows.sort((a, b) => {
+      let valA = (a.meta[sortCol] !== undefined) ? a.meta[sortCol] : (a[sortCol] || "");
+      let valB = (b.meta[sortCol] !== undefined) ? b.meta[sortCol] : (b[sortCol] || "");
+      if (sortCol === 'nom' && window.currentView === 'locataires') {
+        valA = `${a.meta.nom || ""} ${a.meta.prenom || ""}`.trim();
+        valB = `${b.meta.nom || ""} ${b.meta.prenom || ""}`.trim();
+      }
+      const numA = parseFloat(valA); const numB = parseFloat(valB);
+      if (!isNaN(numA) && !isNaN(numB) && valA == numA && valB == numB) return (numA - numB) * sortDir;
+      return String(valA).localeCompare(String(valB), undefined, { numeric: true }) * sortDir;
+    });
+
+    // FIX 1: Compute todayIndex once here, outside the render loop.
+    // Previously this was recomputed (findIndex + two Date allocations) for every row.
+    const todayLocalStrForRows = new Date().toLocaleDateString('fr-CA');
+    const todayIndex = data.headers.dates.findIndex(d => d === todayLocalStrForRows);
+
+    let index = 0; let lastGroup = null;
+
+    function renderChunk() {
+      const end = Math.min(index + 20, rows.length);
+      for (let i = index; i < end; i++) {
+        const row = rows[i];
+        let currentGroup = "";
+
+        if (sortCol === 'nom') {
+          currentGroup = null;
+        } else if (['id', 'batiment', 'hall', 'porte'].includes(sortCol)) {
+          const bat = row.meta.batiment ? `Bâtiment ${row.meta.batiment}` : "";
+          const hall = row.meta.hall ? ` - Hall ${row.meta.hall}` : "";
+          const groupKey = `${bat}${hall}`;
+          const count = groupCounts[groupKey] || 0;
+          currentGroup = `${groupKey} (${count})`;
+        } else {
+          const labels = { 'etage': 'Étage', 'empilement': 'Empilement', 'type': 'Type', 'config': 'Configuration', 'description': 'Description', 'orientation': 'Orientation', 'trame': 'Trame'};
+          const label = labels[sortCol] || sortCol.toUpperCase();
+          
+          // --- 2. AFFICHAGE DU SOUS-TITRE ---
+          let rawVal = row.meta[sortCol];
+          let val;
+          
+          // Autorise le 0 pour 'etage'
+          if ((rawVal !== undefined && rawVal !== null && rawVal !== "") || (rawVal === 0 && sortCol === 'etage')) {
+            val = rawVal;
+          } else {
+            val = "Non défini";
+          }
+          
+          if (sortCol === 'type' && window.currentView === 'locataires' && val !== "Non défini") val = "L" + val;
+          if ((sortCol === 'description' || sortCol === 'trame') && val !== "Non défini") {
+              val = String(val).split(' - ')[0].trim(); 
+          }
+
+          const count = groupCounts[val] || 0;
+          currentGroup = `${label} : ${val} (${count})`;
+        }
+
+        // Rendu du sous-titre et de la ligne
+        if (currentGroup && currentGroup !== lastGroup) {
+          const subTr = document.createElement("tr");
+          subTr.className = "group-row sticky z-[60] bg-indigo-50/90 backdrop-blur-sm";
+          subTr.style.top = "80px"; 
+          let icon = (sortCol === 'etage') ? 'layers' : (['id', 'batiment', 'hall'].includes(sortCol) ? 'domain' : 'reorder');
+          subTr.innerHTML = `<td colspan="${config.length + dates.length}" class="p-0 border-y border-indigo-100 shadow-sm"><div class="sticky-subtitle-content px-4 py-2"><div class="flex items-center text-[10px] font-black text-indigo-600 tracking-widest uppercase"><span class="material-symbols-outlined !text-[14px] mr-2">${icon}</span>${currentGroup}</div></div></td>`;
+          tbody.appendChild(subTr);
+          lastGroup = currentGroup;
+        }
+
+        const trElement = buildRowElement(row, dates, repairs, notes, todayIndex, workingDays, config);
+        tbody.appendChild(trElement);
+      }
+
+      index = end;
+      if (index < rows.length) {
+        requestAnimationFrame(renderChunk);
+      } else {
+        if (typeof applyMultiFilters === "function") applyMultiFilters();
+        if (typeof updateStickyOffsets === "function") updateStickyOffsets();
+        setTimeout(applyTargetIdHighlight, 200);
+        
+        // --- HIGHLIGHT SELECTION ---
+        if (window.isEditModeActive && window.currentSelectionId) {
+          let target = null;
+          const parts = window.currentSelectionId.split('|');
+          
+          if (parts[0] === 'task') {
+            const logId = parts[1];
+            const taskAbbr = parts[2];
+            const taskDate = parts[3];
+
+            if (taskDate) {
+              // Cherche la cellule TD de la date précise, puis la pastille à l'intérieur
+              const td = document.querySelector(`tr[data-id="${logId}"] td[data-date="${taskDate}"]`);
+              if (td) target = td.querySelector(`.task-pill[data-task="${taskAbbr}"]`);
+            }
+            
+            // Fallback de sécurité (au cas où la date est introuvable)
+            if (!target) {
+              target = document.querySelector(`.task-pill[data-logid="${logId}"][data-task="${taskAbbr}"]`);
+            }
+          } else if (parts[0] === 'dot') {
+            target = document.querySelector(`.task-pill[data-logid="${parts[1]}"][data-task="${parts[2]}"]`);
+          } else if (parts[0] === 'dot') {
+            target = document.querySelector(`.greedy-dot[data-inter-id="${parts[1]}"]`);
+          } else if (parts[0] === 'id') {
+            // CORRECTION : On cherche la ligne par son attribut data-id, puis on cible .sticky-id
+            const targetRow = document.querySelector(`tr.planning-row[data-id="${parts[1]}"]`);
+            if (targetRow) {
+              target = targetRow.querySelector('.sticky-id');
+            }
+          }
+
+          if (target) {
+            // Apply base highlight
+            target.classList.add('active-edit-item');
+            
+            // Apply correct z-index modifier based on the stored selection type
+            if (parts[0] === 'id') {
+              target.classList.add('active-edit-sticky');
+            } else {
+              target.classList.add('active-edit-grid');
+            }
+          }
+        }
+      }
+    }
+    requestAnimationFrame(renderChunk);
+  }
+
+  function buildRowElement(row, dates, repairs, notes,  todayIndex, workingDays, config) {
+  const tr = document.createElement("tr");
+  tr.className = "hover:bg-slate-50 transition-colors min-h-[56px] planning-row";
+  tr.setAttribute('data-id', row.id);
+
+  // FIX: Pre-build a Map for O(1) task colour lookups — replaces per-pill linear scan
+  // of window.currentTasksData inside the cell loop (was O(n) per pill per render).
+  const taskColorMap = new Map(
+    (window.currentTasksData || []).map(t => [t.abbr.toUpperCase(), t.bgColor || t.color || '#0d59f2'])
+  );
+
+  // FIX 7: Use a DocumentFragment to batch all cell appends off-DOM,
+  // avoiding layout recalculation on each individual appendChild.
+  const frag = document.createDocumentFragment();
+  config.forEach(col => {
+    let val = row.meta[col.id];
+    if (!val && !(val === 0 && col.id === 'etage')) {
+      val = "";
+    }
+    
+    let filterVal = val;
+    if (window.currentView === 'facades' && col.id === 'trame') {
+      filterVal = row.meta.trame_part1 || "";
+    } else if (window.currentView === 'communs' && col.id === 'description') {
+      filterVal = row.meta.description_part1 || "";
+    }
+  
+    let rawFilterVal = (filterVal === "" || filterVal === null) ? "MOD_EMPTY_VAL" : String(filterVal);
+    tr.setAttribute(`data-${col.id}`, rawFilterVal);
+
+    if (col.type === 'id') {
+      // 1. DÉFINIR LA COULEUR DE FOND
+      let statusBg = 'bg-white';
+      if (row.status === 'Info') statusBg = 'bg-blue-50';
+      if (row.status === 'Attention') statusBg = 'bg-orange-50';
+      if (row.status === 'Bloqué') statusBg = 'bg-red-50';
+      if (row.status === 'Bloquant') statusBg = 'bg-red-50';
+
+      // 2. CRÉER LE TOOLTIP (BULLE AU SURVOL)
+      let tooltip = `Statut : ${row.status || 'Aucun'}`;
+      let rowNotes = { pub: "", priv: "" };
+      try { if (row.comment) rowNotes = JSON.parse(row.comment); } catch(e) {}
+      
+      if (rowNotes.pub) tooltip += `\nNote : ${rowNotes.pub}`;
+      // Si ce n'est pas un client et qu'on n'est pas en vue client, on montre la note privée
+      if (!isClient && !window.isClientViewActive && rowNotes.priv) {
+         tooltip += `\nPrivée : ${rowNotes.priv}`;
+      }
+
+      // 3. DÉFINIR LA COULEUR DE LA BARRE (status-line)
+      let barColor = 'bg-transparent';
+      if (row.status === 'Bloquant') barColor = 'bg-red-500';
+      else if (row.status === 'Bloqué') barColor = 'bg-red-300';
+      else if (row.status === 'Attention') barColor = 'bg-orange-400';
+      else if (row.status === 'Info') barColor = 'bg-blue-500';
+
+      const tdId = document.createElement("td");
+      tdId.style.width = `${col.width}px`; tdId.style.minWidth = `${col.width}px`;
+      tdId.className = `sticky-col sticky-id text-center text-[11px] font-black text-slate-700 ${statusBg} border-y border-slate-100 cursor-help`;
+      tdId.title = tooltip;
+      tdId.innerHTML = `<div class="status-line ${barColor} w-1 h-full absolute left-0 top-0"></div> ${row.id}`;
+      tdId.setAttribute('ondblclick', `openNavModal('${row.id}')`);
+      frag.appendChild(tdId);
+    } 
+    else if (col.type === 'detail') {
+      if (col.id === 'type' && val && window.currentView === 'locataires') val = "L" + val;
+      const td = document.createElement("td");
+      td.style.width = `${col.width}px`; td.style.minWidth = `${col.width}px`;
+      td.className = `sticky-col col-${col.id} detail-node text-center text-[11px] font-medium text-slate-500 bg-white border-r border-b border-slate-100`;
+      const cb = document.querySelector(`input[data-col="${col.id}"]`);
+      td.style.display = (cb && cb.checked) ? 'table-cell' : 'none';
+      td.textContent = (val !== undefined && val !== null && val !== "") ? val : "—";
+      td.setAttribute('ondblclick', `openNavModal('${row.id}')`);
+      frag.appendChild(td);
+    } 
+    else if (col.type === 'name') {
+      const tdName = document.createElement("td");
+      tdName.style.width = `${col.width}px`; tdName.style.minWidth = `${col.width}px`;
+      tdName.className = "sticky-col sticky-name pl-4 text-xs font-bold text-slate-700 bg-white border-y border-y-slate-100 border-r-2 border-r-slate-400 truncate";
+      if (col.id === 'nom' && window.currentView === 'locataires') {
+          val = `${row.meta.nom || ""} ${row.meta.prenom || ""}`.trim();
+      }
+      tdName.textContent = val || "—";
+      tdName.setAttribute('ondblclick', `openNavModal('${row.id}')`);
+      frag.appendChild(tdName);
+    }
+  });   
+
+  // --- 2. ADVANCED LANE CALCULATION ---
+  const totalDays = dates.length;
+  const intervals = [];
+  const allAbbrs = new Set();
+
+  // Check for dots
+  const hasRepairs = repairs[row.id] && Object.keys(repairs[row.id]).length > 0;
+  const hasNotes = notes[row.id] && Object.keys(notes[row.id]).length > 0;
+  const hasAnyDots = hasRepairs || hasNotes;
+
+  row.tasks.forEach(cell => {
+    if (cell) String(cell).split("|").forEach(t => { 
+      if(t.trim()) allAbbrs.add(t.split('@')[0].trim()); 
+    });
+  });
+
+  allAbbrs.forEach(abbr => {
+    let currentStart = -1;
+    let lastSeenAt = -1;
+    for (let d = 0; d < totalDays; d++) {
+      const dayTasks = row.tasks[d] ? String(row.tasks[d]).split("|").map(t => t.split('@')[0].trim()) : [];
+      const hasTask = dayTasks.includes(abbr);
+      const isWorking = workingDays[d] === 1;
+
+      if (hasTask) {
+        if (currentStart === -1) currentStart = d;
+        lastSeenAt = d;
+      } else if (isWorking && currentStart !== -1) {
+        intervals.push({ abbr, start: currentStart, end: lastSeenAt });
+        currentStart = -1;
+        lastSeenAt = -1;
+      }
+    }
+    if (currentStart !== -1) intervals.push({ abbr, start: currentStart, end: lastSeenAt });
+  });
+
+  const laneMap = []; 
+  
+  // Hard-reserve Lane 0 for dots so tasks start at Lane 1
+  if (hasAnyDots) {
+    laneMap[0] = new Array(totalDays).fill("RESERVED_FOR_DOTS");
+  }
+
+  intervals.sort((a, b) => a.start - b.start);
+  intervals.forEach(interval => {
+    let assignedLane = -1;
+    for (let l = 0; l < laneMap.length; l++) {
+      let isFree = true;
+      for (let d = interval.start; d <= interval.end; d++) {
+        if (laneMap[l][d]) { isFree = false; break; }
+      }
+      if (isFree) { assignedLane = l; break; }
+    }
+    if (assignedLane === -1) {
+      assignedLane = laneMap.length;
+      laneMap[assignedLane] = new Array(totalDays).fill(null);
+    }
+    for (let d = interval.start; d <= interval.end; d++) {
+      laneMap[assignedLane][d] = interval.abbr;
+    }
+  });
+
+  const numLanes = Math.max(laneMap.length, 1);
+
+  // --- 3. GANTT CELLS RENDERING ---
+  for (let c = 0; c < totalDays; c++) {
+    const td = document.createElement("td");
+    const isToday = (c === todayIndex);
+    const isNonWorking = (String(workingDays[c]).trim() === "0");
+    const dateISO = dates[c] ? String(dates[c]).substring(0, 10) : "";
+
+    const todayClass = isToday ? "is-today-column" : "";
+    const nonWorkingClass = isNonWorking ? "bg-non-working" : "";
+
+    td.setAttribute('data-date', dateISO);
+    td.setAttribute('data-working', isNonWorking ? "0" : "1");
+    ///////////////////////////////td.className = `cell-day border-r border-b border-slate-100 ${isToday ? "is-today-column" : ""} ${isNonWorking ? "bg-non-working" : ""}`;
+    td.className = `cell-day border-r border-b border-slate-100 ${todayClass} ${nonWorkingClass}`;
+    td.style.verticalAlign = "top";
+    td.style.paddingTop = "2px"; // Tighten padding
+
+    // 3a. DEDICATED DOTS LANE RENDER (First thing in the cell)
+      if (hasAnyDots) {
+        const dotsLane = document.createElement("div");
+        dotsLane.className = "h-[10px] flex items-center justify-start gap-1 px-1 mb-1";
+
+        const items = repairs[row.id]?.[dateISO] || [];
+        if (items.length > 0) {
+          const hasReserve = items.some(i => i.startsWith('R-'));
+          const hasAuto = !window.isClientViewActive && items.some(i => i.startsWith('A-'));
+
+          if (hasReserve) {
+            const dotR = document.createElement("div");
+            dotR.className = "greedy-dot rounded-full bg-red-500";
+            dotR.title = "Réserves :\n" + items.filter(i => i.startsWith('R-')).join('\n');
+            dotR.setAttribute('data-inter-id', items.find(i => i.startsWith('R-')));
+            dotsLane.appendChild(dotR);
+          }
+          if (hasAuto && !isClient) {
+            const dotA = document.createElement("div");
+            dotA.className = "greedy-dot rounded-full bg-blue-500";
+            dotA.title = "Autocontrôles :\n" + items.filter(i => i.startsWith('A-')).join('\n');
+            dotA.setAttribute('data-inter-id', items.find(i => i.startsWith('A-')));
+            dotsLane.appendChild(dotA);
+          }
+        }
+
+        // --- NOTES LOGIC ---
+        if (hasNotes) {
+          const rawDayTasks = row.tasks[c] ? String(row.tasks[c]).split("|").map(t => t.split('@')[0].trim()) : [];
+          let dayNotes = [];
+          
+          rawDayTasks.forEach(abbr => {
+            const rawNoteStr = notes[row.id][abbr];
+            if (rawNoteStr) {
+              let parsedNote = { pub: "", priv: "" };
+              
+              // 1. Safely parse the JSON string
+              try {
+                parsedNote = JSON.parse(rawNoteStr);
+                // Handle variations of the private note key (priv or int)
+                if (parsedNote.int && !parsedNote.priv) parsedNote.priv = parsedNote.int;
+              } catch (e) {
+                // Fallback if the note was saved as plain text before the JSON update
+                parsedNote.pub = rawNoteStr;
+              }
+
+              let noteLines = [];
+              
+              // 2. Public Notes (Always visible like Reserves)
+              if (parsedNote.pub && parsedNote.pub.trim() !== "") {
+                noteLines.push(`Note : ${parsedNote.pub}`);
+              }
+              
+              // 3. Private Notes (Visible only if not a client AND client view is inactive, like Autocontroles)
+              const showPrivate = !isClient && !window.isClientViewActive;
+              if (showPrivate && parsedNote.priv && parsedNote.priv.trim() !== "") {
+                noteLines.push(`Note Privée : ${parsedNote.priv}`);
+              }
+
+              // 4. If we have something to show, format it for the tooltip
+              if (noteLines.length > 0) {
+                dayNotes.push(`${abbr} -> ` + noteLines.join(' | '));
+              }
+            }
+          });
+
+          // Only render the green dot if there are actual notes to display based on the user's role
+          if (dayNotes.length > 0) {
+            const dotN = document.createElement("div");
+            dotN.className = "w-2.5 h-2.5 rounded-full bg-green-400 border border-white shadow-sm cursor-help";
+            dotN.title = "Notes :\n" + dayNotes.join('\n');
+            dotsLane.appendChild(dotN);
+          }
+        }
+
+        td.appendChild(dotsLane);
+      }
+
+    // 3b. TASK LANES RENDER
+    for (let l = 0; l < numLanes; l++) {
+      // Skip the first iteration if it was reserved for dots
+      if (hasAnyDots && l === 0) continue;
+
+      const abbrInLane = (laneMap[l] && laneMap[l][c]) ? laneMap[l][c] : null;
+      const rawDayTasks = row.tasks[c] ? String(row.tasks[c]).split("|").map(t => t.trim()) : [];
+      const actualTaskStr = rawDayTasks.find(t => t.split('@')[0] === abbrInLane);
+
+      if (abbrInLane && actualTaskStr) {
+        const pill = document.createElement("div");
+        pill.setAttribute('data-logid', row.id);
+        pill.setAttribute('data-task', abbrInLane);
+
+        let parts = actualTaskStr.split('@');
+        let timeMod = (parts.length > 1 && (parts[1] === 'AM' || parts[1] === 'PM')) ? parts[1] : null;
+
+        // Extraction dynamique du statut pour le DOM
+        let taskStatus = "";
+        let idx = 1;
+        if (parts.length > idx && (parts[idx] === 'AM' || parts[idx] === 'PM')) idx++;
+        if (parts.length > idx) taskStatus = parts[idx];
+
+        if (taskStatus) {
+            pill.setAttribute('data-status', taskStatus);
+        }
+
+        const hasPrev = (c > 0 && laneMap[l][c-1] === abbrInLane && (row.tasks[c-1]||"").includes(abbrInLane));
+        const hasNext = (c < totalDays - 1 && laneMap[l][c+1] === abbrInLane && (row.tasks[c+1]||"").includes(abbrInLane));
+
+        let shape = "pill-single";
+        if (hasPrev && hasNext) shape = "pill-mid";
+        else if (hasPrev) shape = "pill-end";
+        else if (hasNext) shape = "pill-start";
+
+        pill.className = `task-pill ${shape}`;
+        if (timeMod === 'AM') pill.classList.add('task-am');
+        if (timeMod === 'PM') pill.classList.add('task-pm');
+        pill.textContent = abbrInLane;
+      
+        let bgColor = taskColorMap.get(abbrInLane.toUpperCase()) || '#0d59f2';
+        pill.style.setProperty('--task-color', bgColor);
+        if (!timeMod) pill.style.backgroundColor = bgColor;
+        td.appendChild(pill);
+      }
+    }
+    frag.appendChild(td);
+  }
+
+  // FIX 7: Flush the fragment — one single DOM write for all cells.
+  tr.appendChild(frag);
+  return tr;
+}
+
+  // =========================================================
+  // 8. LOAD PROJECT SETTINGS
+  // =========================================================
+
+  function toggleDropdown(id) {
+    const el = document.getElementById(id);
+    el.classList.toggle('hidden');
+    const closeHandler = (e) => {
+      if (!el.contains(e.target) && !e.target.closest('button')) {
+        el.classList.add('hidden');
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler), 10);
+  }
+
+  function toggleColumn(colName, isVisible) {
+    // Select both TH and TD elements
+    const cells = document.querySelectorAll(`.col-${colName}`);
+    cells.forEach(cell => {
+      // We use 'table-cell' to ensure it pushes the neighboring data
+      cell.style.display = isVisible ? 'table-cell' : 'none';
+    });
+
+    updateStickyOffsets();
+  }
+
+  // Add the Show All / Hide All logic
+  function toggleAllDetails(show) {
+    const checkboxes = document.querySelectorAll('#detailsMenu input[type="checkbox"]');
+    checkboxes.forEach(cb => {
+      cb.checked = show;
+      const colName = cb.getAttribute('data-col');
+      toggleColumn(colName, show);
+    });
+  }
+
+  // SMOOTH FULL ZOOM
+  function updateZoom(delta) {
+    currentScale = Math.min(Math.max(0.8, currentScale + delta), 1.6);
+    const target = document.getElementById('zoom-target');
+    target.style.zoom = currentScale;
+    document.getElementById('zoomPercent').innerText = Math.round(currentScale * 100) + '%';
+    target.style.marginBottom = "0px"; 
+  }
+
+  // =========================================================
+  // 9. FILTERS
+  // =========================================================
+
+  // 1. INITIALIZATION (Standardize data immediately)
+  function initFilters(data) {
+    window.planningData = [];
+    if (!data || !data.logements || !data.planning) return;
+
+    const config = window.viewConfigs[window.currentView].filter(c => c.filterable);
+    // Initialisation propre des filtres sélectionnés
+    config.forEach(c => { if (!window.selectedFilters[c.id]) window.selectedFilters[c.id] = []; });
+
+    window.planningData = data.planning.map(p => {
+      const meta = data.logements[p.id] || {};
+      let item = { ...meta }; 
+      config.forEach(c => { 
+        let val = meta[c.id];
+        
+        // Appliquer exactement la même logique de formatage sur 2 chiffres que pour le tableau
+        if (!val && !(val === 0 && c.id === 'etage')) {
+          val = "";
+        }
+        
+        item[c.id] = val; 
+      });
+      return item;
+    });
+
+    populateFilterOptions();
+  }
+
+  // 2. POPULATE FILTER DROPDOWNS
+  function populateFilterOptions(isRefreshed = false) {
+    const config = window.viewConfigs[window.currentView].filter(c => c.filterable);
+    let availableSet = new Set();
+
+    window.planningData.forEach(item => {
+      const matchesFilters = config.every(c => {
+        if (!window.selectedFilters[c.id] || window.selectedFilters[c.id].length === 0) return true;
+
+        let valKey = c.id;
+        if (window.currentView === 'facades' && c.id === 'trame') valKey = 'trame_part1';
+        if (window.currentView === 'communs' && c.id === 'description') valKey = 'description_part1';
+        
+        let val = String(item[valKey] || "");
+        
+        if (val === "") val = "MOD_EMPTY_VAL";
+        return window.selectedFilters[c.id].includes(val);
+      });
+
+      if (matchesFilters) {
+        config.forEach(c => {
+          let valKey = c.id;
+          if (window.currentView === 'facades' && c.id === 'trame') valKey = 'trame_part1';
+          if (window.currentView === 'communs' && c.id === 'description') valKey = 'description_part1';
+        
+          let val = String(item[valKey] || "");
+          
+          if (val === "") val = "MOD_EMPTY_VAL";
+          availableSet.add(`${c.id}|${val}`);
+        });
+      }
+    });
+
+    config.forEach(c => {
+      const menuElement = document.getElementById(`list-${c.id}`);
+      if (!menuElement) return;
+
+      // Déterminer quelle clé de donnée utiliser
+      // Si on est en facade et qu'on traite la trame, on prend 'trame_filter_val'
+      let dataKey = c.id;
+      if (window.currentView === 'facades' && c.id === 'trame') dataKey = 'trame_part1';
+      if (window.currentView === 'communs' && c.id === 'description') dataKey = 'description_part1'
+
+      const uniqueValues = [...new Set(window.planningData.map(item => {
+        let v = String(item[dataKey] || ""); // Utilisation de dataKey ici
+        return (v === "") ? "MOD_EMPTY_VAL" : v;
+      }))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+      const count = (window.selectedFilters[c.id] || []).length;
+      const labelSpan = document.getElementById(`label-${c.id}`);
+      if (labelSpan) {
+        labelSpan.textContent = count > 0 ? `${c.label} (${count})` : c.label;
+        labelSpan.parentElement.classList.toggle('text-primary', count > 0);
+      }
+
+      menuElement.innerHTML = `
+        <div class="p-2 border-b border-slate-100 flex justify-start items-center mb-1">
+            <button onclick="event.stopPropagation(); resetSpecificFilter('${c.id}')" class="text-[9px] font-black text-primary uppercase hover:underline bg-transparent">Réinitialiser</button>
+        </div>
+        <div class="py-1 max-h-60 overflow-y-auto">
+          ${uniqueValues.map(val => {
+              const isSelected = window.selectedFilters[c.id] && window.selectedFilters[c.id].includes(val);
+              const isAvailable = !isRefreshed || availableSet.has(`${c.id}|${val}`) || isSelected;
+              
+              let displayLabel = (val === "MOD_EMPTY_VAL") ? "(Vide)" : val;
+
+              if (window.currentView === 'facades' && c.id === 'trame' && val !== "MOD_EMPTY_VAL") {
+                displayLabel = "Trame " + val;
+              }
+              
+              // Préfixe L pour les types locataires (existant)
+              if (c.id === 'type' && val !== "MOD_EMPTY_VAL" && window.currentView === 'locataires') {
+                displayLabel = "L" + val;
+              }
+
+              return `
+                <label class="flex items-center gap-3 px-3 py-2 transition-colors text-[11px] ${!isAvailable ? 'opacity-30 grayscale cursor-not-allowed' : 'hover:bg-slate-50 cursor-pointer text-slate-700'}" 
+                      onclick="${!isAvailable ? 'event.preventDefault();' : 'event.stopPropagation();'}">
+                    <input type="checkbox" value="${val}" ${isSelected ? 'checked' : ''} ${!isAvailable ? 'disabled' : ''}
+                          onchange="handleCheckboxChange('${c.id}', '${val}', this.checked)"
+                          onclick="event.stopPropagation()" 
+                          class="rounded text-primary border-slate-400 h-4 w-4">
+                    <span class="${val === "MOD_EMPTY_VAL" ? 'italic' : 'font-bold'}">${displayLabel}</span>
+                </label>`;
+          }).join('')}
+        </div>`;
+    });
+
+    const globalBtn = document.getElementById('global-reset-btn');
+    if (globalBtn) {
+      const hasAnyFilter = Object.keys(window.selectedFilters).some(k => window.selectedFilters[k].length > 0);
+      globalBtn.classList.toggle('hidden', !hasAnyFilter);
+    }
+  }
+
+  function handleCheckboxChange(key, value, isChecked) {
+    if (!window.selectedFilters[key]) window.selectedFilters[key] = [];
+    if (isChecked) {
+      if (!window.selectedFilters[key].includes(value)) window.selectedFilters[key].push(value);
+    } else {
+      window.selectedFilters[key] = window.selectedFilters[key].filter(v => v !== value);
+    }
+  }
+
+  function applyMultiFilters() {
+    const rows = document.querySelectorAll(".gantt-table tbody tr.planning-row");
+    const config = window.viewConfigs[window.currentView].filter(c => c.filterable);
+
+    rows.forEach(row => {
+      let isVisible = config.every(c => {
+        const activeVals = window.selectedFilters[c.id] || [];
+        if (activeVals.length === 0) return true;
+        // On lit directement l'attribut injecté lors de la création de la ligne !
+        let cellVal = row.getAttribute(`data-${c.id}`);
+        return activeVals.includes(cellVal);
+      });
+      row.style.display = isVisible ? "" : "none";
+    });
+
+    cleanEmptyGroupHeaders();
+  }
+
+  function resetSpecificFilter(key) {
+    window.selectedFilters[key] = [];
+    applyMultiFilters();
+    populateFilterOptions();
+  }
+
+  function resetAllFilters() {
+    Object.keys(window.selectedFilters).forEach(k => window.selectedFilters[k] = []);
+    applyMultiFilters();
+    populateFilterOptions();
+  }
+
+
+  // Cleaning Subtitles
+  function cleanEmptyGroupHeaders() {
+    const rows = Array.from(document.querySelectorAll(".gantt-table tbody tr"));
+    let lastHeader = null;
+    let hasVisibleContent = false;
+
+    rows.forEach(row => {
+      if (row.classList.contains('group-row')) {
+        if (lastHeader && !hasVisibleContent) lastHeader.style.display = "none";
+        lastHeader = row;
+        hasVisibleContent = false;
+      } else if (row.style.display !== "none") {
+        hasVisibleContent = true;
+      }
+    });
+    if (lastHeader && !hasVisibleContent) lastHeader.style.display = "none";
+    else if (lastHeader) lastHeader.style.display = "";
+  }
+
+  function toggleFilterDropdown(id) {
+    const el = document.getElementById(id);
+    const wasHidden = el.classList.contains('hidden');
+
+    // If we are switching menus, refresh the locking logic for all menus
+    if (wasHidden) {
+        populateFilterOptions(true);
+    }
+
+    document.querySelectorAll('div[id^="list-"]').forEach(d => d.classList.add('hidden'));
+
+    if (wasHidden) {
+        el.classList.remove('hidden');
+    }
+  }
+
+  // =========================================================
+  // 10. SETTINGS MENU
+  // =========================================================
+
+  // ====== DROPDOWN PARAMÈTRES ======
+  function toggleSettingsMenu(event) {
+    event.stopPropagation();
+    const menu = document.getElementById('settingsMenu');
+    menu.classList.toggle('hidden');
+  
+    // Fermer si clic ailleurs
+    const closeHandler = (e) => {
+      if (!menu.contains(e.target)) {
+        menu.classList.add('hidden');
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    if (!menu.classList.contains('hidden')) {
+      setTimeout(() => document.addEventListener('click', closeHandler), 10);
+    }
+  }
+
+  // ==========================================
+  // 11. GESTION DE LA LÉGENDE
+  // ==========================================
+
+  function toggleLegendModal() {
+    const modal = document.getElementById('legendModal');
+    const isHidden = modal.classList.contains('hidden');
+
+    if (isHidden) {
+      modal.classList.remove('hidden');
+      populateLegend();
+    } else {
+      modal.classList.add('hidden');
+    }
+  }
+
+  function populateLegend() {
+    const container = document.getElementById('legendGrid');
+    container.innerHTML = '';
+
+    // Vérification de la disponibilité des données
+    if (!window.currentTasksData || window.currentTasksData.length === 0) {
+      container.innerHTML = `
+        <div class="col-span-full text-center py-12 text-slate-400 font-bold text-xs uppercase tracking-widest">
+          Aucune tâche chargée ou configurée dans la base de données.
+        </div>`;
+      return;
+    }
+
+    // Tri alphabétique par Corps d'état (Discipline) pour que ce soit bien rangé
+    const sortedTasks = [...window.currentTasksData].sort((a, b) => {
+      const typeA = a.type || "";
+      const typeB = b.type || "";
+      return typeA.localeCompare(typeB);
+    });
+
+    // Génération des cartes de légende
+    sortedTasks.forEach(task => {
+      // Récupération de la couleur
+      const color = task.bgColor || task.color || "#0d59f2";
+    
+      // Création de la carte
+      const card = document.createElement('div');
+      card.className = "flex items-start gap-4 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow";
+
+      // Affichage : Carré de couleur (Abréviation) | Nom | Corps d'état | Durée standard
+      card.innerHTML = `
+        <div class="w-10 h-10 rounded-xl shrink-0 flex items-center justify-center text-[11px] font-black text-white shadow-inner" style="background-color: ${color}">
+          ${task.abbr}
+        </div>
+        <div class="flex flex-col">
+          <span class="text-xs font-black text-slate-700 uppercase">${task.descCourte || "Tâche sans nom"}</span>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-md">${task.type || "Général"}</span>
+            ${task.duree ? `<span class="text-[10px] font-medium text-slate-500 flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">schedule</span>${task.duree} ${task.unite || 'j'}</span>` : ''}
+          </div>
+        </div>
+      `;
+    
+      container.appendChild(card);
+    });
+  }
+
+  // =========================================================
+  // 12. LISTENERS
+  // =========================================================
+
+  // GLOBAL CLICK LISTENER: Close filters when clicking outside
+  window.addEventListener('click', function(e) {
+    if (e.target.closest('div[id^="list-"]') || e.target.closest('button[onclick^="toggleFilterDropdown"]')) {
+      return;
+    }
+
+    // If a menu is currently open and user clicks outside, refresh options to apply locks, then close
+    const openMenu = document.querySelector('div[id^="list-"]:not(.hidden)');
+    if (openMenu) {
+      applyMultiFilters();
+      populateFilterOptions(true);
+      document.querySelectorAll('div[id^="list-"]').forEach(d => d.classList.add('hidden'));
+    }
+
+    // Close User and Nav menus
+    if (userMenu && !userBtn.contains(e.target) && !userMenu.contains(e.target)) userMenu.classList.add('hidden');
+    if (navMenu && !navBtn.contains(e.target) && !navMenu.contains(e.target)) navMenu.classList.add('hidden');
+
+    // Close Details menu
+    const detailsMenu = document.getElementById('detailsMenu');
+    if (detailsMenu && !detailsMenu.classList.contains('hidden') && !e.target.closest('#detailsMenu') && !e.target.closest('button[onclick*="detailsMenu"]')) {
+      detailsMenu.classList.add('hidden');
+    }
+  });
+
+  // Clic sur la barre pour sauter
+  document.getElementById('timeline-container').onclick = function(e) {
+    const rect = this.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    const targetTs = window.projectStart.getTime() + ((window.projectEnd - window.projectStart) * pct);
+    loadPlanningAroundDate(new Date(targetTs));
+  };
+
+  // Fonctions de saut simples
+  function shiftMonth(n) {
+    let d = new Date(window.currentCenterDate);
+    d.setMonth(d.getMonth() + n);
+    d.setDate(1); // Force la date cible au 1er du mois !
+    loadPlanningAroundDate(d);
+  }
+
+  function jumpToSelectedDate() {
+    const val = document.getElementById('date-picker-jump').value;
+    if(val) loadPlanningAroundDate(new Date(val));
+  }
+
+  function jumpToToday() {
+    loadPlanningAroundDate(new Date());
+  }
+
+  // =========================================================
+  // 13. HELPER
+  // =========================================================
+
+  //Recharge uniquement les données du planning, et met à jour sélectivement le DOM
+  function refreshPlanningRowsOnly(affectedLogIds = null) {
+    if (!window.lastPlanningData || !window.lastPlanningData.window) return;
+    const startStr = window.lastPlanningData.window.start;
+    const endStr = window.lastPlanningData.window.end;
+    
+    google.script.run
+      .withSuccessHandler(data => {
+        window.lastPlanningData = data; // Met en cache les nouvelles données
+        
+        // Si on a une liste d'IDs spécifiques, on ne met à jour QUE ces lignes
+        if (affectedLogIds && Array.isArray(affectedLogIds) && affectedLogIds.length > 0) {
+          affectedLogIds.forEach(logId => {
+            refreshSingleRowDOM(logId);
+          });
+        } else {
+          // Fallback : On reconstruit tout le tableau
+          renderPlanningRows(data);       
+        }
+        Swal.close();
+      })
+      .withFailureHandler(err => {
+        Swal.close();
+
+        const isSecurityError = err.message.includes('Sécurité');
+
+        showModal({
+          icon: isSecurityError ? 'warning' : 'error',
+          title: isSecurityError ? 'Accès Refusé' : 'Impossible de charger les données',
+          text: err.message
+        });
+
+        appErrorLog(err, "refreshPlanningRowsOnly", {
+          view: window.currentView,
+          startStr: startStr, 
+          endStr: endStr,
+          activeFilterBatiment: window.currentFilter || "Aucun",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetPlanningWindow(APP_DATA.token, APP_DATA.projectId, startStr, endStr, window.currentView, window.currentFilter || "", isClient);
+  }
+
+
+  </script>

@@ -1,0 +1,119 @@
+<div id="desktopNavModal" class="fixed inset-0 z-[500] hidden flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-2xl w-80 p-6 border border-slate-200">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="font-black text-slate-800 uppercase text-sm tracking-widest">SÉLECTIONNER UN MODULE</h3>
+      <button onclick="closeNavModal()" class="text-slate-400 hover:text-red-500">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    
+    <div class="space-y-1 max-h-[60vh] overflow-y-auto pr-2" id="navModalButtons">
+        <button data-page="locataires" onclick="goToModule('locataires')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">calendar_month</span> Info Batiments
+        </button>
+        <button data-page="planning" onclick="goToModule('planning')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">calendar_month</span> Planning
+        </button>
+        <button data-page="passage" onclick="goToModule('passage')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">mail</span> Avis de passage
+        </button>
+        <button data-page="edl" onclick="goToModule('edl')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">assignment_turned_in</span> EDL
+        </button>
+        <button data-page="travaux" onclick="goToModule('travaux')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">construction</span> Travaux
+        </button>
+        <button data-page="auto-controles" onclick="goToModule('auto-controles')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">fact_check</span> Auto contrôles
+        </button>
+        <button data-page="avancement" onclick="goToModule('avancement')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">trending_up</span> Avancement
+        </button>
+        <button data-page="opr" onclick="goToModule('opr')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">straighten</span> OPR
+        </button>
+        <button data-page="reserves" onclick="goToModule('reserves')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">warning</span> Réserves
+        </button>
+        <button data-page="quitus" onclick="goToModule('quitus')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">description</span> Quitus
+        </button>
+        <button data-page="rapport" onclick="goToModule('rapport')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">summarize</span> Rapport
+        </button>
+        <button data-page="reclamations" onclick="goToModule('reclamations')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">chat</span> Réclamations
+        </button>
+        <button data-page="satisfaction" onclick="goToModule('satisfaction')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">sentiment_satisfied</span> Satisfaction
+        </button>
+        <button data-page="plans" onclick="goToModule('plans')" class="group w-full text-left p-3 hover:bg-primary hover:text-white rounded-xl transition-all flex items-center gap-4 font-bold text-slate-700 text-sm">
+          <span class="material-symbols-outlined text-primary group-hover:text-white">architecture</span> Plans
+        </button>
+      </div>
+    </div>
+</div>
+
+<script>
+  if (typeof window.selectedIdForNav === 'undefined') {
+    window.selectedIdForNav = null;
+  }
+
+  function openNavModal(id) {
+    window.selectedIdForNav = id;
+    
+    // 1. Fetch current environment constraints
+    const currentPage = getCurrentPage();
+    const isClientUser = (typeof APP_DATA !== 'undefined') ? APP_DATA.isClient : false;
+    
+    // Define an array of modules hidden from Client accounts
+    const clientRestrictedPages = ['auto-controles']; 
+
+    // 2. Loop through navigation buttons to toggle visibility
+    const buttons = document.querySelectorAll('#navModalButtons button[data-page]');
+    buttons.forEach(btn => {
+      const targetPage = btn.getAttribute('data-page');
+
+      // Rule 1: Hide the active page option entirely
+      if (targetPage === currentPage) {
+        btn.classList.add('hidden');
+        return;
+      }
+
+      // Rule 2: Restrict designated screens if the client flag is active
+      if (isClientUser && clientRestrictedPages.includes(targetPage)) {
+        btn.classList.add('hidden');
+        return;
+      }
+
+      // Default: Fallback to showing options that pass validation checks
+      btn.classList.remove('hidden');
+    });
+
+    document.getElementById('desktopNavModal').classList.remove('hidden');
+  }
+
+  function closeNavModal() {
+    document.getElementById('desktopNavModal').classList.add('hidden');
+    window.selectedIdForNav = null;
+  }
+
+  function goToModule(page) {
+    if (!window.selectedIdForNav) return;
+    
+    const params = { transferId: window.selectedIdForNav };
+    const urlParams = new URLSearchParams(window.location.search);
+    
+    // Conserve le mode d'affichage (mobile vs desktop)
+    if (urlParams.get('view') === 'mobile') params.view = 'mobile';
+    
+    if (window.currentView) {
+      params.currentView = window.currentView;
+    } else if (urlParams.get('currentView')) {
+      params.currentView = urlParams.get('currentView');
+    }
+    
+    navToWithParams(page, params);
+    closeNavModal();
+  }
+</script>

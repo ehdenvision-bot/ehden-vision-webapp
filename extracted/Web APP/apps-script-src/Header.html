@@ -1,0 +1,54 @@
+<header class="h-16 bg-primary-light border-b border-slate-200 flex items-center justify-between px-6 shrink-0 relative z-[200]">
+    
+  <div class="flex flex-col">
+    <h1 id="pageMainTitle" class="text-xl font-bold text-slate-900 tracking-tight"></h1>
+    <p id="pageSubTitle" class="text-xs text-text-secondary"></p>
+  </div>
+
+  <div id="headerActionArea" class="flex-1 flex justify-center"></div>
+
+  <div class="flex items-center gap-4 relative">
+    
+    <div class="hidden md:flex flex-col items-end border-l border-white/20 pl-6 h-10 justify-center">
+      <span id="u_name" class="text-sm font-bold text-slate-900 leading-none">--</span>
+      <span id="u_role" class="mt-1 text-[9px] text-slate-400 font-black uppercase tracking-widest">--</span>
+    </div>
+
+    <div class="relative">
+      <button id="userMenuBtn" class="size-10 rounded-full bg-corporate-blue text-white font-bold text-xs shadow-sm flex items-center justify-center hover:opacity-90 transition-opacity">
+        <span id="u_initials">--</span>
+      </button>
+      
+      <div id="userMenu" class="hidden absolute right-0 mt-4 w-56 rounded-xl border border-slate-200 bg-white shadow-2xl py-2 z-[200] text-corporate-blue font-bold">
+        <div id="pageExtensionZone"></div>
+        
+        <button onclick="clearSessionAndGoLogin()" class="flex w-full items-center gap-3 px-4 py-3 text-sm text-red-600 hover:bg-red-50 font-bold transition-colors">
+          <span class="material-symbols-outlined text-[18px]">logout</span>
+          <span>Se déconnecter</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<style>
+  /* Styling for the User Initials Avatar button */
+  #userMenuBtn {
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    font-weight: 700;
+    font-size: 0.875rem; 
+    color: #004595; 
+    background-color: #ffffff; 
+    text-transform: uppercase; 
+    transition: all 0.2s; 
+    border: 1px solid rgba(255,255,255,0.4);
+  }
+    
+  /* Hover interaction for the avatar */
+  #userMenuBtn:hover { 
+    background-color: #f1f5f9; 
+    transform: scale(1.05); 
+  }
+</style>

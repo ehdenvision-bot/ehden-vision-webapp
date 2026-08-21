@@ -1,0 +1,688 @@
+<script>
+/**
+ * =================================================================
+ * 1. GLOBAL DATA & CONFIGURATION
+ * =================================================================
+ */
+
+// Inject the entire server-side 'data' object into a global client variable
+const APP_DATA = <?!= JSON.stringify(data || {}) ?>;
+
+// Cached Base URL from the Apps Script environment
+const BASE_URL = APP_DATA.baseUrl;
+
+/**
+ * =================================================================
+ * 2. UI HELPERS (MESSAGES & LOGGING)
+ * =================================================================
+ */
+
+/**
+ * Displays a feedback message to the user.
+ * Creates the #msg element if it doesn't exist.
+ */
+function showMessage(text, isError = false) {
+  let el = document.getElementById('msg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'msg';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.className =
+    'mt-4 text-sm rounded-xl px-4 py-3 border transition-all duration-300 ' +
+    (isError
+      ? 'bg-red-50 text-red-700 border-red-100 shadow-sm shadow-red-100/50'
+      : 'bg-blue-50 text-blue-700 border-blue-100 shadow-sm shadow-blue-100/50');
+  el.classList.remove('hidden');
+}
+
+/**
+ * Global Front-end Logger.
+ * Sends a structured log entry to the server via gsWriteUniversalLog.
+ */
+function appLog(module, entityId, action, visibility, type, details = {}) {
+  const userEmail = (typeof APP_DATA !== 'undefined' && APP_DATA.user && APP_DATA.user.email)
+    ? APP_DATA.user.email
+    : "Inconnu";
+
+  const payload = {
+    module:    module,            // e.g., 'locataires', 'communs', 'facades'
+    id:        String(entityId),
+    action:    action,
+    visibility: visibility,       // 'Public' or 'Private'
+    type:      type,              // 'Milestone' or 'Detail'
+    details:   details,
+    userEmail: userEmail
+  };
+
+  google.script.run
+    .withFailureHandler(function(err) {
+      appErrorLog(err, "appLog Network Failure", {
+        payloadAttempted: payload,
+        projectId: (typeof APP_DATA !== 'undefined' && APP_DATA.projectId) ? APP_DATA.projectId : "Inconnu"
+      });
+    })
+    .gsWriteUniversalLog(APP_DATA.token, payload);
+}
+
+/**
+ * =================================================================
+ * 3. AUTHENTICATION & SESSION MANAGEMENT
+ * =================================================================
+ */
+
+/**
+ * Stores only the sessionToken in LocalStorage and redirects to the portfolio.
+ */
+function persistSessionAndGo(sessionToken) {
+  if (!sessionToken) return;
+  try {
+    localStorage.setItem('sessionToken', sessionToken);
+  } catch (e) {
+    console.warn("Storage restreint:", e);
+  }
+  window.top.location.href = BASE_URL + '?page=project-portfolio&session=' + encodeURIComponent(sessionToken);
+}
+
+/**
+ * Clears local storage and redirects to the login page.
+ */
+function clearSessionAndGoLogin() {
+  try { localStorage.clear(); } catch (e) {}
+  window.top.location.href = BASE_URL + '?page=login';
+}
+
+/**
+ * =================================================================
+ * 4. NAVIGATION & ROUTING
+ * =================================================================
+ */
+
+/**
+ * Returns the current page name from the server-injected data.
+ */
+function getCurrentPage() {
+  try {
+    if (typeof APP_DATA !== 'undefined' && APP_DATA.page) {
+      return APP_DATA.page.toLowerCase();
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
+}
+
+/**
+ * Saves current page state to LocalStorage before moving away.
+ * Only UX-level data (last visited page) is stored — no roles or identity.
+ */
+function rememberCurrentPage() {
+  const p = getCurrentPage();
+  if (p) {
+    localStorage.setItem('lastPage', p);
+    localStorage.setItem('lastUrl', window.location.href);
+  }
+}
+
+/**
+ * Standard navigation: appends the session token and the global client view state.
+ */
+function navTo(pageName) {
+  rememberCurrentPage();
+  const session = localStorage.getItem('sessionToken');
+  let targetUrl = BASE_URL + '?page=' + pageName;
+
+  if (session) {
+    targetUrl += '&session=' + encodeURIComponent(session);
+  }
+
+  try {
+    window.top.location.href = targetUrl;
+  } catch (e) {
+    const a = document.createElement('a');
+    a.href = targetUrl;
+    a.target = '_top';
+    a.click();
+  }
+}
+
+/**
+ * Advanced navigation: persists project context AND the global client view state.
+ * projectId is sourced from APP_DATA (server-injected) — the URL is not trusted
+ * as a source of truth; it is used only as a transport mechanism.
+ */
+function navToWithParams(pageName, params = {}) {
+  rememberCurrentPage();
+
+  const sp = new URLSearchParams(params);
+  const session = localStorage.getItem('sessionToken');
+
+  sp.set('projectId',    params.projectId    || (APP_DATA.projectId    || ""));
+  sp.set('transferId',  params.transferId  || (APP_DATA.transferId  || ""));
+
+  // Note: projectName and projectStatus are intentionally NOT set here.
+  // The server (doGet) will re-fetch them from the database using projectId.
+
+  sp.set('page', pageName);
+  if (session) sp.set('session', session);
+
+  const finalUrl = BASE_URL + '?' + sp.toString();
+  window.top.location.href = finalUrl;
+}
+
+/**
+ * =================================================================
+ * 6. VALIDATION & PERMISSIONS
+ * =================================================================
+ */
+
+const validateEmail = (email) => {
+  return String(email)
+    .toLowerCase()
+    .match(/^(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/);
+};
+
+const validatePhone = (phone) => {
+  if (!phone) return true;
+  const cleanPhone = phone.replace(/\s+/g, '');
+  return /^0\d{9}$/.test(cleanPhone);
+};
+
+/**
+ * UI permission check — used only to show/hide buttons.
+ * Never used as a security gate. Real enforcement is assertCanEdit_() server-side.
+ */
+const Permissions = {
+  canEdit: function() {
+    return typeof APP_DATA !== 'undefined' && APP_DATA.canEdit === true;
+  }
+};
+
+/**
+ * =================================================================
+ * 7. GLOBAL NAVIGATION MENU
+ * =================================================================
+ */
+
+/**
+ * Scrolls to and highlights a specific row by its data-id attribute.
+ * Called at the end of each page's render function.
+ */
+function applyTargetIdHighlight() {
+  const targetId = (typeof APP_DATA !== 'undefined') ? APP_DATA.transferId : null;
+  if (!targetId) return;
+
+  const targetRow = document.querySelector(`tr[data-id="${targetId}"]`);
+
+  if (targetRow) {
+    targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    document.querySelectorAll('.row-highlight').forEach(row => {
+      row.classList.remove('row-highlight');
+    });
+
+    targetRow.classList.add('row-highlight');
+  }
+}
+
+/**
+ * =================================================================
+ * 8. ERROR LOGGING
+ * =================================================================
+ *
+ *      Error logging must work even when the session has expired —
+ *      that is precisely when errors are most likely to occur.
+ */
+function appErrorLog(error, context, payload = {}) {
+  let errorMessage = "Erreur inconnue";
+  let stackTrace   = "Aucune trace";
+
+  if (error instanceof Error) {
+    errorMessage = error.message;
+    stackTrace   = error.stack || stackTrace;
+  } else if (typeof error === 'string') {
+    errorMessage = error;
+  } else if (error && error.message) {
+    errorMessage = error.message;
+  }
+
+  google.script.run
+    .withFailureHandler(function(err) {
+      console.error("Critical: Error logging system failed -", err);
+    })
+    .gsWriteErrorLog(errorMessage, stackTrace, context, payload);
+}
+
+/**
+ * Global Error Listener — automatically catches unhandled frontend exceptions.
+ */
+window.addEventListener('error', function(event) {
+  appErrorLog(
+    event.error || event.message,
+    "Global Frontend Error",
+    {
+      filename: event.filename,
+      lineno:   event.lineno,
+      colno:    event.colno
+    }
+  );
+});
+
+/**
+ * =================================================================
+ * 9. SHARED UI — STATUS BADGES & CLIENT VIEW TOGGLE
+ * =================================================================
+ */
+
+/**
+ * Returns visual badge config for a project status string.
+ * Single canonical definition — replaces diverged implementations across pages.
+ */
+function getStatusBadge(status) {
+  const s = (status || '').toLowerCase();
+  if (s === 'active'   || s === 'en cours') return { text: 'ACTIF',   cls: 'chip-active',   icon: 'fiber_manual_record' };
+  if (s === 'blocked'  || s === 'retard')   return { text: 'BLOQUÉ',  cls: 'chip-blocked',  icon: 'block' };
+  if (s === 'ended'    || s === 'terminé')  return { text: 'TERMINÉ', cls: 'chip-ended',    icon: 'lock' };
+  if (s === 'archived')                     return { text: 'ARCHIVÉ', cls: 'chip-archived', icon: 'inventory_2' };
+  return { text: '—', cls: 'chip-ended', icon: '' };
+}
+
+/**
+ * Injects the "Vue Client" toggle into the user menu (#userMenu).
+ * Guard: isAuthorized must be true; toggle is skipped for client users.
+ */
+function injectClientViewToggle() {
+  const userMenu = document.getElementById('userMenu');
+  if (!userMenu) return;
+  if (typeof isAuthorized === 'undefined' || !isAuthorized) return;
+  if (document.getElementById('clientViewToggleContainer')) return;
+
+  const isChecked = window.isClientViewActive ? 'checked' : '';
+  userMenu.insertAdjacentHTML('afterbegin', `
+    <div id="clientViewToggleContainer" class="w-full items-center justify-between px-4 py-3 border-b border-slate-100 hover:bg-slate-50 transition-colors flex" onclick="event.stopPropagation()">
+      <div class="flex items-center gap-3">
+        <span class="material-symbols-outlined text-[18px] text-slate-400">visibility_off</span>
+        <span class="text-sm font-bold text-slate-700">Vue Client</span>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" id="clientViewToggle" class="sr-only peer" onchange="toggleClientView(this.checked)" ${isChecked}>
+        <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+      </label>
+    </div>
+  `);
+}
+
+/**
+ * Handles the client view toggle: persists the state to localStorage and shows a toast.
+ * localStorage is the correct place for this — it is a UX preference, not security data.
+ */
+function toggleClientView(isActive) {
+  window.isClientViewActive = isActive;
+  localStorage.setItem('isClientViewActive', isActive);
+
+  const message = isActive
+    ? "Mode Présentation : Données privées masquées"
+    : "Vue complète : Données privées affichées";
+
+  showToast(message, 'info', '', 2000);
+}
+
+// =========================================================
+// Universal message display (SweetAlert2 wrappers)
+// =========================================================
+
+window.Swal = Swal.mixin({
+  heightAuto: false
+});
+
+// 1. Standard alerts (Error, Warning, Success, Info)
+window.showModal = (config) => {
+  return Swal.fire({
+    icon: config.icon || 'info',
+    title: `<span style="color: #0f172a; font-weight: 900;">${config.title}</span>`,
+    html: (config.html || config.text)
+      ? `<div style="color: #64748b; font-size: 14px;">${config.html || config.text}</div>`
+      : '',
+    confirmButtonColor: '#0d59f2',
+    background: '#f8fafc',
+    customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' },
+    ...config
+  });
+};
+
+// 2. Loading states
+window.showLoading = (title, text = '', isToast = false) => {
+  const config = {
+    title: `<span style="color: #0f172a; font-weight: 900;">${title}</span>`,
+    html: text ? `<div style="color: #64748b; font-size: 14px;">${text}</div>` : '',
+    allowOutsideClick: false,
+    showConfirmButton: false,
+    background: '#f8fafc',
+    customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' },
+    didOpen: () => { Swal.showLoading(); }
+  };
+  if (isToast) {
+    config.toast    = true;
+    config.position = 'top-end';
+  }
+  return Swal.fire(config);
+};
+
+// 3. Quick non-blocking notifications
+window.showToast = (title, icon = 'success', text = '', timer = 1500) => {
+  return Swal.fire({
+    toast:    true,
+    position: 'top-end',
+    icon:     icon,
+    title:    `<span style="color: #0f172a; font-weight: 900;">${title}</span>`,
+    html: text ? `<div style="color: #64748b; font-size: 13px; margin-top: 5px;">${text}</div>` : '',
+    showConfirmButton: false,
+    timer:    timer,
+    background: '#f8fafc',
+    customClass: { popup: 'rounded-xl border border-slate-200 shadow-lg' }
+  });
+};
+
+function safeSetText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/**
+ * =================================================================
+ * 10. UNIVERSAL HISTORY (JOURNAL) — FETCH & DISPLAY
+ * =================================================================
+ * Client-side counterpart to appLog() (section 2 above). appLog() WRITES
+ * an entry to the Journal Universel; this section READS it back — generic
+ * across every module (EDL, Travaux, Élec, Sanit, Réserves, Formulaires,
+ * ...) so any page can reuse it for any (module, id) pair, not just the
+ * "intervention" / Historique button it was built for.
+ * Server call: gsGetUniversalLog(token, projectId, module, id) — see the
+ * "UNIVERSAL LOG — READ SIDE" section in Logs_gs.txt.
+ *
+ * Privacy — two independent layers, deliberately kept separate:
+ *   - isClient (real client accounts): enforced SERVER-SIDE, inside
+ *     gsGetUniversalLog(). Private entries, and any field anywhere in
+ *     `details` whose name matches PRIVATE_DETAIL_KEYS (below), never
+ *     leave the server for a client session.
+ *   - ClientView (staff preview toggle — window.isClientViewActive, see
+ *     section 9): a presentation-only simulation, applied HERE on data
+ *     staff already legitimately received in full — same rule (hide
+ *     Private, strip private-marked fields), so the preview matches what
+ *     a real client would actually see.
+ *
+ * "Milestone" entries show by default; "Detail" entries stay collapsed
+ * behind the expand toggle. This split applies to EVERYONE (client or
+ * staff) — it's about keeping the view simple, not about privacy.
+ */
+
+// Keys inside a log entry's `details` that ClientView also strips, at any
+// nesting depth — matched as a case/accent-insensitive SUBSTRING against
+// each key name (so privateNote, privNote, "Note Privée (Interne)", etc.
+// are all caught, wherever they sit in the details tree, e.g. nested one
+// level down inside a "Notes" group alongside a public note).
+// Mirrors PRIVATE_DETAIL_KEYS in Logs_gs.txt — keep both lists in sync.
+const PRIVATE_DETAIL_KEYS = ['priv'];
+
+function _matchesPrivateKey(key) {
+  const k = String(key).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return PRIVATE_DETAIL_KEYS.some(marker => k.includes(marker));
+}
+
+function _stripPrivateDetailsDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map(_stripPrivateDetailsDeep);
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach(k => {
+      if (_matchesPrivateKey(k)) return; // drop this key (and everything under it)
+      out[k] = _stripPrivateDetailsDeep(value[k]);
+    });
+    return out;
+  }
+  return value; // primitive — nothing to strip
+}
+
+/**
+ * Pure fetch, no rendering — reusable wherever some other page/feature
+ * wants the raw (already server-filtered) history list instead of the
+ * built-in modal below. Returns a Promise.
+ *
+ *   fetchHistory('reserves', interId).then(entries => ...);
+ */
+function fetchHistory(module, entityId) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(reject)
+      .gsGetUniversalLog(APP_DATA.token, APP_DATA.projectId, module, entityId);
+  });
+}
+
+/**
+ * Applies the ClientView simulation to an already-fetched list — mirrors
+ * gsGetUniversalLog()'s server-side isClient filter (visibility + deeply
+ * nested private fields alike). No-op for staff with ClientView off, since
+ * they already received the full list on purpose.
+ */
+function applyClientViewFilter(entries) {
+  if (!window.isClientViewActive) return entries;
+  return entries
+    .filter(e => e.visibility !== 'Private')
+    .map(e => ({ ...e, details: e.details ? _stripPrivateDetailsDeep(e.details) : e.details }));
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = (str === null || str === undefined) ? '' : String(str);
+  return div.innerHTML;
+}
+
+function formatHistoryTimestamp(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} à ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Small icon+color config per entry type — same visual language as
+// getStatusBadge() in section 9, just for history rows instead of chips.
+function historyTypeBadge(type) {
+  return type === 'Detail'
+    ? { icon: 'unfold_more', cls: 'bg-slate-100 text-slate-500' }
+    : { icon: 'flag', cls: 'bg-primary-light text-primary' };
+}
+
+// =========================================================
+// Payload formatting — turns a details object into readable rows instead
+// of a raw JSON dump, matching the shapes appLog() calls already produce.
+// =========================================================
+
+const _BEFORE_KEYS = ['ancien', 'ancienne', 'old'];
+const _AFTER_KEYS  = ['nouveau', 'nouvelle', 'new'];
+
+function _normKey(k) {
+  return String(k).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Only fires for a 2-key object matching a before/after pair — a 3+ key
+// group (e.g. {Nouvelle date, Origine, Créneau}) falls through to the
+// generic nested-group renderer below instead.
+function _detectBeforeAfter(obj) {
+  const keys = Object.keys(obj);
+  if (keys.length !== 2) return null;
+  let beforeKey = null, afterKey = null;
+  keys.forEach(k => {
+    const n = _normKey(k);
+    if (_BEFORE_KEYS.includes(n)) beforeKey = k;
+    if (_AFTER_KEYS.includes(n)) afterKey = k;
+  });
+  return (beforeKey && afterKey) ? { before: obj[beforeKey], after: obj[afterKey] } : null;
+}
+
+function _stringifyPrimitive(v) {
+  if (v === null || v === undefined || v === '') return '(vide)';
+  return typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+
+function _renderArrayValue(arr) {
+  if (!arr.length) return '<span class="text-slate-400 italic">Aucun</span>';
+
+  // Files/links — objects with both a name and a url (e.g. "Fichiers Drive")
+  if (arr.every(it => it && typeof it === 'object' && it.url && it.name)) {
+    return arr.map(f =>
+      `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-primary hover:underline text-[11px] mr-2">
+        <span class="material-symbols-outlined !text-[13px]">attach_file</span>${escapeHtml(f.name)}
+      </a>`
+    ).join('');
+  }
+
+  // Plain values — small pills
+  if (arr.every(it => it === null || typeof it !== 'object')) {
+    return arr.map(v =>
+      `<span class="inline-block bg-slate-100 text-slate-600 rounded px-1.5 py-0.5 text-[10px] mr-1 mb-1">${escapeHtml(v)}</span>`
+    ).join('');
+  }
+
+  // Array of objects — render each recursively in its own mini-block
+  return arr.map(it => `<div class="border border-slate-100 rounded-lg p-1.5 mb-1">${_renderDetailsBlock(it)}</div>`).join('');
+}
+
+function _renderDetailRow(key, value) {
+  const keyLabel = `<span class="font-bold text-slate-600">${escapeHtml(key)}</span>`;
+
+  if (value === null || value === undefined || value === '') {
+    return `<div class="text-[11px] text-slate-500 py-0.5">${keyLabel} : <span class="text-slate-400 italic">—</span></div>`;
+  }
+
+  if (Array.isArray(value)) {
+    return `<div class="text-[11px] text-slate-500 py-0.5">${keyLabel} :<div class="mt-1">${_renderArrayValue(value)}</div></div>`;
+  }
+
+  if (typeof value === 'object') {
+    const ba = _detectBeforeAfter(value);
+    if (ba) {
+      return `<div class="text-[11px] text-slate-500 py-0.5 flex items-center gap-1.5 flex-wrap">
+        ${keyLabel} :
+        <span class="line-through text-slate-400">${escapeHtml(_stringifyPrimitive(ba.before))}</span>
+        <span class="material-symbols-outlined !text-[12px] text-slate-400">arrow_forward</span>
+        <span class="font-bold text-slate-700">${escapeHtml(_stringifyPrimitive(ba.after))}</span>
+      </div>`;
+    }
+    return `<div class="py-1">
+      <div class="font-black text-slate-500 uppercase tracking-wide text-[10px]">${escapeHtml(key)}</div>
+      <div class="ml-2 pl-2 border-l-2 border-slate-100 mt-0.5">${_renderDetailsBlock(value)}</div>
+    </div>`;
+  }
+
+  return `<div class="text-[11px] text-slate-500 py-0.5">${keyLabel} : <span class="text-slate-700">${escapeHtml(value)}</span></div>`;
+}
+
+function _renderDetailsBlock(details) {
+  const entries = Object.entries(details || {});
+  if (!entries.length) return '';
+  return entries.map(([k, v]) => _renderDetailRow(k, v)).join('');
+}
+
+function renderHistoryRow(entry) {
+  const badge = historyTypeBadge(entry.type);
+  const isPrivate = entry.visibility === 'Private';
+  const payloadHtml = _renderDetailsBlock(entry.details) || '<span class="text-slate-300 text-[11px]">—</span>';
+
+  return `
+    <tr class="history-row border-b border-slate-100 last:border-0 align-top ${entry.type === 'Detail' ? 'history-detail-row hidden' : ''}">
+      <td class="py-2.5 pr-3 whitespace-nowrap text-[11px] text-slate-500">${formatHistoryTimestamp(entry.timestamp)}</td>
+      <td class="py-2.5 pr-3 text-[11px] text-slate-500 truncate max-w-[140px]" title="${escapeHtml(entry.userEmail)}">${escapeHtml(entry.userEmail || '—')}</td>
+      <td class="py-2.5 pr-3 text-xs">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="w-5 h-5 shrink-0 rounded-full flex items-center justify-center ${badge.cls}">
+            <span class="material-symbols-outlined !text-[12px]">${badge.icon}</span>
+          </span>
+          <span class="font-bold text-slate-700">${escapeHtml(entry.action)}</span>
+          ${isPrivate ? `<span class="shrink-0 text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-100">Privé</span>` : ''}
+        </div>
+      </td>
+      <td class="py-2.5">${payloadHtml}</td>
+    </tr>`;
+}
+
+/**
+ * Toggles all Detail-type rows within the currently-open history modal.
+ * Global on purpose, bound via inline onclick — same convention as the
+ * rest of this file (toggleClientView, etc.). Scoped to Swal.getPopup()
+ * since the modal's HTML isn't attached under any container we already
+ * hold a reference to.
+ */
+function toggleHistoryDetails() {
+  const popup = Swal.getPopup();
+  if (!popup) return;
+  const rows = popup.querySelectorAll('.history-detail-row');
+  if (!rows.length) return;
+  const btn = popup.querySelector('#historyExpandBtn');
+  const willShow = rows[0].classList.contains('hidden');
+  rows.forEach(r => r.classList.toggle('hidden', !willShow));
+  if (btn) {
+    btn.innerHTML = willShow
+      ? `<span class="material-symbols-outlined !text-[16px]">expand_less</span> Masquer les détails`
+      : `<span class="material-symbols-outlined !text-[16px]">expand_more</span> Afficher les détails`;
+  }
+}
+
+/**
+ * THE global entry point — call this from any "Historique" button
+ * anywhere in the app:
+ *
+ *   showHistoryModal('reserves', intervention.id, { title: 'Historique — ' + intervention.id });
+ *
+ * `module` should be the exact same string your write-side (appLog())
+ * calls already use for this entity, so reads line up with writes.
+ */
+function showHistoryModal(module, entityId, options = {}) {
+  showLoading("Chargement de l'historique...", '', false);
+
+  fetchHistory(module, entityId)
+    .then(entries => {
+      const visible = applyClientViewFilter(entries || []);
+      const hasDetails = visible.some(e => e.type === 'Detail');
+
+      const rowsHtml = visible.length
+        ? visible.map(renderHistoryRow).join('')
+        : `<tr><td colspan="4" class="text-xs text-slate-400 text-center py-8">Aucun historique pour le moment.</td></tr>`;
+
+      Swal.fire({
+        title: `<span style="color: #0f172a; font-weight: 900;">${escapeHtml(options.title || 'Historique')}</span>`,
+        html: `
+          <div class="text-left">
+            <div class="max-h-[55vh] overflow-auto pr-1">
+              <table class="w-full border-collapse">
+                <thead class="sticky top-0 bg-white z-10">
+                  <tr class="border-b-2 border-slate-200">
+                    <th class="py-2 pr-3 text-left text-[10px] font-black uppercase tracking-wide text-slate-400">Date</th>
+                    <th class="py-2 pr-3 text-left text-[10px] font-black uppercase tracking-wide text-slate-400">Utilisateur</th>
+                    <th class="py-2 pr-3 text-left text-[10px] font-black uppercase tracking-wide text-slate-400">Action</th>
+                    <th class="py-2 text-left text-[10px] font-black uppercase tracking-wide text-slate-400">Détails</th>
+                  </tr>
+                </thead>
+                <tbody>${rowsHtml}</tbody>
+              </table>
+            </div>
+            ${hasDetails ? `
+              <button id="historyExpandBtn" onclick="toggleHistoryDetails()" class="mt-3 w-full flex items-center justify-center gap-1 text-[11px] font-black uppercase tracking-wide text-primary bg-primary-light hover:bg-primary/10 rounded-xl py-2 transition-colors">
+                <span class="material-symbols-outlined !text-[16px]">expand_more</span> Afficher les détails
+              </button>` : ''}
+          </div>`,
+        width: 840,
+        confirmButtonText: 'Fermer',
+        confirmButtonColor: '#0d59f2',
+        background: '#f8fafc',
+        customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' }
+      });
+    })
+    .catch(err => {
+      showModal({ icon: 'error', title: 'Erreur', text: "Impossible de charger l'historique." });
+      appErrorLog(err, 'showHistoryModal', { module: module, entityId: entityId });
+    });
+}
+</script>

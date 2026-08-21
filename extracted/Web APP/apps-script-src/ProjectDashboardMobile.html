@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Dashboard | Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "background-light": "#f5f6f8",
+          },
+          fontFamily: { sans: ["Inter", "sans-serif"] },
+        },
+      },
+    }
+  </script>
+</head>
+
+<body class="bg-background-light font-sans text-slate-900 min-h-screen pb-20">
+
+  <?!= include_('ClientLib', data); ?>
+  <?!= include_('HeaderMobile') ?>
+
+  <main class="flex flex-col items-center py-6 px-4">
+    <div class="w-full max-w-xl flex flex-col gap-6">
+
+      <div class="flex flex-col gap-1 px-2">
+        <h1 id="mobProjName" class="text-slate-900 text-3xl font-black leading-tight tracking-tight uppercase">Chargement...</h1>
+        <div class="flex items-center gap-2">
+          <span id="mobStatusDot" class="size-2 bg-slate-300 rounded-full"></span>
+          <p id="mobSub" class="text-slate-500 text-sm font-medium italic">Synchronisation...</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-4 sm:gap-6">
+
+        <button onclick="navToWithParams('locataires', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">groups</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Info Batiments</span>
+        </button>
+
+        <button onclick="navToWithParams('planning', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">calendar_month</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Planning</span>
+        </button>
+
+        <button onclick="navToWithParams('passage', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">mail</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Avis</span>
+        </button>
+
+        <button onclick="navToWithParams('edl', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">assignment_turned_in</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">EDL</span>
+        </button>
+
+        <button onclick="navToWithParams('travaux', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">construction</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Travaux</span>
+        </button>
+
+        <button onclick="navToWithParams('sous-traitants', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">engineering</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">S/T</span>
+        </button>
+
+        <button onclick="navToWithParams('auto-controles', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">fact_check</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Auto contrôles</span>
+        </button>
+
+        <button onclick="navToWithParams('avancement', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">trending_up</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Avancement</span>
+        </button>
+
+        <button onclick="navToWithParams('opr', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">rule</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">OPR</span>
+        </button>
+
+        <button onclick="navToWithParams('synoptiques', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">account_tree</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Synoptiques</span>
+        </button>
+
+        <button onclick="navToWithParams('reserves', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">warning</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Réserves</span>
+        </button>
+
+        <button onclick="navToWithParams('quitus', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">verified</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Quitus</span>
+        </button>
+
+        <button onclick="navToWithParams('rapport', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">assessment</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Rapport</span>
+        </button>
+
+        <button onclick="navToWithParams('reclamations', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">feedback</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Réclamations</span>
+        </button>
+
+        <button onclick="navToWithParams('satisfaction', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">sentiment_satisfied</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Satisfaction</span>
+        </button>
+
+        <button onclick="navToWithParams('plans', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">architecture</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Plans</span>
+        </button>
+
+        <button onclick="navToWithParams('documents', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">description</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Documents</span>
+        </button>
+
+        <button id="adminBtn" onclick="navToWithParams('utilisateurs', { view: 'mobile' })" class="hidden flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-slate-800 shadow-sm border border-slate-700 flex items-center justify-center text-white">
+            <span class="material-symbols-outlined !text-3xl">group_add</span>
+          </div>
+          <span class="text-slate-800 font-black text-[11px] uppercase tracking-tight">Utilisateurs</span>
+        </button>
+
+        <button onclick="navToWithParams('support', { view: 'mobile' })" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+          <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined !text-3xl">help_outline</span>
+          </div>
+          <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Support</span>
+        </button>
+
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const PROJECT_ID = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId : "";
+
+    /**
+     * Updates UI with project details fetched from the server.
+     */
+    function updateMobileUI(project) {
+      if (!project) return;
+
+      // Update global app header (injected by HeaderMobile include)
+      const topName = document.getElementById('topProjectName');
+      if (topName) topName.textContent = project.name;
+
+      // Dashboard hero section
+      document.getElementById('mobProjName').textContent = project.name;
+      document.getElementById('mobSub').textContent = `Projet #${project.id} • ${project.units || 0} Logements`;
+
+      // Status indicator colour
+      const dot = document.getElementById('mobStatusDot');
+      const s = (project.status || '').toLowerCase();
+      if (s === 'active' || s === 'en cours') {
+        dot.className = "size-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]";
+      }
+    }
+
+    /**
+     * Role-based visibility for mobile action buttons.
+     */
+    function checkPermissions() {
+      const user = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user : {};
+      const role = (user.role || "").toLowerCase();
+      if (role === 'admin' || role === 'directeur') {
+        document.getElementById('adminBtn')?.classList.remove('hidden');
+      }
+    }
+
+    /**
+     * Initialization
+     *
+     * NOTE:  All navToWithParams calls automatically carry projectId forward
+     *         because navToWithParams in ClientLib reads APP_DATA.projectId
+     *         when the caller does not explicitly override it. No changes
+     *         needed at the call sites.
+     */
+    window.onload = () => {
+      checkPermissions();
+
+      // Guard: redirect to portfolio if no project context
+      if (!PROJECT_ID) {
+        window.top.location.replace(BASE_URL + "?page=project-portfolio");
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(projects => {
+          const p = projects.find(item => String(item.id) === String(PROJECT_ID));
+          if (p) {
+            updateMobileUI(p);
+          } else {
+            document.getElementById('mobProjName').textContent = "Projet introuvable";
+            document.getElementById('mobSub').textContent = "Retour au portfolio...";
+            setTimeout(() => {
+              window.top.location.replace(BASE_URL + "?page=project-portfolio");
+            }, 2000);
+          }
+        })
+        .withFailureHandler(err => {
+          console.error("Erreur de chargement du projet:", err);
+          document.getElementById('mobProjName').textContent = "Erreur de chargement";
+          document.getElementById('mobSub').textContent = "Veuillez rafraîchir la page";
+
+          // FIX: PROJECT_ID_FROM_SERVER replaced by PROJECT_ID (defined above)
+          appErrorLog(err, "gsListProjects_Mobile", {
+            requestedProjectId: PROJECT_ID,
+            token: APP_DATA.token ? "present" : "missing"
+          });
+        })
+        .gsListProjects(APP_DATA.token);
+    };
+
+  </script>
+
+</body>
+</html>

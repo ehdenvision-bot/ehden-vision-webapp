@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Mobile | Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { primary: "#0d59f2", "background-light": "#f5f6f8" },
+          fontFamily: { sans: ["Inter", "sans-serif"] },
+        },
+      },
+    }
+  </script>
+  <style>
+    .glass-card { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.5); }
+    .tab-active { border-bottom: 3px solid #0d59f2; color: #0d59f2; font-weight: 700; }
+  </style>
+</head>
+
+<body class="bg-background-light font-sans text-slate-900 min-h-screen pb-10">
+
+  <?!= include_('ClientLib', data); ?>
+  <?!= include_('HeaderMobile') ?>
+
+  <main class="p-4 space-y-4">
+    <div class="flex border-b border-slate-200 mb-4 bg-white rounded-t-xl overflow-hidden shadow-sm">
+      <button onclick="switchTab('nav')"    id="tab-nav"    class="flex-1 py-4 text-xs font-bold tab-active transition-all uppercase">Exploration</button>
+      <button onclick="switchTab('search')" id="tab-search" class="flex-1 py-4 text-xs font-bold text-slate-500 transition-all uppercase">Recherche</button>
+    </div>
+
+    <section id="section-nav" class="space-y-4">
+      <!-- NOUVEAU : Sélecteur de catégorie -->
+      <div class="flex gap-1 p-1 bg-slate-200/50 rounded-xl mb-2">
+        <button onclick="setMobileCategory('locataires')" id="btn-cat-locataires" class="cat-btn flex-1 py-2.5 text-[11px] font-black uppercase rounded-lg bg-white shadow-sm text-primary transition-all">Locataires</button>
+        <button onclick="setMobileCategory('communs')"    id="btn-cat-communs"    class="cat-btn flex-1 py-2.5 text-[11px] font-black uppercase rounded-lg text-slate-500 transition-all">Communs</button>
+        <button onclick="setMobileCategory('facades')"    id="btn-cat-facades"    class="cat-btn flex-1 py-2.5 text-[11px] font-black uppercase rounded-lg text-slate-500 transition-all">Façades</button>
+      </div>
+
+      <div class="glass-card p-5 rounded-2xl shadow-sm space-y-4">
+        <div>
+          <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bâtiment / Hall</label>
+          <select id="sel-level1" onchange="onLevel1Change()" class="w-full rounded-xl border-slate-200 text-sm h-12 focus:ring-primary">
+            <option value="">Chargement...</option>
+          </select>
+        </div>
+        <div>
+          <label id="lbl-level2" class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Étage</label>
+          <select id="sel-level2" onchange="onLevel2Change()" disabled class="w-full rounded-xl border-slate-200 text-sm h-12 disabled:bg-slate-50">
+            <option value="">Choisir bâtiment...</option>
+          </select>
+        </div>
+        <div>
+          <label id="lbl-level3" class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Porte</label>
+          <select id="sel-level3" onchange="onLevel3Change()" disabled class="w-full rounded-xl border-slate-200 text-sm h-12 disabled:bg-slate-50">
+            <option value="">En attente...</option>
+          </select>
+        </div>
+      </div>
+      <button onclick="applySelection()" id="btn-apply-nav" disabled
+              class="w-full bg-primary text-white py-4 rounded-2xl font-black shadow-lg shadow-blue-200 disabled:opacity-30 active:scale-95 transition-all">
+        VOIR LA FICHE
+      </button>
+    </section>
+
+    <section id="section-search" class="hidden space-y-4">
+      <div class="flex gap-2">
+        <div class="relative flex-1">
+          <span class="material-symbols-outlined absolute left-4 top-3.5 text-slate-400">search</span>
+          <input type="text" id="searchInput" placeholder="Nom ou ID..."
+                 class="w-full pl-12 pr-4 h-14 rounded-2xl border-none shadow-sm focus:ring-2 focus:ring-primary text-sm">
+        </div>
+        <button onclick="triggerSearch()" class="bg-primary text-white px-4 rounded-2xl font-black shadow-md active:scale-95">OK</button>
+      </div>
+      <div id="searchResults" class="space-y-3"></div>
+    </section>
+  </main>
+
+  <!-- EDIT / VIEW MODAL -->
+  <div id="mobileEditModal" class="fixed inset-0 z-50 hidden flex items-end justify-center">
+    <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeMobileModal()"></div>
+    <div class="relative bg-white w-full rounded-t-[32px] shadow-2xl p-6 overflow-y-auto max-h-[96vh]">
+      <button onclick="closeMobileModal()" class="absolute top-5 right-5 size-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors z-10">
+        <span class="material-symbols-outlined text-[18px]">close</span>
+      </button>
+
+      <div class="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6"></div>
+
+      <div id="modal-header" class="mb-4 text-center">
+        <h3 class="text-2xl font-black text-slate-800 leading-tight" id="modalTitle">Fiche Logement</h3>
+        <p id="modalSubTitle" class="text-[10px] text-slate-400 font-mono mt-1 tracking-widest font-bold"></p>
+      </div>
+
+      <!-- VIEW MODE -->
+      <div id="mobileViewContent" class="flex flex-col space-y-5 pb-8">
+        <!-- DYNAMIC TOP GRID -->
+        <div id="v-top-grid" class="grid grid-cols-3 gap-2 bg-primary p-4 rounded-2xl text-white shadow-lg transition-all">
+          <div class="text-center border-r border-white/20"><p id="lbl-v-col1" class="text-[8px] uppercase text-blue-100 font-bold">Bât.</p><p id="v-col1" class="text-sm font-black">-</p></div>
+          <div id="v-col2-wrapper" class="text-center border-r border-white/20"><p id="lbl-v-col2" class="text-[8px] uppercase text-blue-100 font-bold">Étage</p><p id="v-col2" class="text-sm font-black">-</p></div>
+          <div id="v-col3-wrapper" class="text-center"><p id="lbl-v-col3" class="text-[8px] uppercase text-blue-100 font-bold">Emp.</p><p id="v-col3" class="text-sm font-black">-</p></div>
+        </div>
+
+        <!-- LOCATAIRES DETAILS -->
+        <div id="v-details-locataires" class="grid grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0">
+          <div class="col-span-1"><p class="text-[9px] font-black text-slate-400 uppercase">Porte</p><p id="v-porte" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-1"><p class="text-[9px] font-black text-slate-400 uppercase">Type</p><p id="v-type" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-1 border-t border-slate-200 pt-2"><p class="text-[9px] font-black text-slate-400 uppercase">Configuration</p><p id="v-config" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-1 border-t border-slate-200 pt-2"><p class="text-[9px] font-black text-slate-400 uppercase">Surface</p><p id="v-surface" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-2 border-t border-slate-200 pt-2">
+            <p class="text-[9px] font-black text-primary uppercase">ID Propriétaire</p>
+            <p id="v-idProprio" class="font-bold text-slate-800">-</p>
+          </div>
+        </div>
+
+        <!-- COMMUNS DETAILS -->
+        <div id="v-details-communs" class="hidden grid grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0">
+          <div class="col-span-2"><p class="text-[9px] font-black text-slate-400 uppercase">Description</p><p id="v-c-desc" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-2 border-t border-slate-200 pt-2"><p class="text-[9px] font-black text-slate-400 uppercase">Type / Catégorie</p><p id="v-c-type" class="font-bold text-slate-800">-</p></div>
+        </div>
+
+        <!-- FACADES DETAILS -->
+        <div id="v-details-facades" class="hidden grid grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0">
+          <div class="col-span-1"><p class="text-[9px] font-black text-slate-400 uppercase">Trame</p><p id="v-f-trame" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-1"><p class="text-[9px] font-black text-slate-400 uppercase">Partie</p><p id="v-f-partie" class="font-bold text-slate-800">-</p></div>
+          <div class="col-span-2 border-t border-slate-200 pt-2"><p class="text-[9px] font-black text-slate-400 uppercase">Type</p><p id="v-f-type" class="font-bold text-slate-800">-</p></div>
+        </div>
+
+        <div id="m-view-contact-wrapper" class="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shrink-0">
+          <p class="text-[9px] font-black text-blue-400 uppercase mb-2 tracking-widest">Contact Locataire</p>
+          <div class="space-y-3">
+            <p class="font-black text-slate-800 text-lg leading-tight break-words" id="v-fullname">-</p>
+            <div class="grid grid-cols-1 gap-2">
+              <p class="text-xs text-slate-600 flex items-center gap-2 bg-white/50 p-2 rounded-lg"><span class="material-symbols-outlined !text-sm text-primary">mail</span> <span id="v-email" class="break-all">-</span></p>
+              <p class="text-xs text-slate-600 flex items-center gap-2 bg-white/50 p-2 rounded-lg"><span class="material-symbols-outlined !text-sm text-primary">call</span> <span id="v-tels">-</span></p>
+              <p class="text-xs text-slate-600 flex items-center gap-2 bg-white/50 p-2 rounded-lg"><span class="material-symbols-outlined !text-sm text-primary">phone_in_talk</span> <span id="v-telfixe">-</span></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0">
+          <p class="text-[9px] font-black text-slate-400 uppercase mb-3 tracking-widest flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px]">calendar_month</span> Suivi & Planning
+          </p>
+          <div class="space-y-3">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold text-slate-600">Statut :</span>
+              <span id="v-plan-status" class="px-2 py-0.5 rounded-md text-[10px] font-black uppercase text-white bg-slate-400">Aucun</span>
+            </div>
+            <div id="v-plan-note-container" class="hidden">
+              <p class="text-[10px] font-black text-slate-400 uppercase">Note</p>
+              <p class="text-xs text-slate-800 bg-white p-2 rounded-lg border border-slate-100 mt-1 whitespace-pre-wrap" id="v-plan-note">-</p>
+            </div>
+            <div id="v-plan-private-container" class="hidden">
+              <p class="text-[10px] font-black text-rose-400 uppercase flex items-center gap-1">
+                <span class="material-symbols-outlined !text-[12px]">lock</span> Privée
+              </p>
+              <p class="text-xs text-rose-800 bg-rose-50 p-2 rounded-lg border border-rose-100 mt-1 whitespace-pre-wrap" id="v-plan-private">-</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-3 pt-2 shrink-0">
+          <button onclick="openModulesModal()" class="w-full py-4 bg-white border-2 border-primary rounded-2xl font-black text-sm text-primary shadow-sm flex items-center justify-center gap-2 active:bg-blue-50 transition-colors">
+            <span class="material-symbols-outlined text-[20px]">grid_view</span>
+            OUVRIR ACTIONS & MODULES
+          </button>
+          <button id="btn-modify-contact" onclick="toggleEditMode(true)" class="w-full py-4 bg-slate-100 text-slate-500 rounded-2xl font-bold flex items-center justify-center gap-2">
+            <span class="material-symbols-outlined text-sm">edit</span> MODIFIER CONTACT
+          </button>
+        </div>
+
+        <button onclick="closeMobileModal()" class="w-full py-2 text-slate-400 text-xs font-bold uppercase mb-4 tracking-widest">Fermer la fiche</button>
+      </div>
+
+      <!-- EDIT FORM -->
+      <form id="mobileForm" class="hidden space-y-4 pb-12">
+        <input type="hidden" id="m-id">
+        <div id="m-edit-contact-wrapper" class="space-y-4">
+          <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Nom</label><input type="text" id="m-nom" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary"></div>
+          <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Prénom</label><input type="text" id="m-prenom" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary"></div>
+          <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Email 1</label><input type="email" id="m-email" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary"></div>
+          <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Email 2</label><input type="email" id="m-email2" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary"></div>
+          <div class="grid grid-cols-2 gap-4">
+            <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Tél Port 1</label><input type="text" id="m-tel1" oninput="formatPhoneInput(this)" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm"></div>
+            <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Tél Port 2</label><input type="text" id="m-tel2" oninput="formatPhoneInput(this)" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm"></div>
+          </div>
+          <div><label class="text-[10px] font-black text-slate-400 uppercase ml-1">Tél Fixe</label><input type="text" id="m-telfixe" oninput="formatPhoneInput(this)" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm"></div>
+          <div>
+            <label class="text-[10px] font-black text-slate-400 uppercase ml-1">ID Propriétaire</label>
+            <input type="text" id="m-idProprio" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary">
+          </div>
+        </div>
+
+        <div class="border-t border-slate-200 mt-4 pt-4 space-y-4">
+          <h4 class="text-[11px] font-black text-primary uppercase flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[16px]">calendar_month</span> Suivi & Planning
+          </h4>
+          <div>
+            <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Statut</label>
+            <select id="m-plan-status" onchange="updateMobileSelectBg(this)" class="w-full h-12 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary font-bold transition-colors">
+              <option value=""        class="bg-white">Aucun statut</option>
+              <option value="Info"    class="bg-blue-200">Info</option>
+              <option value="Attention" class="bg-orange-200">Attention</option>
+              <option value="Bloquant"  class="bg-red-400">Bloquant</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Note Publique</label>
+            <textarea id="m-plan-note" rows="2" class="w-full p-3 border-slate-100 bg-slate-50 rounded-xl text-sm focus:ring-primary resize-none"></textarea>
+          </div>
+          <div id="m-plan-private-container">
+            <label class="text-[10px] font-black text-rose-400 uppercase ml-1 flex items-center gap-1">
+              <span class="material-symbols-outlined !text-[12px]">lock</span> Note Privée
+            </label>
+            <textarea id="m-plan-private" rows="2" class="w-full p-3 border-rose-100 bg-rose-50/50 rounded-xl text-sm focus:ring-rose-500 resize-none"></textarea>
+          </div>
+        </div>
+
+        <div class="flex gap-4 pt-6">
+          <button type="button" onclick="toggleEditMode(false)" class="flex-1 py-4 text-slate-400 font-bold uppercase text-xs">Annuler</button>
+          <button type="submit" class="flex-1 py-4 bg-primary text-white font-black rounded-2xl shadow-xl uppercase text-xs">Enregistrer</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- ACTIONS & MODULES MODAL -->
+    <div id="modulesModal" class="fixed inset-0 z-[60] hidden flex items-end justify-center">
+      <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeModulesModal()"></div>
+      <div class="relative bg-white w-full rounded-t-[32px] shadow-2xl p-6 overflow-y-auto max-h-[85vh]">
+        <div class="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-4"></div>
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h3 class="text-xl font-black text-slate-800 leading-tight">Actions & Modules</h3>
+            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Choisissez une destination</p>
+          </div>
+          <button onclick="closeModulesModal()" class="size-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+
+        <div class="grid grid-cols-3 gap-3 pb-6">
+          <button onclick="navToWithParams('planning',       { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📅</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Planning</span></button>
+          <button onclick="navToWithParams('passage',        { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">✉️</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Avis de passage</span></button>
+          <button onclick="navToWithParams('edl',            { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">✅</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">État des Lieux</span></button>
+          <button onclick="navToWithParams('travaux',        { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">🏗️</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Travaux</span></button>
+          <button onclick="navToWithParams('auto-controles', { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📋</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Auto contrôles</span></button>
+          <button onclick="navToWithParams('avancement',     { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📈</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Avancement</span></button>
+          <button onclick="navToWithParams('opr',            { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📏</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">OPR</span></button>
+          <button onclick="navToWithParams('reserves',       { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">⚠️</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Réserves</span></button>
+          <button onclick="navToWithParams('quitus',         { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📜</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Quitus</span></button>
+          <button onclick="navToWithParams('rapport',        { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📑</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Rapport</span></button>
+          <button onclick="navToWithParams('reclamations',   { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">💬</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Réclamations</span></button>
+          <button onclick="navToWithParams('satisfaction',   { view: 'mobile' })" class="p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">😊</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Satisfaction</span></button>
+          <button onclick="navToWithParams('plans',          { view: 'mobile' })" class="col-span-3 p-3 bg-slate-50 border border-slate-100 rounded-xl flex flex-col items-center gap-2 active:bg-slate-200 transition-colors"><span class="text-2xl">📐</span><span class="text-[9px] font-black text-slate-700 uppercase text-center leading-tight">Plans</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================
+    // GLOBAL CONSTANTS — all from APP_DATA (server-injected)
+    // =========================================================
+
+    //      appErrorLog calls but never declared, causing ReferenceError.
+    const PROJECT_ID_FROM_SERVER = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId  : "";
+    const SESSION_TOKEN          = (typeof APP_DATA !== 'undefined') ? APP_DATA.token       : "";
+    const CURRENT_USER_EMAIL     = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user.email : "Inconnu";
+
+    // PROJECT_STATUS: used for the client-side guard before the server call.
+    // The real security check happens server-side in assertCanEdit_().
+    // This is a UI convenience only — it matches APP_DATA.projectStatus
+    // which the router now always fetches from the DB (never from URL).
+    const PROJECT_STATUS = (typeof APP_DATA !== 'undefined') ? (APP_DATA.projectStatus || "") : "";
+
+    const canEdit  = APP_DATA.canEdit  || false;
+    const isClient = APP_DATA.isClient || false;
+
+    let locatairesData          = [];
+    let planningData            = {};
+    let currentSelectedId       = null;
+    let currentEditingItemOriginal = {};
+
+    // =========================================================
+    // INITIALIZATION & STATE
+    // =========================================================
+    let rawMobileData = { locataires: [], communs: [], facades: [], planning: {} };
+    let currentCategory = 'locataires';
+
+    window.onload = () => {
+      google.script.run
+        .withSuccessHandler(data => {
+          rawMobileData.locataires = data?.locataires || [];
+          rawMobileData.communs    = data?.communs    || [];
+          rawMobileData.facades    = data?.facades    || [];
+          rawMobileData.planning   = data?.planning   || {};
+          
+          setMobileCategory('locataires');
+        })
+        .withFailureHandler(err => {
+          document.getElementById('sel-level1').innerHTML = '<option value="">Erreur de chargement</option>';
+          appErrorLog(err, "getLocatairesPageData_Mobile", { context: "Init", projectId: PROJECT_ID_FROM_SERVER });
+        })
+        .getLocatairesPageData(SESSION_TOKEN, PROJECT_ID_FROM_SERVER);
+    };
+
+    // =========================================================
+    // DYNAMIC CATEGORY NAVIGATION
+    // =========================================================
+
+    function setMobileCategory(cat) {
+      currentCategory = cat;
+      
+      // UI Pills
+      document.querySelectorAll('.cat-btn').forEach(btn => {
+        btn.classList.remove('bg-white', 'shadow-sm', 'text-primary');
+        btn.classList.add('text-slate-500');
+      });
+      const activeBtn = document.getElementById('btn-cat-' + cat);
+      activeBtn.classList.remove('text-slate-500');
+      activeBtn.classList.add('bg-white', 'shadow-sm', 'text-primary');
+
+      // Labels
+      const lbl2 = document.getElementById('lbl-level2');
+      const lbl3 = document.getElementById('lbl-level3');
+      if (cat === 'locataires') { lbl2.textContent = 'Étage';       lbl3.textContent = 'Porte'; }
+      if (cat === 'communs')    { lbl2.textContent = 'Étage';       lbl3.textContent = 'Élément'; }
+      if (cat === 'facades')    { lbl2.textContent = 'Orientation'; lbl3.textContent = 'Trame / Partie'; }
+
+      initLevel1Dropdown();
+    }
+
+    function getLevel1Label(item) {
+      let bat = item.batiment || '';
+      let label = bat ? `Bat. ${bat}` : 'Sans Bat.';
+      const hVal = String(item.hall || '').trim();
+      if (hVal !== "" && !["sans hall", "aucun", "null", "undefined"].includes(hVal.toLowerCase())) {
+        label += ` - Hall ${hVal}`;
+      }
+      return label;
+    }
+
+    function initLevel1Dropdown() {
+      const sel = document.getElementById('sel-level1');
+      const data = rawMobileData[currentCategory] || [];
+      sel.innerHTML = '<option value="">Sélectionner bâtiment...</option>';
+      
+      const halls = [...new Set(data.map(getLevel1Label))].sort();
+      halls.forEach(h => sel.add(new Option(h, h)));
+      
+      document.getElementById('sel-level2').disabled = true;
+      document.getElementById('sel-level2').innerHTML = '<option value="">Choisir bâtiment...</option>';
+      document.getElementById('sel-level3').disabled = true;
+      document.getElementById('sel-level3').innerHTML = '<option value="">En attente...</option>';
+      document.getElementById('btn-apply-nav').disabled = true;
+    }
+
+    function onLevel1Change() {
+      const val1 = document.getElementById('sel-level1').value;
+      const sel2 = document.getElementById('sel-level2');
+      const sel3 = document.getElementById('sel-level3');
+      
+      sel2.innerHTML = `<option value="">Choisir ${document.getElementById('lbl-level2').textContent.toLowerCase()}...</option>`;
+      sel3.innerHTML = '<option value="">En attente...</option>';
+      sel2.disabled  = !val1;
+      sel3.disabled  = true;
+      document.getElementById('btn-apply-nav').disabled = true;
+
+      if (val1) {
+        const filtered = rawMobileData[currentCategory].filter(item => getLevel1Label(item) === val1);
+        let level2Values = [];
+        
+        if (currentCategory === 'locataires' || currentCategory === 'communs') {
+          level2Values = [...new Set(filtered.map(i => i.etage))].sort((a, b) => a - b);
+          level2Values.forEach(e => sel2.add(new Option(`Étage ${e}`, e)));
+        } else if (currentCategory === 'facades') {
+          level2Values = [...new Set(filtered.map(i => i.orientation))].sort();
+          level2Values.forEach(o => sel2.add(new Option(`Orientation ${o}`, o)));
+        }
+      }
+    }
+
+    function onLevel2Change() {
+      const val1 = document.getElementById('sel-level1').value;
+      const val2 = document.getElementById('sel-level2').value;
+      const sel3 = document.getElementById('sel-level3');
+      
+      sel3.innerHTML = `<option value="">Choisir ${document.getElementById('lbl-level3').textContent.toLowerCase()}...</option>`;
+      sel3.disabled  = !val2;
+
+      if (val2) {
+        const filtered = rawMobileData[currentCategory].filter(item => {
+          if (getLevel1Label(item) !== val1) return false;
+          if (currentCategory === 'facades') return String(item.orientation) === val2;
+          return String(item.etage) === val2;
+        });
+
+        filtered.forEach(item => {
+          let label = "";
+          if (currentCategory === 'locataires') label = `Porte ${item.porte}`;
+          if (currentCategory === 'communs')    label = item.description || item.id;
+          if (currentCategory === 'facades')    label = `Trame ${item.trame} / ${item.partie}`;
+          
+          sel3.add(new Option(label, item.id));
+        });
+      }
+    }
+
+    function onLevel3Change() {
+      document.getElementById('btn-apply-nav').disabled = !document.getElementById('sel-level3').value;
+    }
+
+    function applySelection() {
+      openMobileEdit(document.getElementById('sel-level3').value);
+    }
+
+    // =========================================================
+    // TAB SWITCHING
+    // =========================================================
+
+    function switchTab(type) {
+      document.getElementById('section-nav').classList.toggle('hidden',    type !== 'nav');
+      document.getElementById('section-search').classList.toggle('hidden', type !== 'search');
+      document.getElementById('tab-nav').className    = type === 'nav'    ? 'flex-1 py-4 text-xs font-bold tab-active transition-all uppercase' : 'flex-1 py-4 text-xs font-bold text-slate-500 transition-all uppercase';
+      document.getElementById('tab-search').className = type === 'search' ? 'flex-1 py-4 text-xs font-bold tab-active transition-all uppercase' : 'flex-1 py-4 text-xs font-bold text-slate-500 transition-all uppercase';
+    }
+
+    // =========================================================
+    // SEARCH
+    // =========================================================
+
+    function triggerSearch() {
+      const val    = document.getElementById('searchInput').value.trim().toLowerCase();
+      const resDiv = document.getElementById('searchResults');
+      if (val.length < 2) return alert("2 caractères min.");
+      
+      // Search across all arrays
+      const allData = [...rawMobileData.locataires, ...rawMobileData.communs, ...rawMobileData.facades];
+      
+      const matches = allData.filter(l =>
+        (l.nom         && l.nom.toLowerCase().includes(val))       ||
+        (l.description && l.description.toLowerCase().includes(val)) ||
+        (l.id          && String(l.id).toLowerCase().includes(val))
+      ).slice(0, 15);
+      
+      if (!matches.length) {
+        resDiv.innerHTML = '<div class="p-8 text-center text-slate-400 text-xs italic bg-white rounded-2xl shadow-sm">Aucun résultat</div>';
+        return;
+      }
+      resDiv.innerHTML = matches.map(l => `
+        <div onclick="openMobileEdit('${l.id}')" class="bg-white p-5 rounded-2xl shadow-sm border border-slate-50 flex justify-between items-center active:bg-slate-50 transition-colors">
+          <div>
+            <div class="font-black text-slate-800 text-sm uppercase">${l.nom || l.description || l.type || 'Élément'} ${l.prenom || ''}</div>
+            <div class="text-[9px] text-slate-400 font-bold tracking-widest">${l.id}</div>
+          </div>
+          <span class="material-symbols-outlined text-primary font-bold">arrow_forward_ios</span>
+        </div>`).join('');
+    }
+
+    // =========================================================
+    // MODAL — OPEN / CLOSE / TOGGLE
+    // =========================================================
+
+    function openMobileEdit(id) {
+      // Find item and its category dynamically
+      let item = null;
+      let foundCategory = 'locataires';
+      ['locataires', 'communs', 'facades'].forEach(cat => {
+        const match = rawMobileData[cat].find(l => String(l.id) === String(id));
+        if (match) { item = match; foundCategory = cat; }
+      });
+      if (!item) return;
+      
+      currentCategory = foundCategory; // Sync state
+      currentSelectedId = id;
+      currentEditingItemOriginal = { ...item };
+
+      // FIX 1: Fetch the plan data state safely
+      const plan = rawMobileData.planning[id] || {};
+
+      // Toggle contact visibility wrappers safely
+      const showContact = (foundCategory === 'locataires');
+      document.getElementById('m-view-contact-wrapper').classList.toggle('hidden', !showContact);
+      document.getElementById('m-edit-contact-wrapper').classList.toggle('hidden', !showContact);
+
+      // Read mode — planning status
+      const statusEl = document.getElementById('v-plan-status');
+      statusEl.textContent = plan.status || 'Aucun';
+      statusEl.className   = `px-2 py-0.5 rounded-md text-[10px] font-black uppercase text-white ${getMobileStatusColor(plan.status)}`;
+
+      // Read mode — public note
+      if (plan.note) {
+        document.getElementById('v-plan-note-container').classList.remove('hidden');
+        document.getElementById('v-plan-note').textContent = plan.note;
+      } else {
+        document.getElementById('v-plan-note-container').classList.add('hidden');
+      }
+
+      // Read mode — private note (hidden for clients)
+      if (plan.privateNote && !isClient) {
+        document.getElementById('v-plan-private-container').classList.remove('hidden');
+        document.getElementById('v-plan-private').textContent = plan.privateNote;
+      } else {
+        document.getElementById('v-plan-private-container').classList.add('hidden');
+      }
+
+      currentEditingItemOriginal.planStatus      = plan.status      || '';
+      currentEditingItemOriginal.planNote        = plan.note        || '';
+      currentEditingItemOriginal.planPrivateNote = plan.privateNote || '';
+
+      // Pre-fill edit form
+      document.getElementById('m-plan-status').value  = currentEditingItemOriginal.planStatus;
+      updateMobileSelectBg(document.getElementById('m-plan-status'));
+      document.getElementById('m-plan-note').value    = currentEditingItemOriginal.planNote;
+      document.getElementById('m-plan-private').value = currentEditingItemOriginal.planPrivateNote;
+      document.getElementById('m-plan-private-container').classList.toggle('hidden', isClient);
+
+      // Clear all edit inputs first to prevent 'ghost data' from triggering false modifications
+      ['m-nom', 'm-prenom', 'm-email', 'm-email2', 'm-tel1', 'm-tel2', 'm-telfixe', 'm-idProprio'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+
+      // Toggle Details Wrappers based on Category
+      document.getElementById('v-details-locataires').classList.toggle('hidden', foundCategory !== 'locataires');
+      document.getElementById('v-details-communs').classList.toggle('hidden', foundCategory !== 'communs');
+      document.getElementById('v-details-facades').classList.toggle('hidden', foundCategory !== 'facades');
+
+      const btnModify = document.getElementById('btn-modify-contact');
+
+      // Populate view fields dynamically based on category
+      const topGrid = document.getElementById('v-top-grid');
+      const col2Wrapper = document.getElementById('v-col2-wrapper');
+      const col3Wrapper = document.getElementById('v-col3-wrapper');
+
+      if (foundCategory === 'locataires') {
+        // 3-Column Layout
+        topGrid.className = "grid grid-cols-3 gap-2 bg-primary p-4 rounded-2xl text-white shadow-lg transition-all";
+        col2Wrapper.className = "text-center border-r border-white/20";
+        col3Wrapper.classList.remove('hidden');
+
+        document.getElementById('lbl-v-col1').textContent = "Bât.";
+        document.getElementById('v-col1').textContent     = item.batiment || '-';
+        document.getElementById('lbl-v-col2').textContent = "Étage";
+        document.getElementById('v-col2').textContent     = item.etage || '0';
+        document.getElementById('lbl-v-col3').textContent = "Emp.";
+        document.getElementById('v-col3').textContent     = item.empilement || '-';
+
+        document.getElementById('v-porte').textContent    = item.porte || '-';
+        document.getElementById('v-type').textContent     = item.typeLog || item.type || '-';
+        document.getElementById('v-config').textContent   = item.configLogement || '-';
+        document.getElementById('v-surface').textContent  = item.surface ? item.surface + ' m²' : '-';
+        document.getElementById('v-idProprio').textContent = item.reference || '-';
+
+        btnModify.innerHTML = `<span class="material-symbols-outlined text-sm">edit</span> MODIFIER CONTACT & PLANNING`;
+
+        // Populate edit form (Locataires only)
+        document.getElementById('m-nom').value     = item.nom    || '';
+        document.getElementById('m-prenom').value  = item.prenom || '';
+        document.getElementById('m-email').value   = item.email  || '';
+        document.getElementById('m-email2').value  = item.email2 || '';
+        document.getElementById('m-tel1').value    = item.telPort1 || '';
+        document.getElementById('m-tel2').value    = item.telPort2 || '';
+        document.getElementById('m-telfixe').value = item.telFixe  || '';
+        document.getElementById('m-idProprio').value = item.reference || '';
+
+      } else {
+        // 2-Column Layout for Communs and Façades
+        topGrid.className = "grid grid-cols-2 gap-2 bg-primary p-4 rounded-2xl text-white shadow-lg transition-all";
+        col2Wrapper.className = "text-center"; // Removes the right border
+        col3Wrapper.classList.add('hidden');
+
+        if (foundCategory === 'communs') {
+          document.getElementById('lbl-v-col1').textContent = "Bât.";
+          document.getElementById('v-col1').textContent     = item.batiment || '-';
+          document.getElementById('lbl-v-col2').textContent = "Étage";
+          document.getElementById('v-col2').textContent     = item.etage || '0';
+
+          document.getElementById('v-c-desc').textContent   = item.description || '-';
+          document.getElementById('v-c-type').textContent   = item.type || '-';
+
+          btnModify.innerHTML = `<span class="material-symbols-outlined text-sm">edit</span> MODIFIER PLANNING`;
+
+        } else if (foundCategory === 'facades') {
+          document.getElementById('lbl-v-col1').textContent = "Bât.";
+          document.getElementById('v-col1').textContent     = item.batiment || '-';
+          document.getElementById('lbl-v-col2').textContent = "Orientation";
+          document.getElementById('v-col2').textContent     = item.orientation || '-';
+
+          document.getElementById('v-f-trame').textContent  = item.trame || '-';
+          document.getElementById('v-f-partie').textContent = item.partie || '-';
+          document.getElementById('v-f-type').textContent   = item.type || '-';
+
+          btnModify.innerHTML = `<span class="material-symbols-outlined text-sm">edit</span> MODIFIER PLANNING`;
+        }
+      }
+
+      // Populate common view variables
+      document.getElementById('v-fullname').textContent = `${item.nom || ''} ${item.prenom || ''}`.trim() || '-';
+      document.getElementById('v-email').innerHTML      = [item.email, item.email2].filter(Boolean).join('<br>') || 'Non renseigné';
+      document.getElementById('v-tels').textContent     = [item.telPort1, item.telPort2].filter(Boolean).join(' / ') || 'Aucun mobile';
+      document.getElementById('v-telfixe').textContent  = item.telFixe || 'Aucun fixe';
+
+      // Security check
+      document.getElementById('btn-modify-contact').classList.toggle('hidden', !canEdit);
+
+      document.getElementById('m-id').value = item.id;
+      document.getElementById('modalSubTitle').textContent = `Fiche Identifiant : ${item.id}`;
+      toggleEditMode(false);
+      document.getElementById('mobileEditModal').classList.remove('hidden');
+    }
+
+    function toggleEditMode(isEdit) {
+      document.getElementById('mobileViewContent').classList.toggle('hidden',  isEdit);
+      document.getElementById('mobileForm').classList.toggle('hidden',        !isEdit);
+      
+      // Better UX: Dynamic titles based on active category
+      if (isEdit) {
+        document.getElementById('modalTitle').textContent = "Modifier Contact";
+      } else {
+        if (currentCategory === 'communs') {
+          document.getElementById('modalTitle').textContent = "Fiche Commun";
+        } else if (currentCategory === 'facades') {
+          document.getElementById('modalTitle').textContent = "Fiche Façade";
+        } else {
+          document.getElementById('modalTitle').textContent = "Fiche Logement";
+        }
+      }
+    }
+
+    function closeMobileModal() {
+      const mobileForm = document.getElementById('mobileForm');
+      if (!mobileForm.classList.contains('hidden')) {
+        toggleEditMode(false);
+      } else {
+        document.getElementById('mobileEditModal').classList.add('hidden');
+      }
+    }
+
+    function openModulesModal()  { document.getElementById('modulesModal').classList.remove('hidden'); }
+    function closeModulesModal() { document.getElementById('modulesModal').classList.add('hidden'); }
+
+    // =========================================================
+    // FORM SUBMISSION
+    // =========================================================
+
+    function formatPhoneInput(input) {
+      let val = input.value.replace(/\D/g, '').substring(0, 10);
+      input.value = val.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
+    }
+
+    document.getElementById('mobileForm').onsubmit = function(e) {
+      e.preventDefault();
+
+      // Client-side status guard (UI convenience only — server enforces the real check)
+      const statusLower = (PROJECT_STATUS || '').toLowerCase();
+      if (statusLower && statusLower !== 'active') {
+        showModal({
+          icon:  'warning',
+          title: 'Projet Inactif',
+          text:  'Les modifications sont bloquées pour ce projet.'
+        });
+        return;
+      }
+
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      submitBtn.disabled    = true;
+      submitBtn.textContent = "ENREGISTREMENT...";
+
+      // Helper function to lock/unlock all form elements
+      const formElements = document.querySelectorAll('#mobileForm input, #mobileForm select, #mobileForm textarea');
+      const setFormLocked = (isLocked) => {
+        formElements.forEach(el => el.disabled = isLocked);
+      };
+
+      // Gather new values from the form
+      const newValues = {
+        id:             document.getElementById('m-id').value,
+        nom:            document.getElementById('m-nom').value,
+        prenom:         document.getElementById('m-prenom').value,
+        email:          document.getElementById('m-email').value,
+        email2:         document.getElementById('m-email2').value,
+        telPort1:       document.getElementById('m-tel1').value,
+        telPort2:       document.getElementById('m-tel2').value,
+        telFixe:        document.getElementById('m-telfixe').value,
+        idProprietaire: document.getElementById('m-idProprio').value,
+        planStatus:     document.getElementById('m-plan-status').value,
+        planNote:       document.getElementById('m-plan-note').value,
+        planPrivateNote: document.getElementById('m-plan-private').value
+      };
+
+      // Calculate modifications (separated into Core and Details)
+      const modificationsCore   = {};
+      const modificationsDetail = {};
+      
+      const fieldsCore   = ['nom', 'prenom', 'email', 'email2', 'telPort1', 'telPort2', 'telFixe', 'idProprietaire'];
+      const fieldsDetail = ['planStatus', 'planNote', 'planPrivateNote'];
+
+      fieldsCore.forEach(key => {
+        const oldVal = String(currentEditingItemOriginal[key] || "").trim();
+        const newVal = String(newValues[key] || "").trim();
+        if (oldVal !== newVal) modificationsCore[key] = { old: oldVal, new: newVal };
+      });
+
+      fieldsDetail.forEach(key => {
+        const oldVal = String(currentEditingItemOriginal[key] || "").trim();
+        const newVal = String(newValues[key] || "").trim();
+        if (oldVal !== newVal) modificationsDetail[key] = { old: oldVal, new: newVal };
+      });
+
+      // Exit early if nothing changed
+      if (Object.keys(modificationsCore).length === 0 && Object.keys(modificationsDetail).length === 0) {
+        toggleEditMode(false);
+        submitBtn.disabled    = false;
+        submitBtn.textContent = "Enregistrer";
+        return;
+      }
+
+      // --- CORE EXECUTION LOGIC ---
+      const executeSave = (justification) => {
+        setFormLocked(true);
+        if (justification) modificationsCore.justification = justification;
+
+        const successHandler = () => {
+          submitBtn.classList.replace('bg-primary', 'bg-green-600');
+          submitBtn.textContent = "✓ ENREGISTRÉ !";
+
+          rawMobileData.planning[newValues.id] = {
+            status:      newValues.planStatus,
+            note:        newValues.planNote,
+            privateNote: newValues.planPrivateNote
+          };
+
+          setTimeout(() => {
+            const idx = rawMobileData[currentCategory].findIndex(l => String(l.id) === String(newValues.id));
+            if (idx !== -1) rawMobileData[currentCategory][idx] = { ...rawMobileData[currentCategory][idx], ...newValues };
+            
+            setFormLocked(false);
+            openMobileEdit(newValues.id);
+            toggleEditMode(false);
+            
+            submitBtn.disabled = false;
+            submitBtn.classList.replace('bg-green-600', 'bg-primary');
+            submitBtn.textContent = "Enregistrer";
+          }, 1000);
+
+          if (Object.keys(modificationsCore).length > 0)   appLog(currentCategory, newValues.id, "MODIFICATION_FICHE", "Public", "Milestone", modificationsCore);
+          if (Object.keys(modificationsDetail).length > 0) appLog(currentCategory, newValues.id, "MODIFICATION_SUIVI_PLANNING", "Public", "Detail", modificationsDetail);
+        };
+
+        const failureHandler = (err) => {
+          showModal({ icon: 'error', title: 'Erreur', text: err.message });
+          setFormLocked(false);
+          submitBtn.disabled    = false;
+          submitBtn.textContent = "Enregistrer";
+          appErrorLog(err, "Mobile_Save", { newValues, projectId: PROJECT_ID_FROM_SERVER });
+        };
+
+        // Rounting Based on View
+        if (currentCategory === 'locataires') {
+          google.script.run
+            .withSuccessHandler(successHandler)
+            .withFailureHandler(failureHandler)
+            .updateLocataireData(SESSION_TOKEN, PROJECT_ID_FROM_SERVER, newValues);
+        } else {
+          google.script.run
+            .withSuccessHandler(successHandler)
+            .withFailureHandler(failureHandler)
+            .updatePlanningOnlyData(SESSION_TOKEN, PROJECT_ID_FROM_SERVER, currentCategory, newValues);
+        }
+      };
+
+      // --- POPUP LOGIC ---
+      if (Object.keys(modificationsCore).length > 0) {
+        Swal.fire({
+          title: 'Justification requise',
+          text: 'Vous avez modifié les informations de la fiche. Veuillez expliquer la raison de cette modification :',
+          input: 'textarea',
+          inputPlaceholder: 'Saisissez votre note ici...',
+          showCancelButton: true,
+          confirmButtonText: 'Valider et enregistrer',
+          cancelButtonText: 'Annuler',
+          confirmButtonColor: '#0d59f2',
+          inputValidator: (value) => {
+            if (!value || value.trim() === '') {
+              return 'Une justification est obligatoire pour sauvegarder ces modifications.';
+            }
+          }
+        }).then((result) => {
+          if (result.isConfirmed) {
+            executeSave(result.value.trim());
+          } else {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Enregistrer";
+          }
+        });
+      } else {
+        // Only details/planning notes changed, proceed without popup
+        executeSave(null);
+      }
+    };
+
+    // =========================================================
+    // COLOR UTILITIES
+    // =========================================================
+
+    function getMobileStatusColor(status) {
+      const s = String(status).toLowerCase();
+      if (s === 'info')                                       return 'bg-blue-500';
+      if (s === 'attention' || s === 'attension')             return 'bg-amber-500';
+      if (s === 'bloquant'  || s === 'bloqué' || s === 'bloque') return 'bg-rose-500';
+      return 'bg-slate-400';
+    }
+
+    function updateMobileSelectBg(el) {
+      el.classList.remove('bg-slate-50', 'bg-blue-200', 'bg-orange-200', 'bg-red-400', 'bg-white');
+      if      (el.value === 'Info')      el.classList.add('bg-blue-200');
+      else if (el.value === 'Attention') el.classList.add('bg-orange-200');
+      else if (el.value === 'Bloquant')  el.classList.add('bg-red-400');
+      else                               el.classList.add('bg-slate-50');
+    }
+
+  </script>
+</body>
+</html>

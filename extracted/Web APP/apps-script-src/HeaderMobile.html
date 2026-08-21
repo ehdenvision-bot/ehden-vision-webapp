@@ -1,0 +1,101 @@
+<header class="z-50 flex shrink-0 items-center justify-between bg-[#004595] px-4 py-3 shadow-lg">
+    
+    <div class="flex items-center gap-3">
+      <button onclick="navToWithParams('project-dashboard', { view: 'mobile' })" 
+              class="text-white hover:bg-white/10 p-2 rounded-lg transition-colors flex items-center justify-center">
+        <span class="material-symbols-outlined !text-white">grid_view</span>
+      </button>
+
+      <div class="flex flex-col">
+        <h1 id="topProjectName" class="text-xs font-black text-white truncate uppercase leading-none tracking-tight max-w-[150px]">
+          Chargement...
+        </h1>
+        <p class="text-[8px] font-bold uppercase tracking-[0.2em] text-blue-100 opacity-80 mt-1">
+          <span id="company-name">...</span>
+        </p>
+      </div>
+    </div>
+
+    <div class="relative">
+      <button id="userMenuBtnMobile" 
+              class="size-10 rounded-full bg-white text-[#004595] border-2 border-white/20 flex items-center justify-center font-black text-sm shadow-sm focus:outline-none active:scale-95 transition-transform">
+        <span id="u_initials_mob">--</span>
+      </button>
+      
+      <div id="userMenuMobile" class="hidden absolute right-0 mt-3 w-64 rounded-xl border border-slate-200 bg-white shadow-2xl py-2 z-[99] text-slate-900">
+        
+        <div class="px-4 py-3 border-b border-slate-100 mb-1">
+           <p id="u_name_mob" class="text-sm font-bold text-slate-900 leading-none">--</p>
+           <p id="u_role_mob" class="text-[9px] text-slate-400 font-black uppercase tracking-widest mt-1">--</p>
+        </div>
+
+        <button onclick="navToWithParams('project-portfolio', { view: 'mobile' })" 
+                class="flex w-full items-center gap-3 px-4 py-4 text-sm text-slate-700 hover:bg-slate-50 font-semibold transition-colors">
+          <span class="material-symbols-outlined text-[20px]">account_balance_wallet</span>
+          <span>Tous les projets</span>
+        </button>
+
+        <div class="h-px bg-slate-100 my-1"></div>
+
+        <button onclick="clearSessionAndGoLogin()" 
+                class="flex w-full items-center gap-3 px-4 py-4 text-sm text-red-600 hover:bg-red-50 font-bold transition-colors">
+          <span class="material-symbols-outlined text-[20px]">logout</span>
+          <span>Se déconnecter</span>
+        </button>
+      </div>
+    </div>
+</header>
+
+<script>
+  const companyName = APP_DATA.companyName;
+  document.getElementById('company-name').innerText = companyName;
+
+  (function() {
+    const btn = document.getElementById('userMenuBtnMobile');
+    const menu = document.getElementById('userMenuMobile');
+
+    /**
+     * Handle Dropdown Toggle
+     */
+    if (btn && menu) {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        menu.classList.toggle('hidden');
+      };
+    }
+
+    /**
+     * Global Close on Outside Click
+     */
+    document.addEventListener('click', (e) => {
+      if (menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.add('hidden');
+      }
+    });
+
+    /**
+     * Data Synchronization
+     * Populates User profile and Project context from APP_DATA
+     */
+    window.addEventListener('load', () => {
+      if (typeof APP_DATA !== 'undefined' && APP_DATA.user) {
+        const user = APP_DATA.user;
+        const name = user.name || "collaborateur";
+        
+        // Generate Initials
+        const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+        
+        // Update DOM elements
+        document.getElementById('u_initials_mob').textContent = initials;
+        document.getElementById('u_name_mob').textContent = name;
+        document.getElementById('u_role_mob').textContent = user.role || 'Utilisateur';
+        
+        // Update Project Title
+        const topName = document.getElementById('topProjectName');
+        if (topName && APP_DATA.projectName) {
+           topName.textContent = APP_DATA.projectName;
+        }
+      }
+    });
+  })();
+</script>

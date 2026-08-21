@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Tableau de bord | Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "corporate-blue": "#004595",
+            "primary-dark": "#0b4bc9",
+            "primary-light": "#eef4ff",
+            "background-light": "#f8f9fc",
+            "background-dark": "#101622",
+            surface: "#ffffff",
+            "text-main": "#0f172a",
+            "text-secondary": "#64748b",
+            "border-light": "#e2e8f0"
+          },
+          fontFamily: { sans: ["Inter", "sans-serif"] },
+        },
+      },
+    }
+  </script>
+
+  <style>
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+    .material-symbols-outlined { font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+    .chip-active   { background:#ecfdf5; color:#047857; border-color:#a7f3d0; }
+    .chip-blocked  { background:#fef2f2; color:#b91c1c; border-color:#fecaca; }
+    .chip-ended    { background:#f1f5f9; color:#334155; border-color:#e2e8f0; }
+    .chip-archived { background:#f8fafc; color:#64748b; border-color:#e2e8f0; }
+
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 0.375rem; border-radius: 9999px;
+      padding: 0.25rem 0.75rem; font-size: 10px; font-weight: 700; border: 1px solid transparent;
+      box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); text-transform: uppercase;
+    }
+  </style>
+</head>
+
+<body class="bg-white text-text-main font-sans antialiased flex h-screen overflow-hidden">
+
+  <?!= include_('ClientLib', data); ?>
+  <?!= include_('Sidebar') ?>
+
+  <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
+
+    <?!= include_('Header') ?>
+
+    <main class="flex-1 overflow-y-auto bg-background-light scroll-smooth">
+      <div class="mx-auto max-w-5xl p-6 lg:p-8">
+
+        <section class="mb-8">
+          <div class="mb-4 flex items-center gap-3">
+            <div id="headerStatus" class="status-pill chip-ended">---</div>
+            <span id="headerId" class="text-[10px] font-bold tracking-[0.1em] text-slate-400 uppercase">Projet #---</span>
+          </div>
+          <h2 id="headerProjectName" class="text-3xl font-black tracking-tight text-slate-900 md:text-4xl uppercase leading-tight">Chargement...</h2>
+          <p id="headerDesc" class="mt-4 max-w-3xl text-sm leading-relaxed text-slate-500 italic border-l-2 border-primary/20 pl-4">Synchronisation des données...</p>
+        </section>
+
+        <div id="statsBar" class="mb-8 grid grid-cols-1 divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white shadow-sm md:grid-cols-4 md:divide-x md:divide-y-0 opacity-50 transition-all duration-700">
+          <div class="flex flex-col p-5">
+            <span class="mb-2 text-[11px] font-black text-slate-400 uppercase tracking-widest">Nombre de Logements</span>
+            <span id="valUnits" class="text-xl font-bold text-slate-900">--</span>
+          </div>
+          <div class="flex flex-col p-5">
+            <span class="mb-2 text-[11px] font-black text-slate-400 uppercase tracking-widest">Calendrier</span>
+            <div class="flex flex-col">
+              <span id="valStart" class="text-xs font-bold text-slate-900">--</span>
+              <span id="valEnd" class="text-[10px] text-slate-400 font-medium">--</span>
+            </div>
+          </div>
+          <div class="flex flex-col p-5">
+            <span class="mb-2 text-[11px] font-black text-slate-400 uppercase tracking-widest">MOA</span>
+            <span id="valOwner" class="text-lg font-bold text-slate-900">--</span>
+          </div>
+          <div class="flex flex-col justify-center p-5">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Progression</span>
+              <span id="valProgText" class="text-xs font-black text-primary">0%</span>
+            </div>
+            <div class="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+              <div id="valProgBar" class="h-full bg-primary transition-all duration-1000 ease-out" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <h3 class="mb-5 text-lg font-black text-slate-900 tracking-tight uppercase italic">Actions Rapides</h3>
+        <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div onclick="navTo('planning')" class="group relative flex aspect-[4/3] cursor-pointer flex-col justify-between overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg hover:border-primary/30">
+            <div class="flex items-start justify-between">
+              <div class="rounded-xl bg-primary/5 p-3 text-primary group-hover:bg-primary group-hover:text-white transition-all shadow-sm">
+                <span class="material-symbols-outlined text-[28px]">calendar_today</span>
+              </div>
+              <span class="material-symbols-outlined text-slate-300 group-hover:text-primary transition-colors text-[20px]">arrow_forward</span>
+            </div>
+            <div>
+              <h4 class="text-base font-black text-slate-900 leading-tight">Gantt & Planning</h4>
+              <p class="mt-1.5 text-xs text-slate-500 font-medium">Visualisation temporelle du chantier.</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+<script>
+
+  const PROJECT_ID = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId : "";
+
+  const isAuthorized = (typeof APP_DATA !== 'undefined' && APP_DATA.isAuthorized) ? APP_DATA.isAuthorized : false;
+  const isClient     = (typeof APP_DATA !== 'undefined' && APP_DATA.isClient)     ? APP_DATA.isClient     : false;
+
+  // isClientViewActive: localStorage is the source of truth for this UX preference.
+  const storedClientView = localStorage.getItem('isClientViewActive');
+  window.isClientViewActive = storedClientView !== null
+    ? storedClientView === 'true'
+    : (typeof APP_DATA !== 'undefined' && APP_DATA.isClientViewActive === true);
+
+  /**
+   * Sidebar State Management
+   * sidebarCollapsed is a UX preference — correct to store in localStorage.
+   */
+  const sidebar   = document.getElementById('mainSidebar');
+  const toggleBtn = document.getElementById('toggleSidebar');
+
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      sidebar.classList.toggle('collapsed');
+      localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    };
+  }
+
+  if (localStorage.getItem('sidebarCollapsed') === 'true' && sidebar) {
+    sidebar.classList.add('collapsed');
+  }
+
+  /**
+   * Data Binding: Populates the dashboard with project data
+   */
+  function updatePageData(project) {
+    if (!project) return;
+
+    // Header & Sidebar sync
+    safeSetText('topProjectName', project.name);
+    safeSetText('headerProjectName', project.name);
+    safeSetText('headerId', "PROJET #" + project.id);
+    safeSetText('headerDesc', project.description || "Données indisponibles.");
+
+    // Status badge
+    const stEl = document.getElementById('headerStatus');
+    if (stEl) {
+      const badge = getStatusBadge(project.status);
+      stEl.innerHTML = `<span class="material-symbols-outlined !text-[14px]">${badge.icon}</span><span>${badge.text}</span>`;
+      stEl.className = `status-pill ${badge.cls}`;
+    }
+
+    // KPI values
+    safeSetText('valUnits', project.units);
+    safeSetText('valStart', project.startDate || '—');
+    safeSetText('valEnd',   project.endDate ? "Échéance: " + project.endDate : "");
+    safeSetText('valOwner', project.owner || '—');
+
+    // Progress bar
+    const prog = project.progress || 0;
+    safeSetText('valProgText', prog + "%");
+    const bar = document.getElementById('valProgBar');
+    if (bar) bar.style.width = prog + "%";
+
+    document.getElementById('statsBar').classList.remove('opacity-50');
+  }
+
+  /**
+   * Application Initialization
+   */
+  window.onload = function init() {
+    const currentUser = (typeof APP_DATA !== 'undefined') ? APP_DATA.user : null;
+
+    // Security gate — redirect to login if no session
+    if (!currentUser) {
+      console.warn("No user found, redirecting...");
+      window.top.location.replace(BASE_URL + "?page=login");
+      return;
+    }
+
+    // Inject client view toggle for authorized non-client users
+    if (!isClient) {
+      injectClientViewToggle();
+    }
+
+    // Role-based sidebar item visibility
+    const role = (currentUser.role || '').toLowerCase();
+    if (role === 'admin' || role === 'directeur') {
+      document.getElementById('navSettings')?.classList.remove('hidden');
+      document.getElementById('navUsers')?.classList.remove('hidden');
+    }
+
+    // Identity display
+    const name = currentUser.name || "collaborateur";
+    safeSetText('u_name',     name);
+    safeSetText('u_role',     currentUser.role || 'Utilisateur');
+    safeSetText('u_initials', name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2));
+
+    // If projectId is missing the user somehow landed here without a valid
+    // project context; redirect them back to the portfolio to pick one.
+    if (!PROJECT_ID) {
+      window.top.location.replace(BASE_URL + "?page=project-portfolio");
+      return;
+    }
+
+    // to validate the session before returning data.
+    google.script.run
+      .withSuccessHandler(projects => {
+        const p = projects.find(item => String(item.id) === String(PROJECT_ID));
+        if (p) {
+          updatePageData(p);
+        } else {
+          // Project not found in the list — send back to portfolio
+          window.top.location.replace(BASE_URL + "?page=project-portfolio");
+        }
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon:  'error',
+          title: 'Erreur',
+          text:  'Impossible de synchroniser les données du projet.'
+        });
+        appErrorLog(err, "gsListProjects_Dashboard", {
+          requestedProjectId: PROJECT_ID,
+          token: APP_DATA.token ? "present" : "missing"
+        });
+      })
+      .gsListProjects(APP_DATA.token);
+  };
+
+  /**
+   * Header Menu Toggle Logic
+   */
+  document.addEventListener('DOMContentLoaded', () => {
+    const userBtn  = document.getElementById('userMenuBtn');
+    const userMenu = document.getElementById('userMenu');
+    const navBtn   = document.getElementById('navMenuBtn');
+    const navMenu  = document.getElementById('navMenu');
+
+    if (userBtn) userBtn.onclick = (e) => { e.stopPropagation(); userMenu.classList.toggle('hidden'); navMenu?.classList.add('hidden'); };
+    if (navBtn)  navBtn.onclick  = (e) => { e.stopPropagation(); navMenu.classList.toggle('hidden'); userMenu?.classList.add('hidden'); };
+
+    document.onclick = (e) => {
+      if (userMenu && !userBtn?.contains(e.target) && !userMenu.contains(e.target)) userMenu.classList.add('hidden');
+      if (navMenu  && !navBtn?.contains(e.target)  && !navMenu.contains(e.target))  navMenu.classList.add('hidden');
+    };
+  });
+
+
+</script>
+</body>
+</html>

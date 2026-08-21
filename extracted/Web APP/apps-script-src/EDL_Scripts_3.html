@@ -1,0 +1,2329 @@
+<script>
+(function () {
+  'use strict';
+
+  // =========================================================
+  // RÉSERVES LAYER  —  registers itself as layer id 'reserves'
+  // =========================================================
+
+  let interventionsCache = [];
+  let interventionsCacheForId = null;
+  let interventionsRequestSeq = 0;
+
+  // État global des filtres
+  let activeReservesFilters = { discipline: [], equipe: [], status: [] };
+  let allReservesOptions = { discipline: [], equipe: [], status: [] };
+
+  /** Helper pour extraire le statut proprement */
+  function getInterventionStatus(inter) {
+    return String(inter['primary Statut'] || inter.status || inter.Statut || 'À planifier').trim();
+  }
+
+  /** Generates the HTML for the intervention containers */
+  function renderInterventionsContainers(reservesData, ctx) {
+    const isClient = ctx.isClient || ctx.isClientViewActive;
+    let html = '';
+
+    reservesData.forEach(reserve => {
+      const idReserve = reserve['ID Réserve'] || reserve.id || 'ID Inconnu';
+      const idLogement = reserve['ID Logement'] || '';
+      const discipline = reserve['Discipline'] || reserve.discipline || '';
+      const primaryStatut = getInterventionStatus(reserve);
+      const equipe = reserve['Équipe'] || reserve.equipe || reserve.Equipe || '';
+      const dateInterv = reserve["Date d'intervention"] || reserve.dateIntervention || reserve.date || '';
+      const dueDate = reserve['Due Date'] || reserve.dueDate || reserve.due || '';
+      
+      let heure = reserve['Heure / Créneau'] || reserve.heure || reserve.creneau || '';
+      if (String(heure).toUpperCase().includes('AM') || String(heure) === '12:00 AM') heure = '';
+
+      let rawDescription = reserve['Description'] || reserve.description || 'Aucune description';
+      let pubText = rawDescription;
+      let privHtml = '';
+      
+      if (rawDescription && typeof rawDescription === 'string' && rawDescription.trim().startsWith('{')) {
+        try {
+          const parsedDesc = JSON.parse(rawDescription);
+          if (parsedDesc && typeof parsedDesc === 'object') {
+            pubText = parsedDesc.pub || parsedDesc.public || 'Aucune description';
+            const privText = parsedDesc.priv || parsedDesc.private || '';
+            if (privText && !isClient) {
+              privHtml = `<div class="mt-1 p-2 bg-amber-50 border border-amber-200 rounded text-[10px] text-amber-800 font-medium"><span class="font-bold uppercase tracking-wider flex items-center gap-1 mb-0.5"><span class="material-symbols-outlined !text-[12px]">lock</span> Note Privée</span> ${privText}</div>`;
+            }
+          }
+        } catch (e) { /* Fallback to raw text */ }
+      }
+
+      const statusLower = primaryStatut.toLowerCase();
+      const showWarning = (statusLower === 'bloquée' || statusLower === 'bloquee' || statusLower === 'bloqué');
+      
+      const warningBtnHtml = showWarning 
+        ? `<button onclick="event.stopPropagation(); window.onWarningClicked('${idReserve}')" class="btn-warning bg-rose-50 text-rose-600 hover:bg-rose-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+             <span class="material-symbols-outlined !text-[16px]">warning</span> Attention
+           </button>` : '';
+           
+      const historyBtnHtml = `
+        <button onclick="event.stopPropagation(); window.onHistoryClicked('${idReserve}')" class="btn-history bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+          <span class="material-symbols-outlined !text-[16px]">history</span> Historique
+        </button>`;
+        
+      const editerBtnHtml = !isClient 
+        ? `<button onclick="event.stopPropagation(); window.onEditInterventionClicked('${idReserve}')" class="btn-editer bg-blue-50 text-blue-600 hover:bg-blue-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+             <span class="material-symbols-outlined !text-[16px]">edit</span> Éditer
+           </button>` : '';
+           
+      const corrigerBtnHtml = !isClient 
+        ? `<button onclick="event.stopPropagation(); window.onCorrigerInterventionClicked('${idReserve}')" class="btn-corriger bg-purple-50 text-purple-600 hover:bg-purple-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+             <span class="material-symbols-outlined !text-[16px]">build</span> Corriger
+           </button>` : '';
+           
+      const isDateLocked = ['attente validation', 'validé', 'valide', 'validée', 'validee', 'fini'].includes(statusLower);
+      const planifierBtnClass = isDateLocked ? `bg-slate-50 text-slate-300 cursor-not-allowed border border-slate-100` : `bg-teal-50 text-teal-600 hover:bg-teal-100 shadow-sm cursor-pointer`;
+      const planifierBtnHtml = !isClient 
+        ? `<button onclick="event.stopPropagation(); window.onPlanifierDateClicked('${idReserve}')" class="btn-planifier ${planifierBtnClass} px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors" data-id="${idReserve}" ${isDateLocked ? 'disabled' : ''}>
+             <span class="material-symbols-outlined !text-[16px]">calendar_month</span> Date
+           </button>` : '';
+           
+      const isValidated = (statusLower === 'validée' || statusLower === 'validee' || statusLower === 'fini');
+      const validerBtnClass = isValidated ? `bg-slate-50 text-slate-300 cursor-not-allowed border border-slate-100` : `bg-emerald-50 text-emerald-600 hover:bg-emerald-100 shadow-sm cursor-pointer`;
+      const validerBtnHtml = `
+        <button onclick="event.stopPropagation(); window.onValidateInterventionClicked('${idReserve}')" class="btn-valider ${validerBtnClass} px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors" data-id="${idReserve}" ${isValidated ? 'disabled' : ''}>
+          <span class="material-symbols-outlined !text-[16px]">check_circle</span> Valider
+        </button>`;
+
+      html += `
+        <div class="intervention-card plan-tag-target bg-white border border-slate-200 hover:shadow-md cursor-pointer rounded-xl p-3 shadow-sm mb-3 flex flex-col gap-2 transition-all" data-tag-id="${idReserve}" onclick="window.toggleHighlight('${idReserve}')">
+          <div class="flex justify-between items-start">
+            <div class="flex flex-col">
+              <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${idReserve} ${idLogement ? '• Logement ' + idLogement : ''}</span>
+              <h3 class="text-sm font-bold text-slate-800 mt-0.5">${discipline || 'Intervention'}</h3>
+            </div>
+            <span class="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-widest ${getBadgeColor(primaryStatut)}">${primaryStatut || 'N/A'}</span>
+          </div>
+          <div class="flex flex-col gap-1">
+            <div class="text-xs text-slate-700 font-medium leading-relaxed">${pubText}</div>
+            ${privHtml}
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-x-3 gap-y-1 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100 mt-1">
+            <div><span class="font-bold text-slate-700">Équipe:</span> ${equipe || '-'}</div>
+            <div><span class="font-bold text-slate-700">Intervention:</span> ${dateInterv} ${heure}</div>
+            <div><span class="font-bold text-slate-700">Échéance:</span> <span class="${dueDate ? 'text-rose-600 font-semibold' : ''}">${dueDate || '-'}</span></div>
+          </div>
+          <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+            ${warningBtnHtml} ${historyBtnHtml} ${editerBtnHtml} ${corrigerBtnHtml} ${planifierBtnHtml} ${validerBtnHtml}
+          </div>
+        </div>
+      `;
+    });
+    return html;
+  }
+
+  function getBadgeColor(status) {
+    const s = String(status).toLowerCase();
+    if (s === 'bloquée' || s === 'bloquee' || s === 'bloqué') return 'bg-rose-100 text-rose-700 border border-rose-200';
+    if (s === 'validée' || s === 'validee' || s === 'fini') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
+    if (s === 'planifié' || s === 'planifie' || s === 'planifiée' || s === 'planifiee') return 'bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200';
+    if (s === 'en cours') return 'bg-blue-100 text-blue-700 border border-blue-200';
+    return 'bg-slate-100 text-slate-600 border border-slate-200';
+  }
+
+  // =========================================================
+  // LOGIQUE DE FILTRAGE
+  // =========================================================
+
+  function initReservesFilterOptions(data) {
+    allReservesOptions.discipline = [...new Set(data.map(item => String(item.Discipline || item.discipline || '').trim()).filter(Boolean))].sort();
+    allReservesOptions.equipe = [...new Set(data.map(item => String(item['Équipe'] || item.equipe || item.Equipe || '').trim()).filter(Boolean))].sort();
+    allReservesOptions.status = [...new Set(data.map(item => getInterventionStatus(item)).filter(Boolean))].sort();
+    populateReservesFilterOptions();
+  }
+
+  function populateReservesFilterOptions() {
+    renderFilterDropdown('drop-res-discipline', 'Discipline', 'discipline', allReservesOptions.discipline);
+    renderFilterDropdown('drop-res-equipe', 'Équipe', 'equipe', allReservesOptions.equipe);
+    renderFilterDropdown('drop-res-status', 'Statut', 'status', allReservesOptions.status);
+  }
+
+  function renderFilterDropdown(containerId, title, filterKey, allValues) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const existingMenu = container.querySelector('.res-filter-dropdown');
+    const isMenuOpen = existingMenu && !existingMenu.classList.contains('hidden');
+    const activeCount = activeReservesFilters[filterKey].length;
+    const btnClass = activeCount > 0 ? 'text-primary bg-primary/5 border-primary' : 'text-slate-700 bg-white border-slate-200';
+    const btnLabel = activeCount > 0 ? `${title} (${activeCount})` : title;
+    
+    let html = `
+      <button onclick="window.toggleReservesFilterMenu('${filterKey}', event)" class="px-3 py-1.5 border rounded-xl hover:bg-slate-50 text-[11px] font-bold shadow-sm flex items-center gap-2 transition-colors ${btnClass}">
+        <span class="truncate max-w-[90px] uppercase tracking-wider">${btnLabel}</span>
+        <span class="material-symbols-outlined !text-[14px] opacity-70">expand_more</span>
+      </button>
+      <div id="menu-${filterKey}" class="res-filter-dropdown ${isMenuOpen ? '' : 'hidden'} absolute top-[calc(100%+8px)] left-0 w-56 bg-white border border-slate-200 shadow-[0_10px_25px_-5px_rgba(0,0,0,0.1)] rounded-xl z-[200] flex flex-col max-h-72 overflow-hidden">
+        <div class="p-2 border-b border-slate-100 flex justify-start items-center mb-1">
+          <button onclick="window.resetSingleReservesFilter('${filterKey}', event)" class="text-[9px] font-black text-primary uppercase hover:underline bg-transparent">Réinitialiser</button>
+        </div>
+        <div class="overflow-y-auto p-1 flex flex-col">
+    `;
+
+    if (allValues.length === 0) {
+      html += `<p class="text-[10px] text-slate-400 italic text-center p-2">Aucune option</p>`;
+    } else {
+      allValues.forEach(val => {
+        const isSelected = activeReservesFilters[filterKey].includes(val);
+        const isValid = checkIfOptionYieldsResults(filterKey, val); 
+        const disabledClass = isValid ? 'hover:bg-slate-50 cursor-pointer text-slate-700' : 'opacity-30 grayscale cursor-not-allowed';
+        const inputDisabled = isValid ? '' : 'disabled';
+
+        html += `
+          <label class="flex items-center gap-3 px-3 py-2 transition-colors text-[11px] rounded-lg ${disabledClass}" onclick="${!isValid ? 'event.preventDefault();' : 'event.stopPropagation();'}">
+            <input type="checkbox" value="${val}" ${isSelected ? 'checked' : ''} ${inputDisabled}
+                   onchange="window.handleReservesFilterChange('${filterKey}', '${val}', this.checked, event)"
+                   onclick="event.stopPropagation()"
+                   class="rounded text-primary border-slate-400 focus:ring-primary w-4 h-4 cursor-pointer">
+            <span class="font-bold truncate" title="${val}">${val}</span>
+          </label>
+        `;
+      });
+    }
+
+    html += `</div></div>`;
+    container.innerHTML = html;
+  }
+
+  function checkIfOptionYieldsResults(filterKey, optionValue) {
+    return interventionsCache.some(item => {
+      const d = String(item.Discipline || item.discipline || '').trim();
+      const e = String(item['Équipe'] || item.equipe || item.Equipe || '').trim();
+      const s = getInterventionStatus(item);
+
+      const matchD = filterKey === 'discipline' ? (d === optionValue) : (activeReservesFilters.discipline.length === 0 || activeReservesFilters.discipline.includes(d));
+      const matchE = filterKey === 'equipe' ? (e === optionValue) : (activeReservesFilters.equipe.length === 0 || activeReservesFilters.equipe.includes(e));
+      const matchS = filterKey === 'status' ? (s === optionValue) : (activeReservesFilters.status.length === 0 || activeReservesFilters.status.includes(s));
+      
+      return matchD && matchE && matchS;
+    });
+  }
+
+  function getFilteredInterventions() {
+    return interventionsCache.filter(item => {
+      const d = String(item.Discipline || item.discipline || '').trim();
+      const e = String(item['Équipe'] || item.equipe || item.Equipe || '').trim();
+      const s = getInterventionStatus(item);
+
+      const matchD = activeReservesFilters.discipline.length === 0 || activeReservesFilters.discipline.includes(d);
+      const matchE = activeReservesFilters.equipe.length === 0 || activeReservesFilters.equipe.includes(e);
+      const matchS = activeReservesFilters.status.length === 0 || activeReservesFilters.status.includes(s);
+
+      return matchD && matchE && matchS;
+    });
+  }
+
+  // --- Actions de Filtrage (Exposées sur Window) ---
+  window.toggleReservesFilterMenu = function(filterKey, event) {
+    event.stopPropagation();
+    const existingMenu = document.getElementById(`menu-${filterKey}`);
+    const isOpening = !existingMenu || existingMenu.classList.contains('hidden');
+
+    if (isOpening) populateReservesFilterOptions();
+
+    document.querySelectorAll('.res-filter-dropdown').forEach(el => {
+      if (el.id !== `menu-${filterKey}`) el.classList.add('hidden');
+    });
+
+    const menu = document.getElementById(`menu-${filterKey}`);
+    if (menu) {
+      if (isOpening) menu.classList.remove('hidden');
+      else menu.classList.add('hidden');
+    }
+  };
+
+  window.handleReservesFilterChange = function(filterKey, value, isChecked, event) {
+    event.stopPropagation();
+    if (isChecked) {
+      activeReservesFilters[filterKey].push(value);
+    } else {
+      activeReservesFilters[filterKey] = activeReservesFilters[filterKey].filter(v => v !== value);
+    }
+    
+    const titles = { discipline: 'Discipline', equipe: 'Équipe', status: 'Statut' };
+    const container = document.getElementById(`drop-res-${filterKey}`);
+    if (container) {
+      const btn = container.querySelector('button');
+      const activeCount = activeReservesFilters[filterKey].length;
+      if (activeCount > 0) {
+        btn.className = 'px-3 py-1.5 border rounded-xl hover:bg-slate-50 text-[11px] font-bold shadow-sm flex items-center gap-2 transition-colors text-primary bg-primary/5 border-primary';
+        btn.innerHTML = `<span class="truncate max-w-[90px] uppercase tracking-wider">${titles[filterKey]} (${activeCount})</span><span class="material-symbols-outlined !text-[14px] opacity-70">expand_more</span>`;
+      } else {
+        btn.className = 'px-3 py-1.5 border rounded-xl hover:bg-slate-50 text-[11px] font-bold shadow-sm flex items-center gap-2 transition-colors text-slate-700 bg-white border-slate-200';
+        btn.innerHTML = `<span class="truncate max-w-[90px] uppercase tracking-wider">${titles[filterKey]}</span><span class="material-symbols-outlined !text-[14px] opacity-70">expand_more</span>`;
+      }
+    }
+    window.applyReservesFilters();
+  };
+
+  window.resetSingleReservesFilter = function(filterKey, event) {
+    event.stopPropagation();
+    activeReservesFilters[filterKey] = [];
+    populateReservesFilterOptions();
+    window.applyReservesFilters();
+  };
+
+  window.resetAllReservesFilters = function() {
+    activeReservesFilters = { discipline: [], equipe: [], status: [] };
+    populateReservesFilterOptions();
+    window.applyReservesFilters();
+  };
+
+  window.applyReservesFilters = function() {
+    const resetBtn = document.getElementById('resetFiltersBtn');
+    if (resetBtn) {
+      const hasActiveFilters = activeReservesFilters.discipline.length > 0 ||
+                               activeReservesFilters.equipe.length > 0 ||
+                               activeReservesFilters.status.length > 0;
+      if (hasActiveFilters) resetBtn.classList.remove('hidden');
+      else resetBtn.classList.add('hidden');
+    }
+    const filteredData = getFilteredInterventions();
+    renderInterventionsList(filteredData, WorkspaceCore.buildContext());
+  };
+
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.res-filter-dropdown').forEach(menu => {
+      menu.classList.add('hidden');
+    });
+  });
+
+  // =========================================================
+  // BOUTONS GLOBAUX & CALENDRIER CUSTOM (Exposés sur window)
+  // =========================================================
+
+  // window.onEditInterventionClicked : implémentation plus bas, juste après
+  // window.openCreneauPicker (elle réutilise ce widget ainsi que le
+  // calendrier custom déjà en place pour "Planifier Date" — voir la section
+  // "ÉDITER — Discipline / Équipe / Date / Heure" en fin de fichier).
+  
+
+
+
+
+
+
+
+
+
+  // Convertit l'affichage "MAR. 09 JUIN 2026" (dateIntervention) en ISO "2026-06-09".
+  // Extrait tel quel du bloc inline qu'utilisait onPlanifierDateClicked plus bas —
+  // même logique, aucun changement de comportement — pour que
+  // resolveLastKnownPlanning() puisse aussi s'en servir (voir plus bas).
+  function parseFrenchDisplayDateToISO(dateStr) {
+    if (!dateStr || dateStr.trim() === '-' || !dateStr.includes(' ')) return "";
+    try {
+      const parts = dateStr.replace(/\./g, '').split(/\s+/);
+      if (parts.length < 3) return "";
+      const day = parseInt(parts[1], 10);
+      const year = parseInt(parts[parts.length - 1], 10);
+      const monthRaw = parts[2].toUpperCase();
+
+      const months = { 'JAN': 0, 'FÉV': 1, 'FEV': 1, 'MAR': 2, 'AVR': 3, 'MAI': 4, 'AOÛ': 7, 'AOU': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DÉC': 11, 'DEC': 11 };
+
+      let month = 0;
+      if (monthRaw.startsWith('JUIN')) month = 5;
+      else if (monthRaw.startsWith('JUIL')) month = 6;
+      else {
+        for (let key in months) {
+          if (monthRaw.startsWith(key)) { month = months[key]; break; }
+        }
+      }
+
+      if (isNaN(day) || isNaN(year)) return "";
+      const d = new Date(year, month, day);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    } catch (e) {
+      console.warn("Impossible de lire la date de l'intervention:", e);
+      return "";
+    }
+  }
+
+  // "15/06/2026" -> "2026-06-15". Dédiée au cache "dernière date connue" ci-dessous.
+  function frShortDateToISO(frDate) {
+    if (!frDate || !frDate.includes('/')) return "";
+    const [d, m, y] = frDate.split('/');
+    return `${y}-${m}-${d}`;
+  }
+
+  // RÉVISÉ (19/07/2026) : gsGetLastKnownPlanning() ne parse plus un texte
+  // d'historique — la colonne L est maintenant un cache dédié, une seule
+  // valeur "DD/MM/YYYY|HH:MM", que le serveur renvoie déjà découpée en
+  // { date, time }. Ici on ne fait plus qu'une chose : si cette date en
+  // cache est la MÊME que celle déjà affichée sur la fiche (currentDateISO —
+  // cas d'une intervention déjà Planifiée qu'on reprogramme), on la traite
+  // comme "rien à restaurer" plutôt que de proposer de "restaurer" la date
+  // déjà visible. Si le statut actuel n'a pas de date active (ex: Bloquée),
+  // rien ne correspond et la valeur en cache est renvoyée telle quelle.
+  function resolveLastKnownPlanning(res, currentDateISO) {
+    if (!res || !res.date) return null;
+    const cachedISO = frShortDateToISO(res.date);
+    if (currentDateISO && cachedISO && cachedISO === currentDateISO) return null;
+    return { date: res.date, time: res.time || '' };
+  }
+
+  // Requirement 3: kick this off the INSTANT the Corriger modal opens (called
+  // at the top of openStatusCorrectionModal, before Swal.fire), so it's
+  // ready — or well underway — by the time the user picks "Planifiée" /
+  // "Validée" with no date currently set (the only sub-cases that offer
+  // "Reprendre la dernière date connue" — see renderDateOptions() below).
+  // Goes back to the server rather than reusing any local copy so the lookup
+  // reflects the current cache cell even if it changed since this lot's list
+  // was loaded. No local fallback on failure — the cache cell is the only
+  // source of truth now, there's nothing meaningful to fall back to
+  // client-side.
+  function fetchLastKnownPlanning(intervention) {
+    const interId = intervention.id || intervention['ID Réserve'];
+    const currentDateISO = parseFrenchDisplayDateToISO(intervention.dateIntervention || intervention["Date d'intervention"]);
+
+    return new Promise((resolve) => {
+      google.script.run
+        .withSuccessHandler((res) => {
+          resolve(resolveLastKnownPlanning(res, currentDateISO));
+        })
+        .withFailureHandler((err) => {
+          console.error("Échec de récupération de la dernière date connue :", err);
+          resolve(null);
+        })
+        .gsGetLastKnownPlanning(APP_DATA.token, APP_DATA.projectId, interId);
+    });
+  }
+
+// =========================================================
+// NOUVEAU (18/07/2026) : le bouton "Corriger" ouvre d'abord un choix.
+// L'utilisateur choisit CE QU'IL corrige avant que le bon module ne
+// s'ouvre : le statut (module existant, inchangé — voir
+// openStatusCorrectionModal ci-dessous) ou la référence d'appartement
+// (nouveau module, voir openReferenceCorrectionModal plus bas).
+// =========================================================
+window.onCorrigerInterventionClicked = function(interventionId) {
+  Swal.fire({
+    title: `<div class="text-lg font-black text-slate-800">Que souhaitez-vous corriger ?</div>`,
+    html: `<div class="text-xs text-slate-500">Intervention ID : ${interventionId}</div>`,
+    icon: 'question',
+    showDenyButton: true,
+    showCancelButton: true,
+    confirmButtonText: 'Le statut',
+    denyButtonText: 'La référence (appartement)',
+    cancelButtonText: 'Annuler',
+    confirmButtonColor: '#0d59f2',
+    denyButtonColor: '#7c3aed'
+  }).then((choice) => {
+    if (choice.isConfirmed) openStatusCorrectionModal(interventionId);
+    else if (choice.isDenied) openReferenceCorrectionModal(interventionId);
+  });
+};
+
+// RÉVISÉ (19/07/2026) : la case à cocher "Ajouter une nouvelle planification"
+// a été retirée. Le sous-menu de planification n'est plus un bloc optionnel
+// qu'on révèle en cochant une case et qui force le statut à "Planifiée" —
+// il est désormais entièrement piloté par la valeur choisie dans le menu
+// "Nouveau Statut" (voir renderDateOptions() dans didOpen ci-dessous), et le
+// statut reste toujours celui que l'utilisateur a réellement sélectionné.
+//
+// Pour chacun des 4 statuts, le sous-menu dépend de la présence ou non d'une
+// date déjà active sur l'intervention (hasDate) :
+//   - "À planifier" : rien à choisir. S'il y avait une date, elle est
+//     automatiquement retirée à la validation (après mise en cache colonne L).
+//   - "Planifiée" / "Validée" : si une date existe déjà -> "Conserver" ou
+//     "Choisir une nouvelle date" ; sinon -> "Reprendre la dernière date
+//     connue" (colonne L) ou "Choisir une nouvelle date".
+//   - "Bloquée" : si une date existe déjà -> "Conserver" ou "Retirer cette
+//     date" ; sinon, rien à choisir.
+//
+// Le résultat de ce choix est renvoyé par preConfirm() sous la forme d'un
+// unique champ `dateAction` ('keep' | 'new' | 'restore' | 'clear' | null),
+// consommé par submitCorrection() puis gsCorrectIntervention() côté serveur.
+function openStatusCorrectionModal(interventionId) {
+  const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interventionId).trim());
+  if (!intervention) return;
+
+  const currentStatus = intervention.statut || intervention.Statut || intervention['primary Statut'] || intervention.status || "À planifier";
+  const isReserve = String(interventionId).startsWith('R-');
+  const currentViewModule = window.currentView || 'locataires';
+
+  // Même convention que hasPlanning dans openReferenceCorrectionModal
+  // (plus bas) : source de vérité unique pour "cette intervention a-t-elle
+  // une date active en ce moment ?", utilisée pour choisir quel sous-menu
+  // renderDateOptions() doit afficher.
+  const hasDate = !!(intervention.dateIntervention && String(intervention.dateIntervention).trim() !== '');
+
+  // Requirement 3: fire this the instant the modal is requested — before
+  // Swal.fire even paints — so it's ready, or close to it, by the time the
+  // user picks "Planifiée"/"Validée" with no date set (the only sub-cases
+  // that can offer "restore"). lastKnownPlanningResult stays undefined
+  // (== "still loading") until the promise settles.
+  window._corrigerOpenForId = interventionId;
+  let lastKnownPlanningResult;
+  const lastKnownPlanningPromise = fetchLastKnownPlanning(intervention).then(result => {
+    lastKnownPlanningResult = result;
+    return result;
+  });
+
+  // Tracks which sub-menu is currently rendered inside #corr-date-options —
+  // set by renderDateOptions() (in didOpen), read by preConfirm() so it knows
+  // how to interpret whichever radio is checked (or whether there even is
+  // one) without recomputing it from scratch.
+  let currentMode = 'none';
+
+  Swal.fire({
+    title: `<div class="text-xl font-black text-slate-800">Correction de la Réserve</div>
+            <div class="text-xs font-medium text-slate-500 mt-1 uppercase tracking-wider">Intervention ID : ${interventionId}</div>`,
+    html: `
+      <div class="flex flex-col gap-4 mt-2">
+        <!-- 1. Statut -->
+        <div class="text-left">
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Nouveau Statut</label>
+          <select id="corr-status" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50 transition-colors duration-200">
+            <option value="À planifier" ${currentStatus === 'À planifier' ? 'selected' : ''}>À planifier</option>
+            <option value="Planifiée" ${currentStatus === 'Planifiée' ? 'selected' : ''}>Planifiée</option>
+            <option value="Bloquée" ${currentStatus === 'Bloquée' ? 'selected' : ''}>Bloquée</option>
+            <option value="Validée" ${currentStatus === 'Validée' ? 'selected' : ''}>Validée</option>
+          </select>
+        </div>
+
+        <!-- 2. Motif (Obligatoire) -->
+        <div class="text-left">
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Motif de la correction <span class="text-red-500">*</span></label>
+          <textarea id="corr-note" rows="3" placeholder="Ex: Erreur de saisie de l'entreprise, report demandé..." class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50"></textarea>
+        </div>
+
+        <!-- 3. Planification — entièrement généré par renderDateOptions() (didOpen
+             ci-dessous), selon le statut choisi ci-dessus et hasDate. Vide (pas
+             d'encadré du tout) quand le statut choisi n'a rien à proposer. -->
+        <div id="corr-date-options"></div>
+      </div>
+    `,
+    showCancelButton: true,
+    confirmButtonText: 'Appliquer la correction',
+    cancelButtonText: 'Annuler',
+    confirmButtonColor: '#0d59f2',
+    focusConfirm: false,
+    didOpen: () => {
+      const statusSelect = document.getElementById('corr-status');
+      const dateOptionsContainer = document.getElementById('corr-date-options');
+      const currentDateTimeLabel = `${intervention.dateIntervention}${intervention.heure ? ' à ' + intervention.heure : ''}`;
+
+      // Décide quel sous-menu s'applique à un statut donné, selon hasDate
+      // (figé pour la durée de vie de ce modal — la date de l'intervention
+      // elle-même ne bouge pas tant que le modal n'est pas soumis).
+      function computeMode(status) {
+        if (status === 'À planifier') return hasDate ? 'clear-info' : 'none';
+        if (status === 'Bloquée')     return hasDate ? 'keep-or-remove' : 'none';
+        if (status === 'Planifiée' || status === 'Validée') return hasDate ? 'keep-or-new' : 'restore-or-new';
+        return 'none';
+      }
+
+      // Gabarit partagé pour les deux cas "conserver / autre option", tous
+      // deux avec "Conserver" coché par défaut (choix non destructif) et la
+      // date/heure actuelle affichée à côté.
+      function twoChoiceHtml(secondValue, secondLabel) {
+        return `
+          <div class="mt-4 text-left border border-slate-200 rounded-lg p-3 bg-slate-50">
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Planification</label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer text-slate-600 mb-2">
+              <input type="radio" name="corr-date-choice" value="keep" id="corr-radio-keep" checked class="text-primary focus:ring-primary">
+              Conserver la date et l'heure actuelles : <span class="font-bold">${currentDateTimeLabel}</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer text-slate-600">
+              <input type="radio" name="corr-date-choice" value="${secondValue}" id="corr-radio-${secondValue}" class="text-primary focus:ring-primary">
+              ${secondLabel}
+            </label>
+          </div>`;
+      }
+
+      function restoreOrNewHtml() {
+        return `
+          <div class="mt-4 text-left border border-slate-200 rounded-lg p-3 bg-slate-50">
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Planification</label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer text-slate-600 mb-2">
+              <input type="radio" name="corr-date-choice" value="restore" id="corr-radio-restore" class="text-primary focus:ring-primary">
+              Reprendre la dernière date connue :
+              <span id="corr-last-known-value" class="font-bold ml-1 inline-flex items-center gap-1">
+                <span class="material-symbols-outlined animate-spin !text-[14px]">sync</span> Chargement...
+              </span>
+            </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer text-slate-600">
+              <input type="radio" name="corr-date-choice" value="new" id="corr-radio-new" checked class="text-primary focus:ring-primary">
+              Choisir une nouvelle date et heure (ouvrira le calendrier)
+            </label>
+          </div>`;
+      }
+
+      function clearInfoHtml() {
+        return `
+          <div class="mt-4 text-xs text-slate-500 italic bg-slate-50 border border-slate-200 rounded-lg p-3">
+            La date et l'heure actuelles (<span class="font-semibold not-italic">${currentDateTimeLabel}</span>) seront automatiquement retirées de la planification.
+          </div>`;
+      }
+
+      // Ne rafraîchit QUE la valeur asynchrone "dernière date connue" à
+      // l'intérieur du bloc restore-or-new actuellement affiché, sans toucher
+      // au reste du sous-menu ni à un choix déjà fait par l'utilisateur —
+      // même principe que l'ancien refreshLastKnownDisplay(), simplement
+      // redéclenché par un changement de statut plutôt que par une case.
+      const refreshLastKnownValue = () => {
+        if (window._corrigerOpenForId !== interventionId) return; // a newer Corriger modal has since opened
+        if (currentMode !== 'restore-or-new') return; // l'utilisateur a changé de statut depuis
+        const valueEl = document.getElementById('corr-last-known-value');
+        const radioEl = document.getElementById('corr-radio-restore');
+        if (!valueEl || !radioEl) return;
+        if (lastKnownPlanningResult === undefined) return; // still loading
+        if (lastKnownPlanningResult) {
+          const timeText = lastKnownPlanningResult.time ? ` à ${lastKnownPlanningResult.time}` : '';
+          valueEl.innerHTML = `${lastKnownPlanningResult.date}${timeText}`;
+          radioEl.disabled = false;
+        } else {
+          valueEl.innerHTML = `<span class="italic text-slate-400 font-normal">Aucune date antérieure trouvée</span>`;
+          radioEl.disabled = true;
+          radioEl.checked = false;
+          const newRadio = document.getElementById('corr-radio-new');
+          if (newRadio) newRadio.checked = true;
+        }
+      };
+
+      const renderDateOptions = () => {
+        currentMode = computeMode(statusSelect.value);
+        if (currentMode === 'clear-info')          dateOptionsContainer.innerHTML = clearInfoHtml();
+        else if (currentMode === 'keep-or-new')    dateOptionsContainer.innerHTML = twoChoiceHtml('new', 'Choisir une nouvelle date et heure (ouvrira le calendrier)');
+        else if (currentMode === 'keep-or-remove') dateOptionsContainer.innerHTML = twoChoiceHtml('clear', 'Retirer cette date et cette heure de la planification');
+        else if (currentMode === 'restore-or-new') { dateOptionsContainer.innerHTML = restoreOrNewHtml(); refreshLastKnownValue(); }
+        else                                        dateOptionsContainer.innerHTML = '';
+      };
+
+      statusSelect.addEventListener('change', renderDateOptions);
+      renderDateOptions(); // état initial, pour le statut déjà sélectionné par défaut
+
+      lastKnownPlanningPromise.then(refreshLastKnownValue);
+    },
+    preConfirm: () => {
+      const newStatus = document.getElementById('corr-status').value;
+      const note = document.getElementById('corr-note').value.trim();
+
+      if (!note) {
+        Swal.showValidationMessage("Le motif de la correction est obligatoire pour l'historique.");
+        return false;
+      }
+
+      // currentMode a été posé par le dernier appel à renderDateOptions()
+      // (didOpen ci-dessus), toujours synchronisé avec le statut
+      // actuellement affiché dans #corr-status — pas besoin de le
+      // recalculer ici.
+      let dateAction = null;
+      if (currentMode === 'clear-info') {
+        dateAction = 'clear'; // automatique, aucun choix à lire dans le DOM
+      } else if (currentMode === 'keep-or-new' || currentMode === 'keep-or-remove' || currentMode === 'restore-or-new') {
+        const choiceInput = document.querySelector('input[name="corr-date-choice"]:checked');
+        dateAction = choiceInput ? choiceInput.value : null; // 'keep' | 'new' | 'clear' | 'restore'
+
+        if (dateAction === 'restore') {
+          if (lastKnownPlanningResult === undefined) {
+            Swal.showValidationMessage("La recherche de la dernière date connue est encore en cours, patientez un instant.");
+            return false;
+          }
+          if (!lastKnownPlanningResult) {
+            Swal.showValidationMessage("Aucune date antérieure connue — choisissez plutôt « Choisir une nouvelle date ».");
+            return false;
+          }
+        }
+      }
+      // mode 'none' : rien à planifier, dateAction reste null.
+
+      return {
+        id: interventionId,
+        isReserve: isReserve,
+        moduleView: currentViewModule,
+        status: newStatus,
+        previousStatus: currentStatus,
+        note: note,
+        dateAction: dateAction, // 'keep' | 'new' | 'restore' | 'clear' | null
+        restoredDate: dateAction === 'restore' ? lastKnownPlanningResult.date : null,
+        restoredTime: dateAction === 'restore' ? lastKnownPlanningResult.time : null
+      };
+    }
+  }).then((result) => {
+    if (!result.isConfirmed) return;
+    const data = result.value;
+
+    if (data.dateAction === 'new') {
+      // Réutilise le calendrier déjà en place pour "Planifier Date" — voir
+      // handleCalendarDateSelection plus bas, qui route vers
+      // handleCorrectionDateSelection() quand _pendingCorrection est posé.
+      window._pendingCorrection = data;
+      const currentIsoDate = parseFrenchDisplayDateToISO(intervention.dateIntervention || intervention["Date d'intervention"]);
+      window.openCustomCalendarPicker('correction', interventionId, currentIsoDate);
+    } else {
+      // Statut seul (dateAction 'keep' ou null), replanification "restore"
+      // (date déjà connue), ou "clear" (retrait automatique ou "Retirer
+      // cette date") : pas besoin du calendrier.
+      submitCorrection(data);
+    }
+  });
+}
+
+// Suite du chemin "nouvelle date" ci-dessus : une fois le jour choisi sur le
+// calendrier, on redemande le créneau horaire (même widget que "Planifier
+// Date") puis on envoie la correction complète.
+window.handleCorrectionDateSelection = async function(selectedIsoDate) {
+  const data = window._pendingCorrection;
+  window._pendingCorrection = null;
+  if (!data) return;
+
+  const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(data.id).trim());
+  if (!intervention) return;
+
+  const creneauResult = await window.openCreneauPicker(data.id, intervention.heure || intervention["Heure / Créneau"], null, true);
+  if (creneauResult === null) return; // créneau annulé : on abandonne toute la correction, rien n'est envoyé
+
+  data.replanDateISO = selectedIsoDate;
+  data.replanCreneau = creneauResult;
+  submitCorrection(data);
+};
+
+// Requirement 4 — le "cerveau" : statut, date/créneau, historique, et
+// rafraîchissement de la fiche (intervention-card). RÉVISÉ (19/07/2026) :
+// le payload envoyé à gsCorrectIntervention porte désormais un seul champ
+// `dateAction` ('keep' | 'new' | 'restore' | 'clear' | null) reflétant
+// exactement le choix fait (ou l'absence de choix) dans le sous-menu de
+// openStatusCorrectionModal, à la place de l'ancien couple
+// replanAction/clearPlanning.
+function submitCorrection(data) {
+  const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(data.id).trim());
+  if (!intervention) return;
+
+  showLoading('Correction en cours...', 'Mise à jour du statut et de la planification');
+
+  let newDateISO = null, newCreneau = '';
+  if (data.dateAction === 'restore') {
+    newDateISO = frShortDateToISO(data.restoredDate);
+    newCreneau = data.restoredTime || '';
+  } else if (data.dateAction === 'new') {
+    newDateISO = data.replanDateISO;
+    newCreneau = data.replanCreneau || '';
+  }
+
+  const payload = {
+    interId: data.id,
+    status: data.status,
+    previousStatus: data.previousStatus,
+    note: data.note,
+    dateAction: data.dateAction,   // 'keep' | 'new' | 'restore' | 'clear' | null
+    newDateISO: newDateISO,        // peuplé seulement pour 'new'/'restore'
+    creneau: newCreneau,
+    moduleView: data.moduleView,
+    userEmail: (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu"
+  };
+
+  google.script.run
+    .withSuccessHandler((res) => {
+      intervention['primary Statut'] = res.updatedStatus;
+      intervention.status = res.updatedStatus;
+      intervention.statut = res.updatedStatus;
+      intervention.dateIntervention = res.updatedDate || '';
+      intervention["Date d'intervention"] = res.updatedDate || '';
+      intervention.heure = res.updatedHeure || '';
+
+      renderInterventionsList(getFilteredInterventions(), WorkspaceCore.buildContext());
+      showToast('Correction appliquée avec succès', 'success');
+
+      const structuredDetails = {
+        "Statut": { "Ancien": data.previousStatus, "Nouveau": res.updatedStatus },
+        "Planification":
+          data.dateAction === 'new'     ? { "Nouvelle date": res.updatedDate || 'Aucune', "Créneau": res.updatedHeure || 'Aucun', "Origine": "Nouvelle sélection" }
+          : data.dateAction === 'restore' ? { "Nouvelle date": res.updatedDate || 'Aucune', "Créneau": res.updatedHeure || 'Aucun', "Origine": "Dernière date connue (historique)" }
+          : data.dateAction === 'clear'    ? "Planification supprimée"
+          : "Inchangée",
+        "Motif": data.note
+      };
+      appLog(data.moduleView, data.id, "Correction manuelle", data.isReserve ? "Public" : "Private", "Detail", structuredDetails, payload.userEmail);
+    })
+    .withFailureHandler((err) => {
+      appErrorLog(err, "gsCorrectIntervention", { payload });
+      showModal({ icon: 'error', title: 'Erreur', text: "La correction a échoué : " + err.message });
+    })
+    .gsCorrectIntervention(APP_DATA.token, APP_DATA.projectId, payload);
+}
+
+
+
+
+
+
+
+
+  
+// =========================================================
+// NOUVEAU (18/07/2026) : CORRECTION DE RÉFÉRENCE (APPARTEMENT)
+// =========================================================
+// Deuxième chemin ouvert par le dispatcher window.onCorrigerInterventionClicked
+// ci-dessus (choix "La référence"). Réutilise la MÊME logique de sélection en
+// cascade à 3 niveaux que la barre du haut (Bâtiment-Hall / Étage-Orientation /
+// Porte-Description-Trame — voir populateBatHall/populateStep2/populateStep3
+// dans Workspace_Core_Scripts.html / EDL_Script_1.txt, section 8), mais sur des
+// éléments DOM propres à cette modale (préfixe "refcorr-") pour ne jamais
+// toucher aux sélecteurs de la page principale pendant que la modale est ouverte.
+//
+// ASSOMPTION (façades) : pour les vues locataires/communs, le 3e niveau
+// (Porte / Description) donne directement l'ID cible (loc.id / com.id) —
+// exactement comme sur la page principale. Pour la vue façades, le 3e niveau
+// ("Trame") ne suffit PAS à identifier une façade unique (une trame peut
+// contenir plusieurs "Parties") : comme sur la page principale, un 4e
+// sélecteur ("Partie") apparaît alors pour compléter la sélection. Ce n'est
+// pas une entorse à la demande "3 niveaux, comme la page principale" — c'est
+// littéralement le même mécanisme qu'utilise déjà populateRoomOrPartie() pour
+// les façades sur la page principale ; on ne fait que le rejouer ici.
+
+function refModalGetDropdownLabels() {
+  return (typeof getDropdownLabels === 'function') ? getDropdownLabels() : { step2: 'Étage', step3: 'Porte' };
+}
+
+function refModalPopulateBatHall(view, preselectKey) {
+  const sel = document.getElementById('refcorr-bathall');
+  sel.innerHTML = `<option value="" disabled selected>Bâtiment - Hall</option>`;
+
+  const dataList = rawData[view] || [];
+  const map = new Map();
+  dataList.forEach(item => {
+    if (!item.batiment) return;
+    const bat = String(item.batiment).trim();
+    const hall = item.hall ? String(item.hall).trim() : "";
+    const key = `${bat}||${hall}`;
+    if (!map.has(key)) map.set(key, { bat, hall });
+  });
+
+  const sorted = Array.from(map.entries()).sort((a, b) => {
+    if (a[1].bat !== b[1].bat) return a[1].bat.localeCompare(b[1].bat, undefined, { numeric: true });
+    return a[1].hall.localeCompare(b[1].hall, undefined, { numeric: true });
+  });
+
+  sorted.forEach(([key, val]) => {
+    const label = val.hall ? `Bât. ${val.bat} - Hall ${val.hall}` : `Bât. ${val.bat}`;
+    sel.innerHTML += `<option value="${key}" ${key === preselectKey ? 'selected' : ''}>${label}</option>`;
+  });
+}
+
+function refModalPopulateStep2(view, bat, hall, preselectVal) {
+  const sel = document.getElementById('refcorr-step2');
+  const dataList = rawData[view] || [];
+  const filtered = dataList.filter(item =>
+    String(item.batiment || '').trim() === bat &&
+    String(item.hall || '').trim() === hall
+  );
+
+  const labels = refModalGetDropdownLabels();
+  sel.innerHTML = `<option value="" disabled selected>${labels.step2}</option>`;
+
+  if (view === 'facades') {
+    const orientations = [...new Set(filtered.map(i => String(i.orientation ?? '').trim()).filter(v => v !== ''))];
+    orientations.sort().forEach(o => {
+      sel.innerHTML += `<option value="${o}" ${o === preselectVal ? 'selected' : ''}>${o}</option>`;
+    });
+  } else {
+    const etages = [...new Set(filtered.map(i => String(i.etage ?? '').trim()).filter(v => v !== ''))];
+    etages.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(e => {
+      sel.innerHTML += `<option value="${e}" ${e === preselectVal ? 'selected' : ''}>Étage ${e}</option>`;
+    });
+  }
+
+  sel.disabled = false;
+}
+
+function refModalPopulateStep3(view, bat, hall, step2Val) {
+  const sel = document.getElementById('refcorr-step3');
+  const dataList = rawData[view] || [];
+  const filtered = dataList.filter(item => {
+    const matchBatHall = String(item.batiment ?? '').trim() === bat && String(item.hall ?? '').trim() === hall;
+    if (!matchBatHall) return false;
+    return view === 'facades' ? String(item.orientation ?? '').trim() === step2Val : String(item.etage ?? '').trim() === step2Val;
+  });
+
+  const labels = refModalGetDropdownLabels();
+  sel.innerHTML = `<option value="" disabled selected>${labels.step3}</option>`;
+
+  if (view === 'locataires') {
+    filtered.sort((a, b) => String(a.porte || '').localeCompare(String(b.porte || ''), undefined, { numeric: true }));
+    filtered.forEach(loc => {
+      sel.innerHTML += `<option value="${loc.id}">Porte ${loc.porte || loc.id}</option>`;
+    });
+  } else if (view === 'communs') {
+    filtered.sort((a, b) => String(a.description || '').localeCompare(String(b.description || '')));
+    filtered.forEach(com => {
+      const label = com.ref ? `${com.description} (${com.ref})` : com.description;
+      sel.innerHTML += `<option value="${com.id}">${label}</option>`;
+    });
+  } else if (view === 'facades') {
+    // Pas encore un ID exploitable ici — juste la liste des trames, le
+    // 4e niveau (Partie) complète la sélection (voir refModalPopulateStep4Facade).
+    const trames = [...new Set(filtered.map(f => String(f.trame || '').trim()).filter(Boolean))];
+    trames.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    trames.forEach(t => {
+      sel.innerHTML += `<option value="${t}">Trame ${t}</option>`;
+    });
+  }
+
+  sel.disabled = false;
+}
+
+function refModalPopulateStep4Facade(bat, hall, orientation, trame) {
+  const wrap = document.getElementById('refcorr-step4-wrap');
+  const sel = document.getElementById('refcorr-step4');
+  if (!wrap || !sel) return;
+
+  const filtered = (rawData.facades || []).filter(item =>
+    String(item.batiment || '').trim() === bat &&
+    String(item.hall || '').trim() === hall &&
+    String(item.orientation || '').trim() === orientation &&
+    String(item.trame || '').trim() === trame
+  );
+  filtered.sort((a, b) => String(a.partie || '').localeCompare(String(b.partie || ''), undefined, { numeric: true }));
+
+  sel.innerHTML = `<option value="" disabled selected>Partie</option>` +
+    filtered.map(f => {
+      const partieName = (f.partie && String(f.partie).trim() !== '') ? String(f.partie).trim() : 'Trame complète';
+      return `<option value="${f.id}">${partieName}</option>`;
+    }).join('');
+
+  wrap.classList.remove('hidden');
+  sel.disabled = false;
+}
+
+function openReferenceCorrectionModal(interventionId) {
+  const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interventionId).trim());
+  if (!intervention) return;
+
+  const view = window.currentView || 'locataires';
+  const isReserve = String(interventionId).startsWith('R-');
+  const oldLogementId = (selectionState.selectedItem && selectionState.selectedItem.id) ? String(selectionState.selectedItem.id) : '';
+  const oldItem = selectionState.selectedItem;
+  const oldLogementLabel = oldItem
+    ? (oldItem.nom ? `${oldItem.nom} ${oldItem.prenom || ''} (${oldLogementId})` : (oldItem.description ? `${oldItem.description} (${oldLogementId})` : oldLogementId))
+    : oldLogementId;
+  const labels = refModalGetDropdownLabels();
+
+  // Pré-remplissage : on part de l'emplacement ACTUEL (Bâtiment-Hall + Étage)
+  // pour épargner deux clics — mais on laisse le 3e niveau (Porte/Trame) vide
+  // pour forcer un choix actif et éviter de "corriger" vers la même référence.
+  const preselectBatHallKey = (oldItem && oldItem.batiment) ? `${String(oldItem.batiment).trim()}||${oldItem.hall ? String(oldItem.hall).trim() : ''}` : null;
+  const preselectStep2Val = oldItem ? (view === 'facades' ? String(oldItem.orientation || '').trim() : String(oldItem.etage || '').trim()) : null;
+
+  Swal.fire({
+    title: `<div class="text-xl font-black text-slate-800">Modifier la Référence</div>
+            <div class="text-xs font-medium text-slate-500 mt-1 uppercase tracking-wider">Intervention ID : ${interventionId}</div>`,
+    html: `
+      <div class="flex flex-col gap-4 mt-2 text-left">
+        <div class="text-xs bg-slate-50 border border-slate-200 rounded-lg p-2">
+          Référence actuelle : <b>${oldLogementLabel || 'Inconnue'}</b>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Bâtiment - Hall</label>
+          <select id="refcorr-bathall" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50">
+            <option value="" disabled selected>Bâtiment - Hall</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">${labels.step2}</label>
+          <select id="refcorr-step2" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50" disabled>
+            <option value="" disabled selected>${labels.step2}</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">${labels.step3}</label>
+          <select id="refcorr-step3" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50" disabled>
+            <option value="" disabled selected>${labels.step3}</option>
+          </select>
+        </div>
+        <div id="refcorr-step4-wrap" class="hidden">
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Partie</label>
+          <select id="refcorr-step4" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50" disabled>
+            <option value="" disabled selected>Partie</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Motif de la correction <span class="text-red-500">*</span></label>
+          <textarea id="refcorr-note" rows="2" placeholder="Ex: Réserve rattachée au mauvais lot lors de la saisie..." class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50"></textarea>
+        </div>
+      </div>
+    `,
+    showCancelButton: true,
+    confirmButtonText: 'Continuer',
+    cancelButtonText: 'Annuler',
+    confirmButtonColor: '#0d59f2',
+    focusConfirm: false,
+    didOpen: () => {
+      const selBH = document.getElementById('refcorr-bathall');
+      const selS2 = document.getElementById('refcorr-step2');
+      const selS3 = document.getElementById('refcorr-step3');
+
+      refModalPopulateBatHall(view, preselectBatHallKey);
+
+      const onBatHallChange = (bat, hall) => {
+        selBH.dataset.bat = bat;
+        selBH.dataset.hall = hall;
+        selS3.innerHTML = `<option value="" disabled selected>${labels.step3}</option>`;
+        selS3.disabled = true;
+        document.getElementById('refcorr-step4-wrap').classList.add('hidden');
+        refModalPopulateStep2(view, bat, hall, null);
+      };
+
+      selBH.addEventListener('change', (e) => {
+        const [bat, hall] = e.target.value.split('||');
+        onBatHallChange(bat, hall);
+      });
+
+      selS2.addEventListener('change', (e) => {
+        document.getElementById('refcorr-step4-wrap').classList.add('hidden');
+        refModalPopulateStep3(view, selBH.dataset.bat, selBH.dataset.hall, e.target.value);
+      });
+
+      selS3.addEventListener('change', (e) => {
+        if (view === 'facades') {
+          refModalPopulateStep4Facade(selBH.dataset.bat, selBH.dataset.hall, selS2.value, e.target.value);
+        }
+      });
+
+      // Pré-remplissage niveaux 1 & 2 depuis la sélection actuelle (voir note
+      // ci-dessus) — le niveau 3 (et 4 pour les façades) reste à choisir.
+      if (preselectBatHallKey) {
+        selBH.value = preselectBatHallKey;
+        const [bat, hall] = preselectBatHallKey.split('||');
+        selBH.dataset.bat = bat;
+        selBH.dataset.hall = hall;
+        refModalPopulateStep2(view, bat, hall, preselectStep2Val);
+        if (preselectStep2Val) {
+          selS2.value = preselectStep2Val;
+          refModalPopulateStep3(view, bat, hall, preselectStep2Val);
+        }
+      }
+    },
+    preConfirm: () => {
+      const note = document.getElementById('refcorr-note').value.trim();
+      if (!note) {
+        Swal.showValidationMessage("Le motif de la correction est obligatoire pour l'historique.");
+        return false;
+      }
+
+      let newId = null, newLabel = null;
+      if (view === 'facades') {
+        const s4 = document.getElementById('refcorr-step4');
+        if (!s4 || !s4.value) {
+          Swal.showValidationMessage("Complétez la sélection (Partie) pour identifier la référence cible.");
+          return false;
+        }
+        newId = s4.value;
+        newLabel = s4.options[s4.selectedIndex].text;
+      } else {
+        const s3 = document.getElementById('refcorr-step3');
+        if (!s3 || !s3.value) {
+          Swal.showValidationMessage("Complétez la sélection pour identifier la référence cible.");
+          return false;
+        }
+        newId = s3.value;
+        newLabel = s3.options[s3.selectedIndex].text;
+      }
+
+      if (String(newId).trim() === String(oldLogementId).trim()) {
+        Swal.showValidationMessage("La nouvelle référence est identique à la référence actuelle.");
+        return false;
+      }
+
+      return {
+        id: interventionId,
+        isReserve: isReserve,
+        moduleView: view,
+        note: note,
+        newLogementId: newId,
+        newLogementLabel: newLabel
+      };
+    }
+  }).then((result) => {
+    if (!result.isConfirmed) return;
+    const data = result.value;
+
+    const hasPlanning = !!(intervention.dateIntervention && String(intervention.dateIntervention).trim() !== '');
+
+    if (hasPlanning) {
+      Swal.fire({
+        title: 'Intervention déjà planifiée',
+        html: `Cette intervention est planifiée le <b>${intervention.dateIntervention}${intervention.heure ? ' à ' + intervention.heure : ''}</b>.<br>Que souhaitez-vous faire de cette planification ?`,
+        icon: 'question',
+        showDenyButton: true,
+        showCancelButton: true,
+        confirmButtonText: 'Déplacer vers la nouvelle référence',
+        denyButtonText: 'Retirer du planning',
+        cancelButtonText: 'Annuler la correction',
+        confirmButtonColor: '#0d59f2',
+        denyButtonColor: '#e11d48'
+      }).then((planChoice) => {
+        if (planChoice.isConfirmed) submitReferenceCorrection(Object.assign({}, data, { planningAction: 'move' }));
+        else if (planChoice.isDenied) submitReferenceCorrection(Object.assign({}, data, { planningAction: 'remove' }));
+        // Annuler/fermer : on abandonne toute la correction, rien n'est envoyé.
+      });
+    } else {
+      submitReferenceCorrection(Object.assign({}, data, { planningAction: null }));
+    }
+  });
+}
+
+// Requirement (référence) — le "cerveau" côté client : envoie la correction,
+// puis retire l'intervention de la liste actuellement affichée (elle
+// appartient désormais à un autre lot) et journalise le changement.
+function submitReferenceCorrection(data) {
+  const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(data.id).trim());
+  if (!intervention) return;
+
+  showLoading('Correction en cours...', 'Mise à jour de la référence');
+
+  const payload = {
+    interId: data.id,
+    newLogementId: data.newLogementId,
+    newLogementLabel: data.newLogementLabel,
+    planningAction: data.planningAction, // 'move' | 'remove' | null
+    note: data.note,
+    moduleView: data.moduleView,
+    userEmail: (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu"
+  };
+
+  google.script.run
+    .withSuccessHandler((res) => {
+      if (data.planningAction === 'remove') {
+        intervention.dateIntervention = '';
+        intervention["Date d'intervention"] = '';
+        intervention.heure = '';
+        if (res.updatedStatus) {
+          intervention.status = res.updatedStatus;
+          intervention.statut = res.updatedStatus;
+          intervention['primary Statut'] = res.updatedStatus;
+        }
+      }
+
+      // La référence a changé : cette intervention ne fait plus partie du lot
+      // actuellement affiché — on la retire de la liste en mémoire puis on
+      // rafraîchit l'affichage du lot courant.
+      interventionsCache = interventionsCache.filter(i => String(i.id || i['ID Réserve']).trim() !== String(data.id).trim());
+      renderInterventionsList(getFilteredInterventions(), WorkspaceCore.buildContext());
+
+      if (res.planningWarning) {
+        showToast('Référence corrigée — vérifiez le planning', 'warning', res.planningWarning, 4500);
+      } else {
+        showToast('Référence corrigée avec succès', 'success');
+      }
+
+      const structuredDetails = {
+        "Référence": { "Ancienne": res.oldLogementId, "Nouvelle": res.newLogementId },
+        "Planification": (data.planningAction === 'move' ? "Déplacée vers la nouvelle référence"
+                        : data.planningAction === 'remove' ? "Supprimée"
+                        : "Sans objet (aucune planification existante)") + (res.planningWarning ? ` — ATTENTION : ${res.planningWarning}` : ''),
+        "Motif": data.note
+      };
+      appLog(data.moduleView, data.id, "Correction référence", data.isReserve ? "Public" : "Private", "Detail", structuredDetails, payload.userEmail);
+    })
+    .withFailureHandler((err) => {
+      appErrorLog(err, "gsCorrectInterventionReference", { payload });
+      showModal({ icon: 'error', title: 'Erreur', text: "La correction a échoué : " + err.message });
+    })
+    .gsCorrectInterventionReference(APP_DATA.token, APP_DATA.projectId, payload);
+}
+
+  window.onHistoryClicked = function(interventionId) {
+    const currentViewModule = window.currentView || "locataires";
+    showHistoryModal(currentViewModule, interventionId, { title: 'Historique — ' + interventionId });
+  };
+
+  window.onWarningClicked = function(interventionId) { console.log("Bouton warning cliqué :", interventionId); };
+  
+  // Variables Globales pour le calendrier
+  window.masterProjectCalendar = null;
+  window.projectStart = null;
+  window.projectEnd = null;
+  window.calendarLoadingState = 'idle';
+
+  function initCalendarBackground() {
+    if (window.calendarLoadingState !== 'idle') return;
+    window.calendarLoadingState = 'loading';
+
+    // EDL used to have its own gsGetProjectCalendar(token) returning
+    // { map, start, end }, but that name collides with a function already
+    // declared in Planning_gs.txt (bare day->0/1 map — see the note in
+    // EDL_gs.txt where the duplicate was removed). Now calling the two
+    // Planning-side functions that already provide this data separately.
+    const getCalendarMap = () => new Promise((resolve, reject) =>
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsGetProjectCalendar(APP_DATA.token));
+    const getBounds = () => new Promise((resolve, reject) =>
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getProjectDateBounds(APP_DATA.token));
+
+    Promise.all([getCalendarMap(), getBounds()])
+      .then(([calendarMap, bounds]) => {
+        window.masterProjectCalendar = calendarMap;
+        if (bounds && bounds.start) window.projectStart = new Date(bounds.start);
+        if (bounds && bounds.end) window.projectEnd = new Date(bounds.end);
+        window.calendarLoadingState = 'ready';
+      })
+      .catch((err) => {
+        window.calendarLoadingState = 'idle';
+        console.error("Échec du chargement du calendrier en arrière-plan", err);
+      });
+  }
+
+  window.onPlanifierDateClicked = function(interventionId) {
+    if (window.calendarLoadingState === 'idle') initCalendarBackground();
+    
+    if (window.calendarLoadingState === 'loading') {
+      showToast('Le calendrier est en cours de chargement, veuillez patienter...', 'info', '', 1500);
+      const checkInterval = setInterval(() => {
+        if (window.calendarLoadingState === 'ready') {
+          clearInterval(checkInterval);
+          window.onPlanifierDateClicked(interventionId);
+        }
+      }, 500);
+      return;
+    }
+
+    const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interventionId).trim());
+    if (!intervention) return;
+
+    const currentIsoDate = parseFrenchDisplayDateToISO(intervention.dateIntervention || intervention["Date d'intervention"]);
+
+    window.openCustomCalendarPicker('intervention', interventionId, currentIsoDate);
+  };
+
+  window.openCustomCalendarPicker = function(targetType, interId, currentDateStr, navDateStr = null) {
+    const dateToDisplay = navDateStr ? new Date(navDateStr) : (currentDateStr ? new Date(currentDateStr) : new Date());
+    const currentYear = dateToDisplay.getFullYear();
+    const currentMonth = dateToDisplay.getMonth();
+    
+    const projStart = window.projectStart;
+    const projEnd = window.projectEnd;
+    const monthNames = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+    const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+    
+    const realTodayObj = new Date();
+    const realTodayStr = `${realTodayObj.getFullYear()}-${String(realTodayObj.getMonth() + 1).padStart(2, '0')}-${String(realTodayObj.getDate()).padStart(2, '0')}`;
+
+    let firstDayIndex = (new Date(currentYear, currentMonth, 1).getDay() + 6) % 7;
+
+    let calendarHtml = `
+      <div class="flex justify-between items-center mb-4 bg-slate-50 p-2 rounded-lg border border-slate-200">
+        <button onclick="window.openCustomCalendarPicker('${targetType}', '${interId}', '${currentDateStr}', '${new Date(currentYear, currentMonth - 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_left</span></button>
+        <div class="font-bold text-slate-800 text-sm">${monthNames[currentMonth]} ${currentYear}</div>
+        <button onclick="window.openCustomCalendarPicker('${targetType}', '${interId}', '${currentDateStr}', '${new Date(currentYear, currentMonth + 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_right</span></button>
+      </div>
+      <div class="grid grid-cols-7 gap-1 text-center text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+        <div>Lu</div><div>Ma</div><div>Me</div><div>Je</div><div>Ve</div><div>Sa</div><div>Di</div>
+      </div>
+      <div class="grid grid-cols-7 gap-1.5 text-center">
+    `;
+
+    for (let i = 0; i < firstDayIndex; i++) { calendarHtml += `<div class="p-2 text-transparent select-none">.</div>`; }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayStr = String(day).padStart(2, '0');
+      const monthStr = String(currentMonth + 1).padStart(2, '0');
+      const loopDateStr = `${currentYear}-${monthStr}-${dayStr}`;
+      const loopDateObj = new Date(currentYear, currentMonth, day);
+      
+      const isOutOfRange = (projStart && loopDateObj < projStart) || (projEnd && loopDateObj > projEnd);
+      const isSelected = (loopDateStr === currentDateStr);
+      const isRealToday = (loopDateStr === realTodayStr);
+
+      let isNonWorking = false;
+      if (window.masterProjectCalendar && window.masterProjectCalendar[loopDateStr] !== undefined) {
+        isNonWorking = (window.masterProjectCalendar[loopDateStr] === 0);
+      } else {
+        isNonWorking = (loopDateObj.getDay() === 0 || loopDateObj.getDay() === 6);
+      }
+
+      let baseClass = "p-2 text-xs rounded-lg transition-all ";
+      
+      if (isOutOfRange) {
+        calendarHtml += `<div class="${baseClass} text-slate-200 bg-slate-50 select-none">${day}</div>`;
+      } else if (isNonWorking) {
+        calendarHtml += `<div class="p-2 text-xs font-bold text-red-400 bg-red-50/70 border border-red-100 rounded-lg line-through pointer-events-none select-none">${day}</div>`;
+      } else if (isSelected && isRealToday) {
+        calendarHtml += `<div onclick="window.handleCalendarDateSelection('${interId}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border-2 border-amber-500 ring-2 ring-amber-500/50">${day}</div>`;
+      } else if (isSelected) {
+        calendarHtml += `<div onclick="window.handleCalendarDateSelection('${interId}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border border-primary">${day}</div>`;
+      } else if (isRealToday) {
+        calendarHtml += `<div onclick="window.handleCalendarDateSelection('${interId}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-amber-500 shadow-sm cursor-pointer border border-amber-600 hover:bg-amber-600">${day}</div>`;
+      } else {
+        calendarHtml += `<div onclick="window.handleCalendarDateSelection('${interId}', '${loopDateStr}')" class="${baseClass} font-bold text-slate-700 bg-white border border-slate-200 cursor-pointer hover:bg-primary hover:text-white hover:border-primary">${day}</div>`;
+      }
+    }
+
+    calendarHtml += `</div>`;
+    showModal({
+      title: 'Choisir une date',
+      html: calendarHtml,
+      showConfirmButton: false,
+      showCancelButton: true,
+      cancelButtonText: 'Fermer',
+      width: '380px'
+    });
+  };
+
+  window.handleCalendarDateSelection = async function(interId, selectedIsoDate) {
+    Swal.close(); 
+
+    // A Corriger "nouvelle date" flow is in flight for this same intervention —
+    // hand off to its own completion handler instead of the plain
+    // Planifier-Date flow below (unchanged from here on).
+    if (window._pendingCorrection && String(window._pendingCorrection.id).trim() === String(interId).trim()) {
+      return window.handleCorrectionDateSelection(selectedIsoDate);
+    }
+
+    // Same idea for an Editer flow in flight (Discipline/Équipe already
+    // chosen, user asked to also change the date) — see
+    // window.handleEditDateSelection() near onEditInterventionClicked.
+    if (window._pendingEdit && String(window._pendingEdit.id).trim() === String(interId).trim()) {
+      return window.handleEditDateSelection(selectedIsoDate);
+    }
+
+    const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interId).trim());
+    if (!intervention) return;
+
+    // BUGFIX: openCreneauPicker's signature is (interId, currentStart, currentEnd, returnResult).
+    // This call was only passing 3 arguments, so `true` landed in `currentEnd`
+    // instead of `returnResult`. That skipped the picker's own start/end
+    // auto-split (guarded by `!currentEnd`), pre-seeded both dropdowns with
+    // garbage (the raw "09:00 - 10:00" string as a bogus start option, the
+    // boolean `true` as a bogus end option), and — since `returnResult` was
+    // never actually true — made the picker self-save that garbled value via
+    // autoSaveInterventionField() and return null instead of the picked
+    // créneau. That's why the date update always stopped right below: it saw
+    // creneauResult === null and returned before ever calling
+    // gsUpdateInterventionDateTime. Passing null explicitly for currentEnd
+    // restores the intended 4-argument call.
+    const creneauResult = await window.openCreneauPicker(interId, intervention.heure || intervention["Heure / Créneau"], null, true);
+    if (creneauResult === null) return; 
+
+    const isReserve = interId.startsWith('R-');
+    const currentViewModule = window.currentView || "locataires";
+    showLoading('Planification en cours...', 'Mise à jour de la matrice');
+
+    const payload = {
+      interId: interId,
+      newDateISO: selectedIsoDate,
+      creneau: creneauResult,
+      moduleView: currentViewModule
+    };
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        const parts = selectedIsoDate.split('-');
+        const dateObj = new Date(parts[0], parts[1] - 1, parts[2]);
+        const frenchDate = dateObj.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+        
+        intervention.dateIntervention = frenchDate;
+        intervention.heure = creneauResult;
+        if (res.updatedStatus) {
+           intervention['primary Statut'] = res.updatedStatus;
+           intervention.status = res.updatedStatus;
+        }
+
+        renderInterventionsList(getFilteredInterventions(), WorkspaceCore.buildContext());
+        showToast('Planification réussie', 'success');
+
+        const structuredDetails = {
+          "Paramètres Enregistrés": {
+            "Intervention": interId,
+            "Type": isReserve ? "Réserve" : "Autocontrôle",
+            "Nouvelle Date Assignée": frenchDate,
+            "Nouveau Créneau Horaire": creneauResult || "Aucun",
+            "Mise à jour du Statut": res.updatedStatus ? `Passé à '${res.updatedStatus}'` : "Statut inchangé"
+          }
+        };
+
+        appLog(
+          currentViewModule,                 
+          interId,                    
+          "Planification (Changement de Date/Heure)",    
+          isReserve ? "Public" : "Private",  
+          "Milestone",                       
+          structuredDetails,                 
+          (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu"
+        );
+      })
+      .withFailureHandler((err) => {
+        appErrorLog(err, "gsUpdateInterventionDateTime", { payload });
+        showModal({ icon: 'error', title: 'Erreur', text: "L'enregistrement a échoué : " + err.message });
+      })
+      .gsUpdateInterventionDateTime(APP_DATA.token, APP_DATA.projectId, payload);
+  };
+
+  window.openCreneauPicker = async function(interId, currentStart, currentEnd, returnResult = false) {
+    if (!currentEnd && currentStart && currentStart.includes('-')) {
+       let parts = currentStart.split('-');
+       currentStart = parts[0].trim().replace('h', ':');
+       currentEnd = parts[1].trim().replace('h', ':');
+    }
+
+    const buildSelectOptions = (currentValue, allowEmpty, emptyLabel) => {
+      let htmlOptions = allowEmpty ? `<option value="">${emptyLabel}</option>` : '';
+      let timeSlots = [];
+      for (let h = 5; h <= 19; h++) {
+        const hourString = String(h).padStart(2, '0');
+        timeSlots.push(`${hourString}:00`, `${hourString}:30`);
+      }
+      timeSlots.push("20:00");
+      if (currentValue && !timeSlots.includes(currentValue)) {
+        timeSlots.push(currentValue);
+        timeSlots.sort();
+      }
+      timeSlots.forEach(time => {
+        htmlOptions += `<option value="${time}" ${currentValue === time ? 'selected' : ''}>${time}</option>`;
+      });
+      return htmlOptions;
+    };
+
+    const startOptions = buildSelectOptions(currentStart, false);
+    const endOptions = buildSelectOptions(currentEnd, true, "Pas d'heure de fin");
+
+    const result = await showModal({
+      title: 'Créneau Horaire',
+      html: `
+        <div class="text-left font-sans">
+          <div class="mb-5">
+            <span class="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">Options Prédéfinies</span>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='08:00'; document.getElementById('swal-cren-end').value='12:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">🌅</span><span class="text-xs font-black text-slate-700">Matin</span>
+              </button>
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='13:00'; document.getElementById('swal-cren-end').value='17:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">☀️</span><span class="text-xs font-black text-slate-700">Après-Midi</span>
+              </button>
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='08:00'; document.getElementById('swal-cren-end').value='17:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">📅</span><span class="text-xs font-black text-slate-700">Journée</span>
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de début</label>
+              <select id="swal-cren-start" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary text-slate-700 shadow-sm">${startOptions}</select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de fin</label>
+              <select id="swal-cren-end" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary text-slate-700 shadow-sm">${endOptions}</select>
+            </div>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Enregistrer',
+      cancelButtonText: 'Annuler',
+      preConfirm: () => {
+        const start = document.getElementById('swal-cren-start').value;
+        const end = document.getElementById('swal-cren-end').value;
+        if (start && end && end <= start) {
+          Swal.showValidationMessage("L'heure de fin doit être postérieure à l'heure de début.");
+          return false;
+        }
+        return { start, end };
+      }
+    });
+
+    if (result.value) {
+      const { start, end } = result.value;
+      let finalCreneau = start;
+      if (start && end) finalCreneau = `${start} - ${end}`;
+      else if (!start && !end) finalCreneau = "";
+
+      if (returnResult) return finalCreneau;
+
+      const display = document.getElementById('display-inter-cren');
+      if (display) {
+        display.textContent = finalCreneau || 'Choisir un créneau...';
+        const container = display.parentElement;
+        if (container) container.setAttribute('onclick', `window.openCreneauPicker('${interId}', '${start}', '${end}')`);
+      }
+      window.autoSaveInterventionField(interId, 'creneau', finalCreneau);
+    }
+    return null;
+  };
+
+  // =========================================================
+  // ÉDITER — Discipline / Équipe / Date / Heure (bouton "Editer")
+  // =========================================================
+  // Rien de neuf n'a été inventé pour ce bouton — il assemble des briques
+  // qui existaient déjà, chacune dans une partie différente de l'appli :
+  //   - gsGetDisciplines() / gsGetEquipes() : déjà utilisées un peu plus
+  //     haut par la correction de référence pour peupler des listes ;
+  //   - window.openCustomCalendarPicker() / window.openCreneauPicker() :
+  //     le même calendrier et le même sélecteur de créneau que "Planifier
+  //     Date" ci-dessus (même mécanisme de retour, via un nouveau
+  //     branchement window._pendingEdit dans handleCalendarDateSelection()
+  //     — voir plus haut dans ce fichier, à côté de _pendingCorrection) ;
+  //   - gsSaveInterventionDetails() (Planning_gs.txt, globale à tout le
+  //     projet) : la fonction que la page Planning utilise déjà pour ces 4
+  //     mêmes champs (discipline/equipe/dateStr/creneau), en un seul appel.
+
+  window.onEditInterventionClicked = async function(interventionId) {
+    const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interventionId).trim());
+    if (!intervention) return;
+
+    const isReserve = String(interventionId).startsWith('R-');
+    const currentViewModule = window.currentView || 'locataires';
+
+    showLoading('Chargement...', 'Récupération des disciplines et équipes');
+    let disciplines, equipes;
+    try {
+      [disciplines, equipes] = await Promise.all([
+        new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsGetDisciplines(APP_DATA.token)),
+        new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsGetEquipes(APP_DATA.token))
+      ]);
+    } catch (e) {
+      Swal.close();
+      showModal({ icon: 'error', title: 'Erreur', text: "Impossible de charger les disciplines et équipes." });
+      appErrorLog(e, "onEditInterventionClicked:loadLists", { interventionId });
+      return;
+    }
+    Swal.close();
+
+    const currentDiscipline = intervention['Discipline'] || intervention.discipline || '';
+    const currentEquipe = intervention['Équipe'] || intervention.equipe || intervention.Equipe || '';
+    const currentDateDisplay = intervention.dateIntervention || intervention["Date d'intervention"] || '';
+    const currentCreneauDisplay = intervention.heure || intervention["Heure / Créneau"] || '';
+    const hasCurrentDate = !!(currentDateDisplay && currentDateDisplay.trim() !== '' && currentDateDisplay.trim() !== '-');
+
+    const discOptions = (disciplines || []).map(d =>
+      `<option value="${d.name}" ${d.name === currentDiscipline ? 'selected' : ''}>${d.name}</option>`
+    ).join('');
+    const eqOptions = (equipes || []).map(e =>
+      `<option value="${e.name}" ${e.name === currentEquipe ? 'selected' : ''}>${e.name}</option>`
+    ).join('');
+
+    const { isConfirmed, value } = await Swal.fire({
+      title: `<div class="text-xl font-black text-slate-800">Éditer l'intervention</div>
+              <div class="text-xs font-medium text-slate-500 mt-1 uppercase tracking-wider">Intervention ID : ${interventionId}</div>`,
+      html: `
+        <div class="flex flex-col gap-4 mt-2 text-left">
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Discipline (Corps d'état)</label>
+            <select id="edit-inter-disc" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50">
+              ${discOptions}
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Équipe</label>
+            <select id="edit-inter-eq" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50">
+              ${eqOptions}
+            </select>
+          </div>
+          <div class="text-xs bg-slate-50 border border-slate-200 rounded-lg p-2">
+            Date / Heure actuelle : <b>${hasCurrentDate ? currentDateDisplay + (currentCreneauDisplay ? ' à ' + currentCreneauDisplay : '') : 'Non planifiée'}</b>
+          </div>
+          <div class="flex items-start gap-2">
+            <input type="checkbox" id="edit-change-date" class="mt-1">
+            <label for="edit-change-date" class="text-xs text-slate-600">Choisir une nouvelle date et heure pour cette intervention</label>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Enregistrer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#0d59f2',
+      focusConfirm: false,
+      preConfirm: () => {
+        return {
+          discipline: document.getElementById('edit-inter-disc').value,
+          equipe: document.getElementById('edit-inter-eq').value,
+          changeDate: document.getElementById('edit-change-date').checked
+        };
+      }
+    });
+
+    if (!isConfirmed) return;
+
+    if (value.changeDate) {
+      // Poursuite dans le calendrier déjà en place pour "Planifier Date" —
+      // handleCalendarDateSelection() route vers handleEditDateSelection()
+      // ci-dessous grâce à window._pendingEdit (voir le branchement ajouté
+      // plus haut dans ce fichier, juste avant celui de _pendingCorrection).
+      window._pendingEdit = {
+        id: interventionId,
+        isReserve: isReserve,
+        moduleView: currentViewModule,
+        discipline: value.discipline,
+        equipe: value.equipe,
+        currentCreneau: currentCreneauDisplay
+      };
+      const currentIsoDate = parseFrenchDisplayDateToISO(currentDateDisplay);
+      window.openCustomCalendarPicker('edit', interventionId, currentIsoDate);
+    } else {
+      finalizeEdit({
+        id: interventionId,
+        isReserve: isReserve,
+        moduleView: currentViewModule,
+        discipline: value.discipline,
+        equipe: value.equipe
+      });
+    }
+  };
+
+  // Suite du chemin "nouvelle date" ci-dessus : une fois le jour choisi sur
+  // le calendrier, on redemande le créneau horaire (même widget que
+  // "Planifier Date" / Corriger) puis on envoie l'édition complète.
+  window.handleEditDateSelection = async function(selectedIsoDate) {
+    const data = window._pendingEdit;
+    window._pendingEdit = null;
+    if (!data) return;
+
+    const creneauResult = await window.openCreneauPicker(data.id, data.currentCreneau, null, true);
+    if (creneauResult === null) return; // créneau annulé : on abandonne toute l'édition, rien n'est envoyé
+
+    const parts = selectedIsoDate.split('-');
+    const dateStrSlash = `${parts[2]}/${parts[1]}/${parts[0]}`; // gsSaveInterventionDetails attend "dd/MM/yyyy"
+
+    finalizeEdit(Object.assign({}, data, { dateStr: dateStrSlash, creneau: creneauResult }));
+  };
+
+  // Le "cerveau" côté client, commun aux deux chemins ci-dessus (avec ou
+  // sans changement de date) : un seul appel à gsSaveInterventionDetails()
+  // — la même fonction serveur que Planning utilise déjà pour ces 4 champs
+  // — puis rafraîchissement de la fiche et journalisation.
+  function finalizeEdit(data) {
+    showLoading('Enregistrement...', "Mise à jour de l'intervention");
+
+    const payload = { discipline: data.discipline, equipe: data.equipe };
+    if (data.dateStr !== undefined) payload.dateStr = data.dateStr;
+    if (data.creneau !== undefined) payload.creneau = data.creneau;
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(data.id).trim());
+        if (intervention) {
+          intervention['Discipline'] = data.discipline;
+          intervention.discipline = data.discipline;
+          intervention['Équipe'] = data.equipe;
+          intervention.equipe = data.equipe;
+          if (data.dateStr !== undefined) {
+            const dParts = data.dateStr.split('/');
+            const dateObj = new Date(dParts[2], dParts[1] - 1, dParts[0]);
+            const frenchDate = dateObj.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+            intervention.dateIntervention = frenchDate;
+            intervention["Date d'intervention"] = frenchDate;
+            intervention.heure = data.creneau || '';
+            intervention["Heure / Créneau"] = data.creneau || '';
+          }
+        }
+
+        renderInterventionsList(getFilteredInterventions(), WorkspaceCore.buildContext());
+        showToast('Intervention modifiée avec succès', 'success');
+
+        const structuredDetails = {
+          "Modifications": Object.assign(
+            { "Discipline": data.discipline, "Équipe": data.equipe },
+            data.dateStr !== undefined ? { "Nouvelle Date": data.dateStr, "Nouveau Créneau": data.creneau || 'Aucun' } : {}
+          )
+        };
+        appLog(
+          data.moduleView, data.id, "Édition de l'intervention",
+          data.isReserve ? "Public" : "Private", "Detail", structuredDetails,
+          (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu"
+        );
+      })
+      .withFailureHandler((err) => {
+        appErrorLog(err, "gsSaveInterventionDetails", { payload, interId: data.id });
+        showModal({ icon: 'error', title: 'Erreur', text: "La modification a échoué : " + err.message });
+      })
+      .gsSaveInterventionDetails(APP_DATA.token, data.id, payload, data.moduleView);
+  }
+
+  // =========================================================
+  // LOGIQUE DE VALIDATION D'INTERVENTION
+  // =========================================================
+
+  function isFutureDateFr(dateStr) {
+    if (!dateStr || dateStr.trim() === '-' || dateStr.trim() === '') return false;
+    try {
+      const parts = dateStr.replace(/\./g, '').split(/\s+/);
+      if (parts.length < 3) return false;
+      const day = parseInt(parts[1], 10);
+      const year = parseInt(parts[parts.length - 1], 10);
+      const monthRaw = parts[2].toUpperCase();
+      const months = { 'JAN': 0, 'FÉV': 1, 'FEV': 1, 'MAR': 2, 'AVR': 3, 'MAI': 4, 'JUI': 5, 'AOÛ': 7, 'AOU': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DÉC': 11, 'DEC': 11 };
+      
+      let month = 0;
+      if (monthRaw.startsWith('JUIN')) month = 5;
+      else if (monthRaw.startsWith('JUIL')) month = 6;
+      else {
+        for (let key in months) {
+          if (monthRaw.startsWith(key)) { month = months[key]; break; }
+        }
+      }
+
+      if (isNaN(day) || isNaN(year)) return false;
+      const d = new Date(year, month, day);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return d > today;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function compressImageToWebP(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/webp', 0.8).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = event.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  window.onValidateInterventionClicked = async function(interventionId) {
+    const isReserve = String(interventionId).startsWith('R-');
+    const currentViewModule = window.currentView || "locataires";
+    const intervention = interventionsCache.find(i => String(i.id || i['ID Réserve']).trim() === String(interventionId).trim());
+    if (!intervention) return;
+
+    let clearFutureDate = false;
+    const dateStr = intervention.dateIntervention || intervention["Date d'intervention"] || '';
+    
+    if (isFutureDateFr(dateStr)) {
+      const { isConfirmed: confirmFuture } = await Swal.fire({
+        title: 'Intervention Future',
+        html: `<p class="text-xs text-slate-600">Cette intervention est planifiée pour le <b>${dateStr}</b>.</p>
+               <p class="text-xs text-slate-600 mt-2">Voulez-vous forcer la validation maintenant et <b>supprimer sa date de planification</b> sur le planning ?</p>`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Oui, continuer et supprimer',
+        cancelButtonText: 'Annuler la validation',
+        confirmButtonColor: '#10b981',
+        customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' }
+      });
+      if (!confirmFuture) return; 
+      clearFutureDate = true;
+    }
+    
+    let modalHtml = `<div class="text-left mt-2 flex flex-col gap-4">`;
+    if (isReserve) {
+      modalHtml += `
+        <div>
+          <label class="text-[10px] font-black text-slate-400 uppercase">Note Publique</label>
+          <textarea id="val-pub-note" class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-primary outline-none" rows="2" placeholder="Note publique visible par tous..."></textarea>
+        </div>
+        <div>
+          <label class="text-[10px] font-black text-rose-400 uppercase flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">lock</span> Note Privée</label>
+          <textarea id="val-priv-note" class="w-full px-3 py-2 border border-rose-200 rounded-lg text-xs bg-rose-50/50 focus:ring-rose-400 outline-none" rows="2" placeholder="Note interne de suivi..."></textarea>
+        </div>
+      `;
+    } else {
+      modalHtml += `
+        <div>
+          <label class="text-[10px] font-black text-rose-400 uppercase flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">lock</span> Note Interne (Autocontrôle)</label>
+          <textarea id="val-priv-note" class="w-full px-3 py-2 border border-rose-200 rounded-lg text-xs bg-rose-50/50 focus:ring-rose-400 outline-none" rows="3" placeholder="Ajouter une note de suivi d'autocontrôle..."></textarea>
+        </div>
+      `;
+    }
+
+    modalHtml += `
+       <div>
+          <label class="text-[10px] font-black text-slate-400 uppercase">Photos (Cadrées max 800px)</label>
+          <input type="file" id="val-photos" multiple accept="image/png, image/jpeg, image/webp" class="w-full text-xs mt-1 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-[10px] file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer" />
+          <div id="val-photo-preview" class="flex gap-2 mt-3 flex-wrap"></div>
+       </div>
+      </div>
+    `;
+
+    let photosPayload = [];
+    const { isConfirmed, value } = await Swal.fire({
+      title: 'Valider l\'intervention',
+      html: modalHtml,
+      showCancelButton: true,
+      confirmButtonText: 'Confirmer la clôture',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#10b981',
+      customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' },
+      didOpen: () => {
+        const fileInput = document.getElementById('val-photos');
+        const previewDiv = document.getElementById('val-photo-preview');
+        fileInput.addEventListener('change', async (e) => {
+          previewDiv.innerHTML = '<span class="text-xs text-slate-400 animate-pulse">Traitement & compression...</span>';
+          photosPayload = []; 
+          let previewHtml = '';
+          for (let file of e.target.files) {
+            const base64Data = await compressImageToWebP(file);
+            const fileName = file.name.replace(/\.[^/.]+$/, "") + ".webp"; 
+            photosPayload.push({ name: fileName, base64: base64Data });
+            previewHtml += `<div class="bg-slate-100 border border-slate-200 text-[9px] font-bold px-2 py-1 rounded text-slate-500 flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">image</span> ${fileName.substring(0,10)}...</div>`;
+          }
+          previewDiv.innerHTML = previewHtml;
+        });
+      },
+      preConfirm: () => {
+        return {
+          pubNote: document.getElementById('val-pub-note')?.value.trim() || '',
+          privNote: document.getElementById('val-priv-note')?.value.trim() || '',
+          photos: photosPayload
+        };
+      }
+    });
+
+    if (!isConfirmed) return;
+
+    showToast('Validation lancée en arrière-plan...', 'info', '', 2000);
+    intervention['primary Statut'] = 'Validée';
+    intervention.status = 'Validée';
+    if (isReserve) intervention['Sous-statut'] = 'Levée';
+    
+    if (clearFutureDate) {
+      if (intervention.dateIntervention) intervention.dateIntervention = '-';
+      if (intervention["Date d'intervention"]) intervention["Date d'intervention"] = '-';
+    }
+
+    if (typeof renderInterventionsList === 'function') {
+      renderInterventionsList(getFilteredInterventions(), WorkspaceCore.buildContext());
+    }
+
+    const payload = {
+      interventionId: interventionId,
+      isReserve: isReserve,
+      moduleView: currentViewModule,
+      clearDate: clearFutureDate,
+      pubNote: value.pubNote,
+      privNote: value.privNote,
+      photos: value.photos
+    };
+
+    google.script.run
+      .withSuccessHandler((response) => {
+        const structuredDetails = {
+          "1. Paramètres de l'Intervention": {
+            "ID": interventionId,
+            "Type": isReserve ? "Réserve" : "Autocontrôle",
+            "Statut Final": "Validée",
+            "Modification du Planning": clearFutureDate ? "OUI - La date de planification future a été supprimée" : "NON - Pas de date future détectée"
+          },
+          "2. Notes Renseignées": {
+            "Note Publique": isReserve ? (value.pubNote || "Aucune note publique.") : "N/A (Autocontrôle)",
+            "Note Privée (Interne)": value.privNote || "Aucune note privée."
+          },
+          "3. Pièces Jointes (Photos)": {
+            "Quantité": response.uploadedPhotoUrls ? response.uploadedPhotoUrls.length : 0,
+            "Fichiers": response.uploadedPhotoUrls || []
+          }
+        };
+
+        const userEmail = (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu";
+        appLog(currentViewModule, interventionId, "Validation de l'intervention", isReserve ? "Public" : "Private", "Milestone", structuredDetails, userEmail);
+        showToast('Intervention enregistrée avec succès.', 'success', '', 2500);
+      })
+      .withFailureHandler((err) => {
+        appErrorLog(err, "validateReservesIntervention", { interventionId });
+        showModal({ icon: 'error', title: 'Erreur', text: "Mise à jour locale réussie, mais l'enregistrement distant a échoué. Erreur : " + err.message });
+      })
+      .validateReservesIntervention(APP_DATA.token, APP_DATA.projectId, payload);
+  };
+
+  // =========================================================
+  // GESTION SIDEBAR ÉDITION INTERVENTION (Exposée sur Window)
+  // =========================================================
+  
+  window.changeInterventionView = function(selectEl) {
+     const content = document.getElementById('sidebar-content');
+     content.innerHTML = `<div class="py-20 text-center"><span class="material-symbols-outlined animate-spin text-3xl text-primary">sync</span><p class="text-xs font-bold mt-2 text-slate-500 uppercase tracking-widest">Chargement...</p></div>`;
+     fetchAndDrawIntervention(selectEl.value);
+  };
+
+  window.viewInterventionPhotos = function(interId) {
+    showToast(`Ouverture de la galerie...`, 'info', '(Fonctionnalité en cours de développement)', 2000);
+  };
+
+  window.viewInterventionPlan = function(interId) {
+    showToast(`Ouverture du plan...`, 'info', '(Fonctionnalité en cours de développement)', 2000);
+  };
+
+  function fetchAndDrawIntervention(interId, dateISO = window.currentInterventionDateISO) {
+    const getDisciplines = () => new Promise(resolve => google.script.run.withSuccessHandler(resolve).gsGetDisciplines(APP_DATA.token));
+    const getEquipes = () => new Promise(resolve => google.script.run.withSuccessHandler(resolve).gsGetEquipes(APP_DATA.token));
+    const getDetails = () => new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsGetInterventionDetails(APP_DATA.token, interId, window.currentView));
+    
+    async function loadData() {
+      try {
+        const [disciplines, equipes, data] = await Promise.all([
+          (typeof currentDisciplines !== 'undefined' && currentDisciplines && currentDisciplines.length > 0) ? Promise.resolve(currentDisciplines) : getDisciplines(),
+          (typeof currentEquipes !== 'undefined' && currentEquipes && currentEquipes.length > 0) ? Promise.resolve(currentEquipes) : getEquipes(),
+          getDetails()
+        ]);
+        window.currentDisciplines = disciplines;
+        window.currentEquipes = equipes;
+        
+        if (data) {
+          drawInterventionUI(data, interId, window.currentInterventionLogId);
+        } else {
+          const content = document.getElementById('sidebar-content');
+          content.innerHTML = `
+            <div class="py-12 text-center flex flex-col items-center justify-center">
+              <span class="material-symbols-outlined text-[48px] text-slate-300 mb-3">search_off</span>
+              <h4 class="text-sm font-black text-slate-700 uppercase tracking-widest mb-1">Intervention introuvable</h4>
+              <p class="text-[11px] font-medium text-slate-500 max-w-[250px] leading-relaxed mb-6">Le point <b>${interId}</b> n'a pas été trouvé dans la base de données.</p>
+              <button onclick="window.closeEditSidebar()" class="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-200 transition-colors uppercase tracking-widest">Fermer</button>
+            </div>
+          `;
+        }
+      } catch (e) {
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de charger les détails." });
+        appErrorLog(e, "fetchAndDrawIntervention", { interId: interId, dateISO: dateISO, projectId: PROJECT_ID || "Inconnu" });
+      }
+    }
+    loadData();
+  }
+
+  function drawInterventionUI(data, interId, logId) {
+    const content = document.getElementById('sidebar-content');
+    const isReserve = interId.startsWith('R-');
+    const isProjectActive = (typeof projectStatus !== 'undefined' && projectStatus === 'active');
+    const canEditTechnical = !isClient && isAuthorized && isProjectActive;
+    const canEditStatus = (isAuthorized || isClient) && isProjectActive;
+
+    const meta = window.lastPlanningData.logements[logId] || {};
+    const occupantDisplay = meta.nom ? `<span class="text-xs text-slate-500 font-bold ml-1">(${meta.nom} ${meta.prenom || ''})</span>` : "";
+    
+    let notesObj = { pub: data.description || "", priv: "" };
+    if (isReserve) {
+      try { notesObj = JSON.parse(data.description); } catch(e) { notesObj = { pub: data.description, priv: "" }; }
+    }
+
+    let discOptions = `<option value="">-- Sélectionner --</option>`;
+    if (window.currentDisciplines) {
+      window.currentDisciplines.forEach(d => {
+        const sel = (data.discipline === d.name) ? "selected" : "";
+        discOptions += `<option value="${d.name}" ${sel}>${d.name}</option>`;
+      });
+    }
+
+    let eqOptions = `<option value="">-- Sélectionner --</option>`;
+    if (window.currentEquipes) {
+      window.currentEquipes.forEach(e => {
+        const sel = (data.equipe === e.name) ? "selected" : "";
+        eqOptions += `<option value="${e.name}" ${sel}>${e.name}</option>`;
+      });
+    }
+
+    let crenStart = "", crenEnd = "";
+    if (data.creneau) {
+       let parts = data.creneau.split('-');
+       if(parts.length > 0) crenStart = parts[0].trim();
+       if(parts.length > 1) crenEnd = parts[1].trim();
+    }
+    
+    let isoDate = "", frenchDate = "";
+    if (data.dateStr) {
+       let p = data.dateStr.split('/');
+       if (p.length === 3) isoDate = `${p[2]}-${p[1]}-${p[0]}`;
+       frenchDate = data.dateStr;
+    } else if (window.currentInterventionDateISO) {
+       isoDate = window.currentInterventionDateISO;
+       let p = isoDate.split('-');
+       if (p.length === 3) frenchDate = `${p[2]}/${p[1]}/${p[0]}`;
+    }
+
+    let dropdownHtml = "";
+    if (window.currentInterventionsList && window.currentInterventionsList.length > 1) {
+       dropdownHtml = `<select onchange="window.changeInterventionView(this)" class="w-full mb-4 p-2 text-sm font-bold border-2 border-slate-200 rounded-xl focus:border-primary">`;
+       window.currentInterventionsList.forEach(item => {
+          let label = item.startsWith('R-') ? 'Réserve' : 'Autocontrôle';
+          dropdownHtml += `<option value="${item}" ${item === interId ? 'selected' : ''}>${label} : ${item}</option>`;
+       });
+       dropdownHtml += `</select>`;
+    }
+
+    const primaryStatut = data.statut || data.status || "Non défini"; 
+    let secondaryStatusHtml = '';
+    if (isReserve) {
+      const finalSecondaryStatut = data.secondaryStatut || 'Non Levée';
+      const isLevee = finalSecondaryStatut.toLowerCase() === 'levée' || finalSecondaryStatut.toLowerCase() === 'levee';
+      const badgeClasses = isLevee ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-amber-50 text-amber-700 border-amber-200';
+      secondaryStatusHtml = `<span class="px-2 py-1 rounded-md text-[11px] font-black uppercase shadow-sm border ${badgeClasses}">${finalSecondaryStatut}</span>`;
+    }
+
+    const statusDisplayHtml = `
+      <div class="flex items-center flex-wrap gap-2">
+        <span class="text-sm text-slate-500 font-semibold">Statut:</span>
+        <span class="px-2 py-1 rounded-md text-sm font-bold bg-slate-100 text-slate-700 shadow-sm border border-slate-200">${primaryStatut}</span>
+        ${secondaryStatusHtml}
+      </div>
+    `;
+
+    const statusLower = primaryStatut.toLowerCase();
+    const showWarning = (statusLower === 'bloquée' || statusLower === 'bloquee' || statusLower === 'bloqué' || statusLower === 'bloquant');
+    const warningBtnHtml = showWarning ? `<button onclick="event.stopPropagation(); window.onWarningClicked('${interId}')" class="btn-warning bg-rose-50 text-rose-600 hover:bg-rose-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm"><span class="material-symbols-outlined !text-[16px]">warning</span> Attention</button>` : '';
+    const historyBtnHtml = `<button onclick="event.stopPropagation(); window.onHistoryClicked('${interId}')" class="btn-history bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm"><span class="material-symbols-outlined !text-[16px]">history</span> Historique</button>`;
+    const corrigerBtnHtml = !isClient ? `<button onclick="event.stopPropagation(); window.onCorrigerInterventionClicked('${interId}')" class="btn-corriger bg-purple-50 text-purple-600 hover:bg-purple-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm"><span class="material-symbols-outlined !text-[16px]">build</span> Corriger</button>` : '';
+    
+    const isValidated = (statusLower === 'validée' || statusLower === 'validee' || statusLower === 'fini');
+    const validerBtnClass = isValidated ? `bg-slate-50 text-slate-300 cursor-not-allowed border border-slate-100` : `bg-emerald-50 text-emerald-600 hover:bg-emerald-100 shadow-sm cursor-pointer`;
+    const validerBtnHtml = `<button onclick="event.stopPropagation(); window.onValidateInterventionClicked('${interId}')" class="btn-valider ${validerBtnClass} px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors" ${isValidated ? 'disabled' : ''}><span class="material-symbols-outlined !text-[16px]">check_circle</span> Valider</button>`;
+
+    const actionAreaHtml = `
+      <div class="intervention-actions bg-white border border-slate-200 rounded-xl p-3 mb-6 shadow-sm flex flex-col gap-3">
+        ${statusDisplayHtml}
+        <div class="flex flex-wrap items-center gap-2 mt-1 border-t border-slate-100 pt-3">
+          ${warningBtnHtml} ${historyBtnHtml} ${corrigerBtnHtml} ${validerBtnHtml}
+        </div>
+      </div>
+    `;
+
+    let html = `
+      ${dropdownHtml}
+      <div class="mb-4">
+        <div class="flex items-center gap-2 mb-1">
+           <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase ${isReserve ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}">${isReserve ? 'Réserve' : 'Autocontrôle'}</span>
+           <span class="text-[10px] font-bold text-slate-400">${logId}</span> ${occupantDisplay}
+        </div>
+        <div class="text-xl font-black text-slate-800">${interId}</div>
+      </div>
+
+      ${actionAreaHtml}
+
+      <div class="bg-slate-100/50 rounded-xl p-4 border border-slate-200 mb-4">
+        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Informations Techniques</h4>
+        
+        <div class="mb-3">
+          <label class="text-[10px] font-bold text-slate-500 block mb-1">Discipline (Corps d'état)</label>
+          <select id="input-inter-disc" onchange="window.autoSaveInterventionField('${interId}', 'discipline', this.value)" ${!canEditTechnical ? 'disabled' : ''} class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold focus:ring-primary">
+            ${discOptions}
+          </select>
+        </div>
+        
+        <div class="mb-3">
+          <label class="text-[10px] font-bold text-slate-500 block mb-1">Équipe</label>
+          <select id="input-inter-eq" onchange="window.autoSaveInterventionField('${interId}', 'equipe', this.value)" ${!canEditTechnical ? 'disabled' : ''} class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold focus:ring-primary">
+            ${eqOptions}
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4">
+          <div>
+            <label class="text-[10px] font-bold text-slate-500 block mb-1">Date Prévue</label>
+            <div onclick="${canEditTechnical ? `window.openCustomCalendarPicker('intervention', '${interId}', '${isoDate}')` : ''}" 
+                 class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold flex justify-between items-center ${canEditTechnical ? 'cursor-pointer hover:bg-slate-50 hover:border-primary/50' : ''} transition-all">
+              <span id="display-inter-date">${frenchDate || 'Choisir date...'}</span>
+              <span class="material-symbols-outlined text-slate-400 text-lg">calendar_month</span>
+            </div>
+            <input type="hidden" id="input-inter-date" value="${isoDate}" />
+          </div>
+          
+          <div>
+            <label class="text-[10px] font-bold text-slate-500 block mb-1">Créneau Horaire</label>
+            <div onclick="${canEditTechnical ? `window.openCreneauPicker('${interId}', '${crenStart}', '${crenEnd}')` : ''}"
+                 class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold flex justify-between items-center ${canEditTechnical ? 'cursor-pointer hover:bg-slate-50 hover:border-primary/50' : ''} transition-all">
+              <span id="display-inter-cren">${data.creneau || 'Choisir un créneau...'}</span>
+              <span class="material-symbols-outlined text-slate-400 text-lg">schedule</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-slate-200">
+          <label class="text-[10px] font-bold text-slate-400 block mb-1 flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px]">event_busy</span> Date Limite (Calculée)
+          </label>
+          <input type="text" value="${data.dueDateStr || 'Non définie'}" disabled class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm font-bold text-slate-400 cursor-not-allowed" />
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Description</h4>
+        <textarea id="input-inter-pub" rows="2" ${!canEditStatus ? 'disabled' : ''} class="w-full text-sm border border-slate-200 rounded-lg p-2 focus:ring-primary resize-none text-slate-700">${notesObj.pub}</textarea>
+      </div>
+    `;
+    if (isReserve && !window.isClientViewActive && !isClient) {
+      html += `
+        <div class="bg-indigo-50 rounded-xl border border-indigo-200 p-4 shadow-sm mb-4">
+          <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-widest mb-2">Note Privée</h4>
+          <textarea id="input-inter-priv" rows="2" ${!canEditTechnical ? 'disabled' : ''} class="w-full text-sm border border-indigo-200 rounded-lg p-2 focus:ring-indigo-500 resize-none text-indigo-900">${notesObj.priv}</textarea>
+        </div>
+      `;
+    }
+
+    if (canEditTechnical || canEditStatus) {
+      html += `
+        <button onclick="window.saveInterventionNotes('${interId}', this)" class="w-full py-4 mt-2 bg-primary text-white rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/30 hover:bg-primary-dark transition-all flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined !text-[20px]">save</span> ENREGISTRER NOTES
+        </button>
+      `;
+    }
+    
+    html += ` 
+        <div class="flex gap-2 mt-4">
+          <button onclick="window.viewInterventionPhotos('${interId}')" class="flex-1 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center gap-1 border border-slate-200">
+            <span class="material-symbols-outlined !text-[16px]">photo_camera</span> Photos
+          </button>
+          <button onclick="window.viewInterventionPlan('${interId}')" class="flex-1 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center gap-1 border border-slate-200">
+            <span class="material-symbols-outlined !text-[16px]">map</span> Plan
+          </button>
+        </div>
+      `;
+
+    // Utilisation d'une simple structure HTML pour remplacer renderSidebarShell si manquante localement,
+    // mais dans WorkspaceCore on suppose que la sidebar gère déjà le title bar globalement.
+    let titleHtml = `
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="text-[11px] font-black uppercase tracking-widest text-slate-500">Intervention — ${interId}</h3>
+        <button onclick="window.closeEditSidebar()" class="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+          <span class="material-symbols-outlined !text-[18px]">close</span>
+        </button>
+      </div>
+      ${html}
+    `;
+    content.innerHTML = titleHtml;
+  }
+
+  window.autoSaveInterventionField = function(interId, fieldName, value) {
+     const payload = {};
+     payload[fieldName] = value;
+     const oldIsoDate = window.currentInterventionDateISO;
+     showLoading('Sauvegarde...', '', true);
+
+     google.script.run
+       .withSuccessHandler((res) => {
+          if (res && res.success === false && res.isUserNotice) {
+            showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+            return;
+          }
+          showToast('Modifié avec succès');
+          appLog(window.currentView, interId, "MODIFICATION_INTERVENTION_CHAMP", "Public", "Detail", { field: fieldName, value: value }, APP_USER_EMAIL || "Inconnu");
+          
+          if (fieldName === 'dateStr') {
+             let logId = window.currentInterventionLogId;
+             let parts = value.split('/');
+             let newIsoDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+
+             if (window.lastPlanningData && window.lastPlanningData.repairs && window.lastPlanningData.repairs[logId]) {
+                 if (oldIsoDate && window.lastPlanningData.repairs[logId][oldIsoDate]) {
+                     window.lastPlanningData.repairs[logId][oldIsoDate] = window.lastPlanningData.repairs[logId][oldIsoDate].filter(id => id !== interId);
+                     if (window.lastPlanningData.repairs[logId][oldIsoDate].length === 0) {
+                         delete window.lastPlanningData.repairs[logId][oldIsoDate];
+                     }
+                 }
+                 if (!window.lastPlanningData.repairs[logId][newIsoDate]) window.lastPlanningData.repairs[logId][newIsoDate] = [];
+                 if (!window.lastPlanningData.repairs[logId][newIsoDate].includes(interId)) {
+                     window.lastPlanningData.repairs[logId][newIsoDate].push(interId);
+                 }
+             }
+
+             window.currentInterventionDateISO = newIsoDate;
+             if (typeof refreshSingleRowDOM === 'function') refreshSingleRowDOM(logId);
+
+             let newItems = window.lastPlanningData?.repairs[logId]?.[newIsoDate] || [];
+             if (window.isClientViewActive) newItems = newItems.filter(i => !i.startsWith('A-'));
+             window.currentInterventionsList = newItems;
+             fetchAndDrawIntervention(interId, newIsoDate);
+          }
+       })
+       .withFailureHandler(err => {
+          showModal({ icon: 'error', title: 'Erreur', text: err.message });
+          appErrorLog(err, "autoSaveInterventionField", { interId, fieldName, value });
+       })
+       .gsSaveInterventionDetails(APP_DATA.token, interId, payload, window.currentView);
+  };
+
+  window.saveInterventionNotes = function(interId, btnElement) {
+    const isReserve = interId.startsWith('R-');
+    const pubText = document.getElementById('input-inter-pub')?.value || "";
+    const privText = document.getElementById('input-inter-priv')?.value || "";
+    let descriptionVal = isReserve ? JSON.stringify({ pub: pubText, priv: privText }) : pubText;
+
+    showLoading('Sauvegarde...', '', true);
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false) { showModal({ icon: 'error', title: 'Erreur', text: res.message }); return; }
+        showToast('Notes sauvegardées');
+        appLog(window.currentView, interId, "MODIFICATION_INTERVENTION_NOTES", "Private", "Detail", { notes: descriptionVal }, APP_USER_EMAIL || "Inconnu");
+      })
+      .withFailureHandler(err => {
+        showModal({ icon: 'error', title: 'Erreur', text: err.message });
+      })
+      .gsSaveInterventionDetails(APP_DATA.token, interId, { description: descriptionVal }, window.currentView);
+  };
+
+
+  // =========================================================
+  // MAP TAGS & DATA FETCHING
+  // =========================================================
+
+  function drawTagsFromCache(ctx) {
+    const currentData = getFilteredInterventions();
+    const items = (currentData || [])
+      .filter(inter => !((ctx.isClient || ctx.isClientViewActive) && String(inter.id || inter['ID Réserve']).startsWith('A-')))
+      .map(inter => {
+        const coords = inter.coordonnees || inter['Coordonnées'] || '';
+        if (!coords || !coords.includes(',')) return null;
+        const parts = coords.split(',').map(c => parseFloat(c.trim()));
+        const x = parts[0], y = parts[1];
+        if (isNaN(x) || isNaN(y)) return null;
+
+        const idReserve = inter.id || inter['ID Réserve'];
+        const isReserve = String(idReserve).startsWith('R-');
+        return { id: idReserve, x: x, y: y, colorClass: isReserve ? 'bg-orange-500' : 'bg-blue-500' };
+      })
+      .filter(Boolean);
+      
+    if (typeof window.renderOverlayTags === 'function') window.renderOverlayTags(items);
+    else if (typeof renderOverlayTags === 'function') renderOverlayTags(items);
+  }
+
+  function renderInterventionsList(interventions, ctx) {
+    const roomDropdown = document.getElementById('room-select');
+    if (roomDropdown) {
+      roomDropdown.disabled = true;
+      roomDropdown.classList.add('opacity-50', 'cursor-not-allowed');
+      roomDropdown.title = "La sélection de pièce est désactivée dans la vue Réserves.";
+    }
+
+    const container = document.getElementById('interventions-list');
+    if (!container) return;
+
+    if (!interventions || interventions.length === 0) {
+      container.innerHTML = '<p class="text-xs text-slate-400 italic">Aucune réserve ou autocontrôle enregistré.</p>';
+      return;
+    }
+
+    drawTagsFromCache(ctx);
+
+    const visibleInterventions = interventions.filter(inter => {
+      const isClientMode = ctx.isClient || ctx.isClientViewActive;
+      const isAutocontrole = String(inter.id || inter['ID Réserve']).startsWith('A-');
+      return !(isClientMode && isAutocontrole);
+    });
+    
+    if (visibleInterventions.length === 0) {
+      container.innerHTML = '<p class="text-xs text-slate-400 italic">Aucune intervention visible (Les autocontrôles sont masqués en vue client).</p>';
+    } else {
+      container.innerHTML = renderInterventionsContainers(visibleInterventions, ctx);
+    }
+  }
+
+  function updateInterventions(ctx) {
+    const container = document.getElementById('interventions-list');
+    if (!container) return;
+    
+    if (!ctx.activeId) {
+      container.innerHTML = '<p class="text-xs text-slate-400 italic">Aucun lot sélectionné.</p>';
+      return;
+    }
+
+    if (interventionsCacheForId === ctx.activeId) {
+      populateReservesFilterOptions(); 
+      window.applyReservesFilters();
+      return;
+    }
+
+    container.innerHTML = '<div class="flex items-center gap-2 text-slate-400 text-[11px] font-bold"><span class="material-symbols-outlined animate-spin !text-[16px]">sync</span> Récupération des interventions...</div>';
+
+    // Stamp this fetch. If a newer one starts (different apartment, or
+    // this one re-entered) before it comes back, this response is
+    // superseded — drop it instead of letting it clobber the cache.
+    const requestId = ++interventionsRequestSeq;
+
+    google.script.run
+      .withSuccessHandler((interventions) => {
+        if (requestId !== interventionsRequestSeq) return; // stale — ignore
+
+        interventionsCacheForId = ctx.activeId;
+        interventionsCache = interventions || [];
+        
+        activeReservesFilters = { discipline: [], equipe: [], status: [] };
+        initReservesFilterOptions(interventionsCache);
+        window.applyReservesFilters();
+      })
+      .withFailureHandler((err) => {
+        if (requestId !== interventionsRequestSeq) return; // stale — ignore
+        container.innerHTML = `<p class="text-[11px] text-rose-500 font-medium"><span class="font-bold">Erreur :</span> ${err.message}</p>`;
+      })
+      .getReservesInterventionsByLot(APP_DATA.token, ctx.activeId, ctx.currentView);
+  }
+
+  // =========================================================
+  // WORKSPACE CORE REGISTRATION
+  // =========================================================
+
+  function mount(container) {
+    container.classList.add('flex', 'flex-col', 'gap-6', 'max-w-3xl', 'mx-auto', 'pb-10');
+    container.innerHTML = `
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+        <h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-4 flex items-center gap-2">
+          <span class="material-symbols-outlined text-primary !text-[18px]">format_list_bulleted</span> Interventions
+        </h3>
+        <div id="interventions-list" class="flex flex-col gap-2">
+          <p class="text-xs text-slate-400 italic">Aucune réserve ou autocontrôle enregistré.</p>
+        </div>
+      </div>
+    `;
+  }
+
+  function render(ctx) {
+    updateInterventions(ctx);
+  }
+
+  function getEditToolsHtml() {
+    return `
+      <button id="reserves-tool-add-reserve" class="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-600 hover:bg-primary hover:text-white rounded-lg border border-slate-200 transition-colors" title="Ajouter une Réserve">
+        <span class="material-symbols-outlined !text-[18px]">add_location_alt</span>
+      </button>
+      <button id="reserves-tool-trace-liaison" class="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-600 hover:bg-primary hover:text-white rounded-lg border border-slate-200 transition-colors" title="Tracer une liaison">
+        <span class="material-symbols-outlined !text-[18px]">draw</span>
+      </button>`;
+  }
+
+  function bindEditTools(container) {
+    // Logic for edit tools interaction
+  }
+
+  WorkspaceCore.registerLayer('reserves', {
+    label: 'Réserves',
+    layoutMode: 'data-entry',
+    
+    mount: function(container, ctx) {
+      const roomDropdown = document.getElementById('room-select');
+      if (roomDropdown) {
+        roomDropdown.disabled = true;
+        roomDropdown.classList.add('opacity-50', 'cursor-not-allowed');
+      }
+      
+      const resFilters = document.getElementById('reservesFiltersContainer');
+      if (resFilters) resFilters.classList.remove('hidden');
+
+      initCalendarBackground();
+
+      mount(container, ctx);
+    },
+    
+    render: render,
+    getEditToolsHtml: getEditToolsHtml,
+    bindEditTools: bindEditTools,
+    
+    onAssetLoaded: function (ctx) {
+      drawTagsFromCache(ctx);
+    },
+    
+    onExitEditMode: function(ctx) {
+      if (window.unlockRoomDropdown) window.unlockRoomDropdown();
+    }
+  });
+})();
+
+</script>

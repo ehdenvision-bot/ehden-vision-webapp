@@ -1,0 +1,126 @@
+<script>
+(function () {
+  'use strict';
+
+  // =========================================================
+  // ÉLEC LAYER  —  registers itself as layer id 'elec'
+  // =========================================================
+  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html.
+  // layoutMode is 'drawing' here (60% plan / 40% panel, and the Pièce selector
+  // hides itself automatically — see the CSS in Workspace.html), matching
+  // this layer's original data-target-mode. That's the only reason this file
+  // differs from Travaux_Scripts.html at the moment.
+
+  function mount(container) {
+    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
+    container.innerHTML = `
+      <span class="material-symbols-outlined !text-4xl opacity-50">electric_bolt</span>
+      <p class="text-xs font-bold uppercase tracking-widest">Couche "Élec." — à venir</p>
+    `;
+  }
+
+  function render(ctx) {
+    // TODO: populate the Élec panel for ctx.activeId / ctx.roomName.
+  }
+
+  WorkspaceCore.registerLayer('elec', {
+    label: 'Élec.',
+    layoutMode: 'drawing',
+
+    mount: mount,
+    render: render
+  });
+
+})();
+
+
+
+
+(function () {
+  'use strict';
+
+  // =========================================================
+  // SANIT. LAYER  —  registers itself as layer id 'sanit'
+  // =========================================================
+  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html.
+  // layoutMode is 'drawing', matching this layer's original data-target-mode.
+
+  function mount(container) {
+    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
+    container.innerHTML = `
+      <span class="material-symbols-outlined !text-4xl opacity-50">plumbing</span>
+      <p class="text-xs font-bold uppercase tracking-widest">Couche "Sanit." — à venir</p>
+    `;
+  }
+
+  function render(ctx) {
+    // TODO: populate the Sanit. panel for ctx.activeId / ctx.roomName.
+  }
+
+  WorkspaceCore.registerLayer('sanit', {
+    label: 'Sanit.',
+    layoutMode: 'drawing',
+
+    mount: mount,
+    render: render
+  });
+
+})();
+
+
+
+
+
+(function () {
+  'use strict';
+
+  // =========================================================
+  // FORMULAIRES LAYER (NEW, 6th layer)  —  registers itself as layer id 'formulaires'
+  // =========================================================
+  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html,
+  // PLUS one thing the other 5 layers don't need: resolveAsset(). Per your
+  // spec, this is the one layer where the plan-container shows "another
+  // photo" instead of the shared plan — resolveAsset() is exactly that hook.
+  //
+  // layoutMode defaults to 'data-entry' below — an assumption on my part
+  // (forms felt closer to EDL/Travaux/Réserves than to the drawing-heavy
+  // Élec/Sanit split). Flip it to 'drawing' any time, it's a one-word change.
+
+  function mount(container) {
+    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
+    container.innerHTML = `
+      <span class="material-symbols-outlined !text-4xl opacity-50">description</span>
+      <p class="text-xs font-bold uppercase tracking-widest">Couche "Formulaires" — à venir</p>
+    `;
+  }
+
+  function render(ctx) {
+    // TODO: populate the Formulaires panel for ctx.activeId / ctx.roomName.
+  }
+
+  function resolveAsset(ctx) {
+    // TODO: decide how this layer picks its "photo" (one per lot? uploaded
+    // ad hoc? a fixed document scan?). Once you know, return a filename
+    // string here and it's loaded into the plan-container exactly like the
+    // shared plan is for the other 5 layers — same fetchPlanAssetAsBase64
+    // server call, no other plumbing needed. Example, following the same
+    // token-prefix convention as generatePlanFilename() in Core:
+    //
+    //   return `formulaire_${ctx.activeId}`;
+    //
+    // Returning null/undefined (as below) falls back to the shared plan
+    // asset for now, so the layer still works while this is unimplemented.
+    return null;
+  }
+
+  WorkspaceCore.registerLayer('formulaires', {
+    label: 'Formulaires',
+    layoutMode: 'data-entry', // assumption — see note above
+
+    mount: mount,
+    render: render,
+    resolveAsset: resolveAsset
+  });
+
+})();
+</script>

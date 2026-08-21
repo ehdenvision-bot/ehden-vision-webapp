@@ -1,0 +1,1423 @@
+<script>
+
+  // =========================================================
+  // 1. GLOBAL STATE & CONFIGURATION
+  // =========================================================
+  
+  let lastEditingTaskAbbr = "";
+  let currentDisciplines = [];
+  let currentTasksData = [];
+  let currentCyclesData = [];
+
+  // =========================================================
+  // 2. GERSTION DES DISCIPLINS (Corps d'états)
+  // =========================================================
+
+  function openDisciplineListModal() {
+    document.getElementById('settingsMenu').classList.add('hidden');
+    resetDisciplineUI();
+    document.getElementById('disciplineModal').classList.remove('hidden');
+    loadDisciplines();
+  }
+
+  function resetDisciplineUI() {
+    const input = document.getElementById('new-discipline-input');
+    const indexHidden = document.getElementById('edit-discipline-index');
+    const saveBtn = document.querySelector('#disciplineModal button[onclick="saveDiscipline()"]');
+    const cancelBtn = document.getElementById('btn-cancel-discipline');
+
+    if (input) input.value = '';
+    if (indexHidden) indexHidden.value = '';
+    if (saveBtn) saveBtn.textContent = "Ajouter";
+    if (cancelBtn) cancelBtn.classList.add('hidden'); // On cache le bouton annuler
+  }
+
+  function closeDisciplineModal() {
+    document.getElementById('disciplineModal').classList.add('hidden');
+    resetDisciplineUI(); // Force la réinitialisation à la fermeture
+  }
+
+  function loadDisciplines() {
+    const list = document.getElementById('disciplineList');
+    if (list) list.innerHTML = '<li class="text-center py-4 text-xs text-slate-400 font-bold">CHARGEMENT...</li>';
+
+    google.script.run
+      .withSuccessHandler(function(data) {
+        currentDisciplines = data; // Stockage global
+        renderDisciplineList();
+      })
+      .withFailureHandler(function(err) {
+        console.error("Erreur chargement disciplines", err);
+        appErrorLog(err, "loadDisciplines", {
+          context: "Chargement de la liste dans le modal de configuration",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetDisciplines(APP_DATA.token);
+  }
+
+
+  function renderDisciplineList() {
+    const list = document.getElementById('disciplineList');
+    list.innerHTML = '';
+  
+    currentDisciplines.forEach((item, index) => {
+      const li = document.createElement('li');
+      li.className = "flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 hover:border-primary/30 transition-all group";
+    
+      // Vérification si c'est une discipline système protégée
+      const isProtected = (item.name.toUpperCase() === 'EDL' || item.name.toUpperCase() === 'OPR');
+    
+      let actionButtons;
+      if (isProtected) {
+        // Afficher un cadenas au lieu des actions
+        actionButtons = `
+          <div class="flex gap-1">
+            <span class="material-symbols-outlined text-slate-300 !text-[18px]" title="Discipline système protégée">lock</span>
+          </div>
+        `;
+      } else {
+        // Boutons normaux
+        actionButtons = `
+          <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button onclick="prepareEditDiscipline(${index})" class="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors">
+              <span class="material-symbols-outlined !text-[18px]">edit</span>
+            </button>
+            <button onclick="deleteDiscipline(${item.rowIdx})" class="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+              <span class="material-symbols-outlined !text-[18px]">delete</span>
+            </button>
+          </div>
+        `;
+      }
+
+      li.innerHTML = `
+        <span class="text-sm font-bold text-slate-700">${item.name}</span>
+        ${actionButtons}
+      `;
+      list.appendChild(li);
+    });
+  }
+
+  function prepareEditDiscipline(index) {
+    const item = currentDisciplines[index];
+    const input = document.getElementById('new-discipline-input');
+    const indexHidden = document.getElementById('edit-discipline-index');
+    const saveBtn = document.querySelector('#disciplineModal button[onclick="saveDiscipline()"]');
+    const cancelBtn = document.getElementById('btn-cancel-discipline');
+
+    input.value = item.name;
+    indexHidden.value = item.rowIdx;
+  
+    // Mise à jour de l'UI pour le mode édition
+    saveBtn.textContent = "Modifier";
+    if (cancelBtn) cancelBtn.classList.remove('hidden'); // Affiche le bouton annuler
+  
+    input.focus();
+  }
+
+
+  function saveDiscipline() {
+  const input = document.getElementById('new-discipline-input');
+  const name = input.value.trim();
+  const rowIdx = document.getElementById('edit-discipline-index').value;
+  if (!name) return;
+
+  // 1. Vérification locale des doublons
+  const isDuplicate = currentDisciplines.some(item => {
+    if (rowIdx && item.rowIdx == rowIdx) return false;
+    return item.name.toLowerCase() === name.toLowerCase();
+  });
+
+  if (isDuplicate) {
+    showModal({
+      icon: 'error',
+      title: 'Doublon détecté',
+      html: `La discipline "${name}" existe déjà dans la liste`
+    });
+    return;
+  }
+
+  showLoading('Enregistrement...');
+
+  google.script.run
+    .withSuccessHandler((res) => {
+      if (res && res.success === false && res.isUserNotice) {
+        showModal({ icon: 'warning', title: 'Attention', html: res.message });
+        return;
+      }
+  
+      // 1. SUCCESS FEEDBACK
+      resetDisciplineUI();
+      showToast('Enregistré !');
+      loadDisciplines();
+
+      // 2. MASTER LOG
+      const isEdit = document.getElementById('edit-discipline-index').value !== "";
+      appLog(
+        'parametres', 
+        "discipline-" + (isEdit ? document.getElementById('edit-discipline-index').value : "new"), 
+        isEdit ? "MODIFICATION_DISCIPLINE" : "CREATION_DISCIPLINE", 
+        "Private", 
+        "Milestone", 
+        { name: name }
+      );
+
+      // 3. CASCADE UPDATE (Existing logic)
+      if (res && res.oldName && res.oldName !== res.newName) {
+        google.script.run
+          .withFailureHandler(err => console.error("Erreur Cascade:", err))
+          .gsCascadeDisciplineUpdate(APP_DATA.token, res.oldName, res.newName);
+      }
+    })
+    .withFailureHandler((err) => {
+      showModal({
+        icon: 'warning',
+        title: 'Erreur',
+        text: err.message
+      });
+
+      const payload = {
+        disciplineName: document.getElementById('new-discipline-input').value,
+        editIndex: document.getElementById('edit-discipline-index').value
+      };
+
+      appErrorLog(err, "saveDiscipline", { 
+        action: payload.editIndex ? "MODIFICATION" : "CREATION",
+        submittedData: payload,
+        projectId: PROJECT_ID || "Inconnu"
+      });
+    })
+    .gsSaveDiscipline(APP_DATA.token, name, rowIdx);
+}
+
+  function deleteDiscipline(rowIdx) {
+    const discipline = currentDisciplines.find(d => d.rowIdx == rowIdx);
+    const nameToDelete = discipline ? discipline.name : "Inconnue";
+
+    showModal({
+      icon: 'warning',
+      title: 'Supprimer ?',
+      text: 'Cette discipline sera retirée de la liste.',
+      showCancelButton: true,
+      confirmButtonText: 'Supprimer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#ef4444' // Red button for deletion
+    }).then((result) => {
+      if (result.isConfirmed) {
+        showLoading('Vérification...');
+      
+        google.script.run
+          .withSuccessHandler((res) => {
+            if (res && res.success === false && res.isUserNotice) {
+              showModal({ icon: 'warning', title: 'Action impossible', html: res.message });
+              return;
+            }
+  
+            // 1. SUCCESS FEEDBACK
+            showModal({ icon: 'success', title: 'Supprimé', text: 'La discipline a été retirée.' });
+            loadDisciplines();
+
+            // 2. MASTER LOG
+            appLog(
+              'parametres',
+              "discipline-" + nameToDelete, 
+              "SUPPRESSION_DISCIPLINE", 
+              "Private", 
+              "Milestone", 
+              { name: nameToDelete }
+            );
+          })
+          .withFailureHandler((err) => {
+            // Affiche le message d'erreur renvoyé par le "throw new Error" du backend
+            showModal({
+              icon: 'warning',
+              title: 'Action impossible',
+              html: err.message
+            });
+            appErrorLog(err, "deleteDiscipline", {
+              targetIndex: rowIdx,
+              projectId: PROJECT_ID || "Inconnu"
+            });
+          })
+          .gsDeleteDiscipline(APP_DATA.token, rowIdx);
+      }
+    });
+  }
+
+  // Permet de mettre à jour le selecteur et le champ texte en 1 clic sur la palette
+  function setTaskColor(hexCode) {
+    document.getElementById('task-bg').value = hexCode;
+    document.getElementById('task-bg-text').value = hexCode;
+  }
+
+  // =========================================================
+  // 3. GERSTION DES TACHES
+  // =========================================================
+
+  // --- Modal Toggles ---
+  function openTaskListModal() {
+    document.getElementById('settingsMenu').classList.add('hidden');
+    document.getElementById('taskListModal').classList.remove('hidden');
+    loadTasksList(); // Fetch data from backend
+  }
+
+  function closeTaskListModal() {
+    document.getElementById('taskListModal').classList.add('hidden');
+  }
+
+  // --- Fetch & Render ---
+  function loadTasksList() {
+    const tbody = document.getElementById('tasksTableBody');
+    tbody.innerHTML = `<tr><td colspan="8" class="py-12 text-center"><div class="flex flex-col items-center gap-2"><span class="material-symbols-outlined animate-spin text-primary">refresh</span><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Chargement...</span></div></td></tr>`;
+    
+    google.script.run
+      .withSuccessHandler(function(tasks) {
+        currentTasksData = tasks;
+        window.currentTasksData = tasks;
+        renderTasksTable(tasks);
+        rebuildAddMenuFromCache();
+      })
+      .withFailureHandler(function(error) {
+        renderTasksTable([]);
+        console.error("Erreur lors de la récupération des tâches :", error);
+        appErrorLog(error, "loadTasksList", {
+          context: "Chargement de la liste dans le modal de configuration",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetTasks(APP_DATA.token);
+  }
+
+  function renderTasksTable(tasks) {
+    const tbody = document.getElementById('tasksTableBody');
+    tbody.innerHTML = '';
+
+    if (!tasks || tasks.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="8" class="py-20 text-center">
+            <div class="flex flex-col items-center justify-center opacity-40">
+              <span class="material-symbols-outlined text-[48px] mb-2 text-slate-300">inventory_2</span>
+              <p class="text-sm font-black text-slate-400 uppercase tracking-tighter">Aucune tâche configurée</p>
+              <p class="text-[10px] text-slate-400">Cliquez sur "Ajouter" pour créer votre première tâche.</p>
+            </div>
+          </td>
+        </tr>`;
+      return;
+    }
+
+    tasks.forEach((task, index) => {
+      const tr = document.createElement('tr');
+      tr.className = "hover:bg-slate-50 transition-colors group border-b border-slate-50";
+      // ATTENTION: We store the Google Sheet row index here to map it later
+      tr.setAttribute('data-row-idx', task.rowIdx); 
+    
+      const dureeValue = task.duree || '0';
+      const uniteValue = task.unite || '—';
+
+      tr.innerHTML = `
+        <td class="py-3 px-2 text-center w-8">
+          <span class="material-symbols-outlined drag-handle text-slate-300 hover:text-slate-500 transition-colors">drag_indicator</span>
+        </td>
+        <td class="py-3 px-6">
+          <span class="px-2 py-1 rounded-md text-[10px] font-black tracking-wider" style="background-color: ${task.bgColor || '#3b82f6'}; color: white;">
+            ${task.abbr}
+          </span>
+        </td>
+        <td class="py-3 px-6 text-xs font-bold text-slate-700">${task.type}</td>
+        <td class="py-3 px-6 text-xs font-medium text-slate-600">${task.equipe || '—'}</td>
+        <td class="py-3 px-6 text-xs text-slate-500 truncate max-w-[200px]">${task.descCourte || '—'}</td>
+        <td class="py-3 px-6 text-center text-xs font-bold text-slate-700">${dureeValue}</td>
+        <td class="py-3 px-6 text-center">
+          <span class="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded font-bold uppercase">${uniteValue}</span>
+        </td>
+        <td class="py-3 px-6 text-right">
+          <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button onclick="openTaskEditor(${index})" class="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 flex items-center justify-center">
+              <span class="material-symbols-outlined !text-[16px]">edit</span>
+            </button>
+            <button onclick="confirmDeleteTask(${index})" class="w-8 h-8 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 flex items-center justify-center">
+              <span class="material-symbols-outlined !text-[16px]">delete</span>
+            </button>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // INITIALIZE DRAG AND DROP
+    initSortableTasks();
+  }
+
+  function initSortableTasks() {
+    const tbody = document.getElementById('tasksTableBody');
+    new Sortable(tbody, {
+      handle: '.drag-handle', // Only allow dragging from the icon
+      animation: 150,
+      ghostClass: 'sortable-ghost',
+      onEnd: function (evt) {
+        if (evt.oldIndex === evt.newIndex) return; // Ignore if dropped in the same place
+
+        // 1. Build an array of the original Google Sheet Row IDs in their new order
+        const newOrder = [];
+        tbody.querySelectorAll('tr[data-row-idx]').forEach(tr => {
+          newOrder.push(parseInt(tr.getAttribute('data-row-idx')));
+        });
+
+        document.getElementById('btnSaveTaskOrder').classList.remove('hidden');
+      }
+    });
+  }
+
+  function saveTaskOrder() {
+    // Show a non-intrusive toast notification while saving
+    showLoading('Sauvegarde de l\'ordre...', '', true);
+
+    const tbody = document.getElementById('tasksTableBody');
+    const newOrder = [];
+    tbody.querySelectorAll('tr[data-row-idx]').forEach(tr => {
+      newOrder.push(parseInt(tr.getAttribute('data-row-idx')));
+    });
+
+
+    google.script.run
+      .withSuccessHandler(() => {
+        showToast('Ordre mis à jour');
+        // Reload tasks so frontend `currentTasksData` and Google Sheet line up correctly again
+        loadTasksList(); 
+        document.getElementById('btnSaveTaskOrder').classList.add('hidden');
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'warning',
+          title: 'Action impossible',
+          html: err.message
+        });
+        loadTasksList(); 
+    
+        appErrorLog(err, "saveTaskOrder", {
+          orderLength: newOrder.length, // Utile pour voir si l'ordre est incomplet
+          submittedOrder: newOrder,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsReorderTasks(APP_DATA.token, newOrder);
+  }
+
+  // --- Interaction with the Editor Modal ---
+  // If index is passed, it's EDIT. If empty, it's ADD.
+  async function openTaskEditor(index = null) {
+    const form = document.getElementById('editTaskForm');
+    if (form) form.reset();
+
+    const typeSelect = document.getElementById('task-type');
+    const equipeSelect = document.getElementById('task-equipe');
+    const btnDelete = document.getElementById('btnDeleteTask');
+    const btnSave = document.getElementById('btnSaveTask');
+
+    // BLOQUER LE BOUTON DÈS LE DÉPART
+    if (btnSave) {
+      btnSave.disabled = true;
+      btnSave.innerText = "Chargement...";
+      btnSave.style.opacity = "0.5";
+      btnSave.style.cursor = "not-allowed";
+    }
+  
+    if (typeSelect) typeSelect.innerHTML = '<option value="">Chargement...</option>';
+    if (equipeSelect) equipeSelect.innerHTML = '<option value="">Chargement...</option>';
+
+    // FIX 5: Fetch disciplines and equipes in parallel (Promise.all) instead of chained sequentially.
+    // Previously: gsGetDisciplines callback → then gsGetEquipes — adding ~1-2s of extra latency.
+    // If already seeded from startup data, these resolve instantly from the local cache guards below.
+    const fetchDisciplines = () => new Promise(resolve => {
+      if (currentDisciplines && currentDisciplines.length > 0) { resolve(currentDisciplines); return; }
+      google.script.run.withSuccessHandler(resolve).gsGetDisciplines(APP_DATA.token);
+    });
+    const fetchEquipes = () => new Promise(resolve => {
+      if (currentEquipes && currentEquipes.length > 0) { resolve(currentEquipes); return; }
+      google.script.run.withSuccessHandler(resolve).gsGetEquipes(APP_DATA.token);
+    });
+
+    Promise.all([fetchDisciplines(), fetchEquipes()]).then(([disciplines, equipes]) => {
+      currentDisciplines = disciplines;
+      currentEquipes     = equipes;
+
+      if (typeSelect) {
+        typeSelect.innerHTML = '<option value="">-- Sélectionner --</option>';
+        if (disciplines && disciplines.length > 0) {
+          disciplines.forEach(disc => {
+            const opt = document.createElement('option');
+            opt.value = disc.name;
+            opt.textContent = disc.name;
+            typeSelect.appendChild(opt);
+          });
+        }
+      }
+
+      if (equipeSelect) {
+        equipeSelect.innerHTML = '<option value="">-- Choisir --</option>';
+        if (equipes && equipes.length > 0) {
+          equipes.forEach(eq => {
+            const optEq = document.createElement('option');
+            optEq.value = eq.name;
+            optEq.textContent = eq.name;
+            equipeSelect.appendChild(optEq);
+          });
+        }
+      }
+
+      // --- EDIT MODE ---
+      if (index !== null) {
+        const task = currentTasksData[index];
+        document.getElementById('task-id').value = task.rowIdx;
+        document.getElementById('task-abbr').value = task.abbr;
+        document.getElementById('task-type').value = task.type;
+        document.getElementById('task-equipe').value = task.equipe || '';
+        document.getElementById('task-duree').value = task.duree;
+        document.getElementById('task-unite').value = task.unite;
+        document.getElementById('task-desc').value = task.desc || ''; 
+        document.getElementById('task-desc-courte').value = task.descCourte || '';
+        document.getElementById('task-bg').value = task.bgColor || '#3b82f6';
+
+        lastEditingTaskAbbr = task.abbr;
+    
+        const abbrInput = document.getElementById('task-abbr');
+        abbrInput.value = task.abbr;
+        abbrInput.dataset.oldValue = task.abbr;
+      
+        if (btnDelete) {
+          btnDelete.classList.remove('hidden');
+          btnDelete.onclick = () => confirmDeleteTask(index); 
+        }
+      }
+
+      // DÉBLOQUER LE BOUTON UNE FOIS QUE TOUT EST PRÊT
+      if (btnSave) {
+        btnSave.disabled = false;
+        btnSave.innerText = "Enregistrer";
+        btnSave.style.opacity = "1";
+        btnSave.style.cursor = "pointer";
+      }
+    });
+
+    // --- ADD MODE ---
+    if (index === null) {
+      document.getElementById('task-id').value = '';
+      document.getElementById('task-duree').value = "1"; // Définit la durée par défaut à 1
+      document.getElementById('task-unite').value = "journée"; // Optionnel: définit l'unité par défaut
+      document.getElementById('task-bg').value = "#3b82f6"; // Optionnel: couleur par défaut (bleu)
+    
+      if (btnDelete) {
+        btnDelete.classList.add('hidden');
+        btnDelete.onclick = null; 
+      }
+    }
+
+    document.getElementById('taskListModal').classList.add('hidden');
+    document.getElementById('taskModal').classList.remove('hidden');
+  }
+
+
+  // ====== MODALS GESTION ======
+  function closeTaskModal() { 
+    // 1. Cache l'éditeur
+    document.getElementById('taskModal').classList.add('hidden'); 
+    // 2. Réaffiche la liste de la base de données
+    document.getElementById('taskListModal').classList.remove('hidden');
+    // 3. Réinitialise le formulaire pour la prochaine fois
+    document.getElementById('editTaskForm').reset();
+  }
+
+  // ====== SOUMISSION DES FORMULAIRES ======
+  function handleSaveTask(event) {
+    if (event) event.preventDefault(); 
+
+    const taskId = document.getElementById('task-id').value;
+  
+    // Remplacement de isEditMode par une vérification directe :
+    // Si taskId n'est pas vide, c'est qu'on est en train d'éditer une tâche existante.
+    const isEditing = (taskId !== "");
+
+    const form = document.getElementById('editTaskForm');
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+
+    // On récupère l'abréviation
+    let abbrValue = document.getElementById('task-abbr').value.trim().toUpperCase();
+
+    // Vérification de l'abréviation
+    if (abbrValue.includes('|') || abbrValue.includes('@')) {
+      showModal({
+        icon: 'error',
+        title: 'Erreur',
+        text: 'Les caractères | et @ sont interdits.'
+      });
+      return;
+    }
+
+    // Verrouiller le bouton pour éviter les doubles clics
+    const btnSave = document.getElementById('btnSaveTask');
+    if (btnSave) {
+      btnSave.disabled = true;
+      btnSave.innerText = "ENREGISTREMENT...";
+    }
+
+    const taskData = {
+      rowIdx: taskId, // Utilise la variable taskId récupérée plus haut
+      type: document.getElementById('task-type').value,
+      abbr: abbrValue,
+      oldAbbr: lastEditingTaskAbbr,
+      equipe: document.getElementById('task-equipe').value,
+      duree: document.getElementById('task-duree').value,
+      unite: document.getElementById('task-unite').value,
+      desc: document.getElementById('task-desc').value,
+      descCourte: document.getElementById('task-desc-courte').value,
+      bgColor: document.getElementById('task-bg').value
+    };
+  
+
+    showLoading('Enregistrement...');
+
+    google.script.run
+      .withSuccessHandler((savedTask) => {
+        if (savedTask && savedTask.success === false && savedTask.isUserNotice) {
+          showModal({
+            icon: 'warning',
+            title: 'Action impossible',
+            text: savedTask.message
+          });
+
+          // On débloque le bouton de sauvegarde qui était désactivé
+          if (btnSave) {
+            btnSave.disabled = false;
+            btnSave.innerText = "ENREGISTRER";
+          }
+          return;
+        }
+
+        showToast('Enregistré !');
+
+        // The server returns the saved task; update currentTasksData locally.
+        if (savedTask && typeof savedTask === 'object') {
+          const idx = currentTasksData.findIndex(t => t.abbr === savedTask.abbr);
+          if (idx !== -1) {
+            currentTasksData[idx] = { ...currentTasksData[idx], ...savedTask };
+          } else {
+            currentTasksData.push(savedTask);
+          }
+          window.currentTasksData = currentTasksData;
+        }
+
+        closeTaskModal();
+        loadTasksList(); 
+        loadCyclesList();
+        rebuildAddMenuFromCache();
+        refreshPlanningRowsOnly();
+      
+        if (btnSave) {
+          btnSave.disabled = false;
+          btnSave.innerText = "ENREGISTRER";
+        }
+        appLog(
+          'system', 
+          "task-" + (isEditing ? taskId : "new"), 
+          isEditing ? "MODIFICATION_TACHE" : "CREATION_TACHE", 
+          "Private", 
+          "Detail", 
+          taskData
+        );
+      })
+      .withFailureHandler(err => {
+        if (btnSave) {
+          btnSave.disabled = false;
+          btnSave.innerText = "ENREGISTRER";
+        }
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "handleSaveTask", {
+          action: isEditing ? "UPDATE" : "CREATE",
+          taskData: taskData,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsSaveTask(APP_DATA.token, taskData);
+  }
+
+  // --- Delete Task avec gestion des colonnes Recap/Avancement ---
+  function confirmDeleteTask(index) {
+    const task = currentTasksData[index];
+  
+    showModal({
+      title: 'Supprimer la tâche ?',
+      text: `Voulez-vous vraiment supprimer "${task.abbr}" ? Cela impactera les feuilles Recap et Avancement.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Supprimer',
+      cancelButtonText: 'Annuler'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        // On appelle une sous-fonction récursive pour gérer la force-suppression
+        executeFinalDelete(task.rowIdx, false);
+      }
+    });
+  }
+
+  function executeFinalDelete(rowIdx, force, colsCacheJson) {
+    showLoading(force ? 'Suppression forcée...' : 'Suppression...');
+
+    google.script.run
+      .withSuccessHandler((response) => {
+        if (response && response.success === false && response.isUserNotice) {
+          
+          // CAS 1 : Alerte "Données détectées" (qui nécessite un choix de l'utilisateur)
+          if (response.isDataFound) {
+            showModal({
+              icon: 'warning',
+              title: 'Données détectées !',
+              html: `Des données existent déjà pour cette tâche dans :<br><b class="text-red-500">${response.locations}</b>.<br><br>Voulez-vous tout supprimer définitivement ?`,
+              showCancelButton: true,
+              confirmButtonColor: '#d33',
+              confirmButtonText: 'Oui, tout supprimer',
+              cancelButtonText: 'Annuler'
+            }).then((res) => {
+              if (res.isConfirmed) {
+                // On relance avec "force = true" en repassant le cache
+                executeFinalDelete(rowIdx, true, response.colsCache);
+              }
+            });
+          } 
+          // CAS 2 : Notice de blocage standard (Cycles, EDL, Planning)
+          else {
+            showModal({
+              icon: 'warning',
+              title: 'Action impossible',
+              text: response.message
+            });
+          }
+          return;
+        }
+
+        // Code de succès standard
+        showToast('Supprimé !');
+        const abbrToRemove = currentTasksData[rowIdx] ? currentTasksData[rowIdx].abbr : null;
+
+        if (abbrToRemove) {
+          currentTasksData = currentTasksData.filter(t => t.abbr !== abbrToRemove);
+          window.currentTasksData = currentTasksData;
+        }
+        loadTasksList();
+        rebuildAddMenuFromCache();
+        closeTaskModal();
+
+        appLog(
+          'system', 
+          "task-" + abbrToRemove, 
+          "SUPPRESSION_TACHE", 
+          "Private", 
+          "Detail", 
+          { taskId: rowIdx, abbreviation: abbrToRemove || "Inconnue" }
+        );
+      })
+      .withFailureHandler((err) => {
+        // Il ne reste plus que les vraies erreurs système ici !
+        showModal({
+          icon: 'error',
+          title: 'Erreur Serveur',
+          text: err.message
+        });
+        
+        appErrorLog(err, "executeFinalDelete", {
+          rowIdx: rowIdx,
+          isForced: force,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsDeleteTask(APP_DATA.token, rowIdx, force, colsCacheJson || null);
+  }
+
+  // Syntoniser les Color Pickers avec les Inputs textes (Optionnel mais UX sympa)
+  document.getElementById('task-bg')?.addEventListener('input', function() { document.getElementById('task-bg-text').value = this.value; });
+  document.getElementById('task-text')?.addEventListener('input', function() { document.getElementById('task-text-text').value = this.value; });
+
+
+  // =========================================================
+  // 4. GESTION DES CYCLES
+  // =========================================================
+
+  // --- Ouverture de la Liste ---
+  function openCycleModal() {
+    const settingsMenu = document.getElementById('settingsMenu');
+    if (settingsMenu) settingsMenu.classList.add('hidden');
+  
+    document.getElementById('cycleListModal').classList.remove('hidden');
+    loadCyclesList();
+  
+    // Pré-charger les tâches si besoin pour que le dictionnaire soit prêt pour l'édition
+    if (typeof currentTasksData === 'undefined' || currentTasksData.length === 0) {
+      google.script.run.withSuccessHandler(data => { currentTasksData = data; }).gsGetTasks(APP_DATA.token);
+    }
+  }
+
+  function closeCycleListModal() {
+    document.getElementById('cycleListModal').classList.add('hidden');
+  }
+
+  function loadCyclesList() {
+    const tbody = document.getElementById('cyclesTableBody');
+    tbody.innerHTML = `<tr><td colspan="4" class="py-12 text-center"><div class="flex flex-col items-center gap-2"><span class="material-symbols-outlined animate-spin text-primary">refresh</span><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Chargement...</span></div></td></tr>`;
+    
+    google.script.run
+      .withSuccessHandler(function(cycles) {
+         renderCyclesTable(cycles);
+         rebuildAddMenuFromCache();
+      })
+      .withFailureHandler(err => {
+        console.error(err);
+        renderCyclesTable([]);
+        appErrorLog(err, "loadCyclesList", {
+          context: "Chargement de la liste dans le modal de configuration",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetCycles(APP_DATA.token);
+  }
+
+  function renderCyclesTable(cycles) {
+    currentCyclesData = cycles;
+    const tbody = document.getElementById('cyclesTableBody');
+    tbody.innerHTML = '';
+
+    if (!cycles || cycles.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" class="py-20 text-center text-slate-400 uppercase text-xs font-black">Aucun cycle configuré</td></tr>`;
+      return;
+    }
+
+    cycles.forEach((cycle, index) => {
+      const tr = document.createElement('tr');
+      tr.className = "hover:bg-slate-50 transition-colors group border-b border-slate-100";
+
+      // Génération de la séquence visuelle avec connecteurs
+      let blocks = [];
+      (cycle.sequence || []).forEach(step => {
+        let added = false;
+        if (blocks.length > 0) {
+          let lastBlock = blocks[blocks.length - 1];
+          let lastStep = lastBlock[lastBlock.length - 1];
+        
+          // Empiler si même prédécesseur OU relation Start-to-Start
+          let samePredecessor = (step.dependsOn === lastStep.dependsOn);
+          let isStartToStart = (step.linkType === 'SS');
+        
+          if (samePredecessor || isStartToStart) {
+            lastBlock.push(step);
+            added = true;
+          }
+        }
+        if (!added) {
+          blocks.push([step]); // Nouvelle colonne
+        }
+      });
+
+      // Génération de la séquence visuelle empilée
+      let sequenceHtml = blocks.map((block, blockIndex) => {
+        const isFirstBlock = blockIndex === 0;
+        const firstStep = block[0];
+      
+        // 1. Le connecteur avant le bloc
+        let connector = "";
+        if (!isFirstBlock) {
+          let lagText = "";
+          if (firstStep.lag && firstStep.lag !== 0) {
+            lagText = `<span class="text-[8px] opacity-70">${firstStep.lag > 0 ? '+' : ''}${firstStep.lag}j</span>`;
+          }
+          connector = `<div class="flex items-center h-full"><span class="text-[10px] text-slate-300 mx-2 font-black">→${lagText}</span></div>`;
+        }
+
+        // 2. L'empilement vertical des tâches du bloc
+        let stackHtml = block.map(step => {
+          const bgColor = step.color || "#e2e8f0";
+          return `
+            <div class="flex items-center gap-1 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm w-max">
+              <span class="w-2 h-2 rounded-full" style="background-color: ${bgColor};"></span>
+              <span class="text-[10px] font-bold text-slate-700">${step.taskAbbr}</span>
+              <span class="text-[9px] font-black text-primary">${step.duree}j</span>
+            </div>
+          `;
+        }).join('');
+
+        // 3. Conteneur du bloc
+        return `
+          <div class="flex items-center">
+            ${connector}
+            <div class="flex flex-col gap-1 justify-center">
+              ${stackHtml}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      tr.innerHTML = `
+        <td class="py-4 px-6 font-black text-xs text-slate-700">${cycle.nom}</td>
+        <td class="py-4 px-6 text-xs text-slate-500">${cycle.description || '—'}</td>
+        <td class="py-4 px-6">
+          <div class="flex items-center flex-wrap gap-y-2">
+            ${sequenceHtml || '<span class="italic text-slate-400 text-xs">Vide</span>'}
+          </div>
+        </td>
+        <td class="py-4 px-6 text-right">
+          <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button onclick="editCycle(${index})" class="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 hover:bg-purple-100 flex items-center justify-center"><span class="material-symbols-outlined !text-[16px]">edit</span></button>
+            <button onclick="confirmDeleteCycle(${index})" class="w-8 h-8 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 flex items-center justify-center"><span class="material-symbols-outlined !text-[16px]">delete</span></button>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // --- Ouverture de l'Éditeur ---
+  function openCycleEditor() {
+    document.getElementById('cycleListModal').classList.add('hidden');
+    document.getElementById('cycleEditorModal').classList.remove('hidden');
+  
+    // Reset manuel pour être certain
+    document.getElementById('cycle-id').value = '';
+    document.getElementById('cycle-nom').value = '';
+    document.getElementById('cycle-desc').value = '';
+  
+    document.getElementById('cycleSequenceContainer').innerHTML = '';
+    const emptyMsg = document.getElementById('emptySequenceMsg');
+    if (emptyMsg) {
+      emptyMsg.style.display = 'block';
+    }
+  
+    const btnDelete = document.getElementById('btnDeleteCycle');
+    if (btnDelete) btnDelete.classList.add('hidden');
+  }
+
+  //CHARGEMENT DES DONNÉES DANS L'ÉDITEUR
+  function editCycle(index) {
+    const cycle = currentCyclesData[index];
+    if (!cycle) return;
+
+    // 1. On ouvre le modal d'abord
+    openCycleEditor();
+  
+    // 2. Remplissage IMMÉDIAT des champs texte (On force le remplissage direct)
+    const inputId = document.getElementById('cycle-id');
+    const inputNom = document.getElementById('cycle-nom');
+    const inputDesc = document.getElementById('cycle-desc');
+
+    if (inputId) inputId.value = cycle.rowIdx || "";
+    if (inputNom) inputNom.value = cycle.nom || "";
+    if (inputDesc) inputDesc.value = cycle.description || "";
+  
+    // 3. Bouton supprimer
+    const btnDelete = document.getElementById('btnDeleteCycle');
+    if (btnDelete) {
+      btnDelete.classList.remove('hidden');
+      btnDelete.onclick = () => confirmDeleteCycle(index);
+    }
+
+    // 4. Injection de la séquence (avec gestion asynchrone des tâches)
+    const injectSequence = () => {
+      const container = document.getElementById('cycleSequenceContainer');
+      if (!container) return;
+    
+      container.innerHTML = ''; 
+    
+      const emptyMsg = document.getElementById('emptySequenceMsg');
+    
+      if (cycle.sequence && Array.isArray(cycle.sequence) && cycle.sequence.length > 0) {
+        // Utilisation d'un try/catch ou d'une condition pour éviter le crash
+        if (emptyMsg) { emptyMsg.style.display = 'none'; }
+      
+        cycle.sequence.forEach(step => {
+          addCycleTaskRow(step);
+        });
+      } else {
+        if (emptyMsg) { emptyMsg.style.display = 'block'; }
+      }
+    };
+
+    // Use the startup cache first — fall back to both window.currentTasksData and then a server fetch
+    const cachedTasks = (typeof currentTasksData !== 'undefined' && currentTasksData.length > 0)
+      ? currentTasksData
+      : (window.currentTasksData && window.currentTasksData.length > 0 ? window.currentTasksData : null);
+
+    if (!cachedTasks) {
+      showLoading('Chargement des composants...');
+      google.script.run
+        .withSuccessHandler(data => {
+          currentTasksData = data;
+          window.currentTasksData = data;
+          Swal.close();
+          injectSequence();
+        })
+        .gsGetTasks(APP_DATA.token);
+    } else {
+      currentTasksData = cachedTasks;
+      injectSequence();
+    }
+  }
+
+  function closeCycleEditor() {
+    document.getElementById('cycleEditorModal').classList.add('hidden');
+    document.getElementById('cycleListModal').classList.remove('hidden');
+  }
+
+  // --- Constructeur de Séquence ---
+  function addCycleTaskRow(stepData = {}) {
+    const tasks = (typeof currentTasksData !== 'undefined') ? currentTasksData : [];
+    const container = document.getElementById('cycleSequenceContainer');
+    const msg = document.getElementById('emptySequenceMsg');
+    if (msg) msg.style.display = 'none';
+
+    if (typeof stepData === 'string') stepData = { taskAbbr: stepData };
+
+    // --- NOUVEAU : Gestion des IDs et liens par défaut ---
+    const rowId = stepData.id || 't_' + Math.random().toString(36).substr(2, 9);
+    let defaultDependsOn = stepData.dependsOn || "";
+    if (!stepData.id) { 
+      const existingRows = container.querySelectorAll('.sequence-row');
+      if (existingRows.length > 0) {
+        defaultDependsOn = existingRows[existingRows.length - 1].querySelector('.seq-id').value;
+      }
+    }
+    const linkType = stepData.linkType || "FS";
+    const lag = stepData.lag || 0;
+    // ----------------------------------------------------
+
+    const currentDuree = stepData.duree || 0;
+    const selectedColor = stepData.color || "#e2e8f0";
+    const selectedAbbr = stepData.taskAbbr || "";
+
+    const row = document.createElement('div');
+    row.className = "sequence-row flex items-center gap-2 bg-white p-2 rounded-xl border border-slate-200 shadow-sm mb-2 group";
+    row.dataset.rowId = rowId; // --- NOUVEAU ---
+
+    let optionsHtml = '<option value="" data-duree="0" data-color="#e2e8f0">Choisir une tâche...</option>';
+    tasks.forEach(t => {
+      const isSelected = (t.abbr === selectedAbbr) ? 'selected' : '';
+      const taskColor = t.bgColor || "#e2e8f0"; 
+      optionsHtml += `<option value="${t.abbr}" data-duree="${t.duree || 0}" data-color="${taskColor}" ${isSelected}>${t.descCourte || t.abbr} (${t.abbr})</option>`;
+    });
+
+    const displayDuree = currentDuree > 0 ? currentDuree : '-';
+
+    row.innerHTML = `
+      
+      <div class="flex-1">
+        <select class="seq-task w-full text-xs font-bold border-slate-200 rounded-lg py-2 focus:ring-primary" required onchange="handleTaskSelection(this)">
+          ${optionsHtml}
+        </select>
+      </div>
+    
+      <button type="button" onclick="openDependencyModal(this)" class="dep-btn min-w-[90px] h-9 px-2 bg-slate-50 border border-slate-200 rounded-lg text-[9px] font-black uppercase text-slate-500 hover:bg-slate-100 hover:text-primary transition-colors flex items-center justify-center gap-1">
+        <span class="material-symbols-outlined !text-[14px] dep-icon">link</span>
+        <span class="dep-text">Lien</span>
+      </button>
+
+      <div class="flex items-center justify-center min-w-[50px] bg-slate-50 h-9 px-3 rounded-lg border border-slate-200">
+        <span class="duree-label text-xs font-black text-primary">${displayDuree}</span><span class="text-[9px] font-bold text-slate-400 ml-0.5">j</span>
+      </div>
+
+      <button type="button" onclick="removeTaskRow(this)" class="text-slate-300 hover:text-red-500 transition-colors p-1">
+        <span class="material-symbols-outlined !text-[18px]">close</span>
+      </button>
+
+      <input type="hidden" class="seq-id" value="${rowId}">
+      <input type="hidden" class="seq-dependson" value="${defaultDependsOn}">
+      <input type="hidden" class="seq-linktype" value="${linkType}">
+      <input type="hidden" class="seq-lag" value="${lag}">
+      <input type="hidden" class="seq-duree" value="${currentDuree}">
+      <input type="hidden" class="seq-color" value="${selectedColor}">
+    `;
+  
+    container.appendChild(row);
+    updateAvailableTasks();
+    updateAllDependencyLabels();
+  }
+
+  function removeTaskRow(btn) {
+    const row = btn.closest('.sequence-row');
+    if (row) {
+      // Animation de sortie
+      row.style.opacity = '0';
+      row.style.transform = 'translateX(20px)';
+    
+      setTimeout(() => {
+        row.remove();
+        updateAllDependencyLabels(); // Met à jour les liens (existant)
+        updateAvailableTasks();      // CORRECTION : Libère la tâche dans les autres listes
+        checkEmptySequence();        // CORRECTION : Affiche le message si c'était la dernière tâche
+      }, 200);
+    }
+  }
+
+  // --- Mise à jour lors de la sélection ---
+  function handleTaskSelection(selectElement) {
+    const selectedOption = selectElement.options[selectElement.selectedIndex];
+  
+    // RÉCUPÉRATION DES DONNÉES DE L'OPTION
+    const duree = selectedOption.getAttribute('data-duree') || 0;
+    const color = selectedOption.getAttribute('data-color') || "#e2e8f0"; 
+  
+    const row = selectElement.closest('.sequence-row');
+  
+    // 1. Mise à jour de la DURÉE
+    const dureeInput = row.querySelector('.seq-duree');
+    if (dureeInput) dureeInput.value = duree;
+    const dureeLabel = row.querySelector('.duree-label');
+    if (dureeLabel) dureeLabel.textContent = (duree > 0) ? duree : '-';
+
+    // 2. MISE À JOUR DE LA COULEUR (C'est ici que ça se jouait !)
+    const colorInput = row.querySelector('.seq-color');
+    if (colorInput) {
+      colorInput.value = color;
+    }
+
+    updateAvailableTasks();
+    updateAllDependencyLabels();
+  }
+
+  function updateAvailableTasks() {
+    const allSelects = document.querySelectorAll('.seq-task');
+    const selectedValues = Array.from(allSelects).map(s => s.value).filter(v => v !== "");
+
+    allSelects.forEach(select => {
+      const currentValue = select.value;
+      Array.from(select.options).forEach(option => {
+        if (option.value === "") return;
+        if (selectedValues.includes(option.value) && option.value !== currentValue) {
+          option.disabled = true;
+          if (!option.text.includes(' (Occupée)')) option.text += ' (Occupée)';
+        } else {
+          option.disabled = false;
+          option.text = option.text.replace(' (Occupée)', '');
+        }
+      });
+    });
+  }
+
+  function checkEmptySequence() {
+    const rows = document.querySelectorAll('#cycleSequenceContainer .sequence-row');
+    const msg = document.getElementById('emptySequenceMsg');
+    if (rows.length === 0 && msg) msg.style.display = 'block';
+  }
+
+  function handleSaveCycle(event) {
+    event.preventDefault();
+
+    const sequenceRows = document.querySelectorAll('#cycleSequenceContainer .sequence-row');
+    const sequenceData = Array.from(sequenceRows).map(row => ({
+      // NOUVEAUX CHAMPS À AJOUTER ICI :
+      id: row.querySelector('.seq-id').value,
+      dependsOn: row.querySelector('.seq-dependson').value,
+      linkType: row.querySelector('.seq-linktype').value,
+      lag: parseInt(row.querySelector('.seq-lag').value) || 0,
+    
+      // VOS ANCIENS CHAMPS RESTENT :
+      taskAbbr: row.querySelector('.seq-task').value,
+      duree: parseInt(row.querySelector('.seq-duree').value) || 0,
+      color: row.querySelector('.seq-color').value
+    })).filter(s => s.taskAbbr !== "");
+
+    if (sequenceData.length === 0) {
+      showModal({
+        icon: 'warning',
+        title: 'Séquence vide',
+        text: 'Veuillez ajouter au moins une tâche.'
+      });
+      return;
+    }
+
+    const cycleData = {
+      rowIdx: document.getElementById('cycle-id').value,
+      nom: document.getElementById('cycle-nom').value,
+      description: document.getElementById('cycle-desc').value,
+      sequence: sequenceData
+    };
+
+    showLoading('Enregistrement...');
+
+    google.script.run
+      .withSuccessHandler((savedCycle) => {
+        if (savedCycle && savedCycle.success === false && savedCycle.isUserNotice) {
+          showModal({
+            icon: 'warning',
+            title: 'Attention',
+            text: savedCycle.message
+          });
+          return; // On stoppe l'exécution ici
+        }
+
+        showToast('Enregistré !');
+        
+
+        // On s'assure qu'on a bien l'objet cycle (et non la notice) avant de l'ajouter au cache
+        if (savedCycle && typeof savedCycle === 'object' && savedCycle.success !== false) {
+          const idx = currentCyclesData.findIndex(c => c.nom === savedCycle.nom);
+          if (idx !== -1) {
+            currentCyclesData[idx] = { ...currentCyclesData[idx], ...savedCycle };
+          } else {
+            currentCyclesData.push(savedCycle);
+          }
+        }
+        
+        closeCycleEditor();
+        loadCyclesList();
+        rebuildAddMenuFromCache();
+
+        const isEdit = cycleData.rowIdx !== "";
+        appLog(
+          'system', 
+          "cycle-" + (isEdit ? cycleData.nom : "new"), 
+          isEdit ? "MODIFICATION_CYCLE" : "CREATION_CYCLE", 
+          "Private", 
+          "Milestone", 
+          cycleData
+        );
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "handleSaveCycle", {
+          action: cycleData.rowIdx ? "UPDATE" : "CREATE",
+          cyclePayload: cycleData,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsSaveCycle(APP_DATA.token, cycleData);
+  }
+
+  function confirmDeleteCycle(index) {
+    const cycle = currentCyclesData[index];
+    if (!cycle) return;
+
+    showModal({
+      title: 'Supprimer le cycle ?',
+      text: `Voulez-vous vraiment supprimer "${cycle.nom}" ?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Supprimer',
+      cancelButtonText: 'Annuler'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        showLoading('Suppression...');
+        google.script.run
+        google.script.run
+          .withSuccessHandler(() => {
+            showToast('Enregistré !');
+            
+            currentCyclesData = currentCyclesData.filter(c => c.rowIdx !== cycle.rowIdx);
+            rebuildAddMenuFromCache();
+            closeCycleEditor();
+            loadCyclesList();
+
+            appLog(
+              'system', 
+              "cycle-" + cycle.nom, 
+              "SUPPRESSION_CYCLE", 
+              "Private", 
+              "Milestone", 
+              { nom: cycle.nom }
+            );
+          })
+          .withFailureHandler(err => {
+            showModal({
+              icon: 'error',
+              title: 'Erreur',
+              text: err.message
+            });
+            appErrorLog(err, "confirmDeleteCycle", {
+              targetCycleId: cycle.rowIdx,
+              targetCycleName: cycle.nom,
+              projectId: PROJECT_ID || "Inconnu"
+            });
+          })
+          .gsDeleteCycle(APP_DATA.token, cycle.rowIdx);
+      }
+    });
+  }
+
+  // --- GESTION DES DÉPENDANCES (NOUVEAU) ---
+  function openDependencyModal(btn) {
+    const row = btn.closest('.sequence-row');
+    const sourceId = row.querySelector('.seq-id').value;
+    const dependsOn = row.querySelector('.seq-dependson').value;
+    const linkType = row.querySelector('.seq-linktype').value;
+    const lag = row.querySelector('.seq-lag').value;
+
+    document.getElementById('dep-source-row-id').value = sourceId;
+    document.getElementById('dep-type').value = linkType;
+    document.getElementById('dep-lag').value = lag;
+
+    const targetSelect = document.getElementById('dep-target');
+    targetSelect.innerHTML = '<option value="">Aucun (Démarre au jour 1)</option>';
+
+    // Liste toutes les tâches au-dessus
+    const allRows = document.querySelectorAll('#cycleSequenceContainer .sequence-row');
+    for (let r of allRows) {
+      const rId = r.querySelector('.seq-id').value;
+      if (rId === sourceId) break; 
+      const rAbbr = r.querySelector('.seq-task').value || "Tâche inconnue";
+      const isSelected = (rId === dependsOn) ? "selected" : "";
+      targetSelect.innerHTML += `<option value="${rId}" ${isSelected}>${rAbbr}</option>`;
+    }
+
+    document.getElementById('dependencyModal').classList.remove('hidden');
+  }
+
+  function closeDependencyModal() {
+    document.getElementById('dependencyModal').classList.add('hidden');
+  }
+
+  function saveDependency() {
+    const sourceId = document.getElementById('dep-source-row-id').value;
+    const targetId = document.getElementById('dep-target').value;
+    const type = document.getElementById('dep-type').value;
+    const lag = document.getElementById('dep-lag').value;
+
+    const row = document.querySelector(`.sequence-row[data-row-id="${sourceId}"]`);
+    if (row) {
+      row.querySelector('.seq-dependson').value = targetId;
+      row.querySelector('.seq-linktype').value = type;
+      row.querySelector('.seq-lag').value = lag;
+      updateAllDependencyLabels();
+    }
+    closeDependencyModal();
+  }
+
+  function updateAllDependencyLabels() {
+    const rows = document.querySelectorAll('#cycleSequenceContainer .sequence-row');
+  
+    rows.forEach((row, index) => {
+      const btn = row.querySelector('.dep-btn');
+      if (!btn) return;
+      const icon = row.querySelector('.dep-icon');
+      const text = row.querySelector('.dep-text');
+    
+      if (index === 0) {
+        btn.classList.add('invisible');
+        row.querySelector('.seq-dependson').value = ""; 
+        return;
+      } else {
+        btn.classList.remove('invisible');
+      }
+
+      const dependsOnId = row.querySelector('.seq-dependson').value;
+      const type = row.querySelector('.seq-linktype').value;
+      const lag = parseInt(row.querySelector('.seq-lag').value) || 0;
+
+      let targetAbbr = "?";
+      if (dependsOnId) {
+        const targetRow = document.querySelector(`.sequence-row[data-row-id="${dependsOnId}"]`);
+        if (targetRow) targetAbbr = targetRow.querySelector('.seq-task').value || "?";
+      }
+
+      if (!dependsOnId) {
+        icon.textContent = "play_arrow"; text.textContent = "Jour 1";
+        btn.className = "dep-btn min-w-[90px] h-9 px-2 bg-slate-50 border border-slate-200 rounded-lg text-[9px] font-black uppercase text-slate-400 flex items-center justify-center gap-1";
+      } else if (type === "SS") {
+        icon.textContent = "pause"; text.textContent = `// ${targetAbbr}`;
+        btn.className = "dep-btn min-w-[90px] h-9 px-2 bg-purple-50 border border-purple-200 rounded-lg text-[9px] font-black uppercase text-purple-600 flex items-center justify-center gap-1";
+      } else {
+        let lagStr = lag < 0 ? `${lag}j` : (lag > 0 ? `+${lag}j` : "");
+        icon.textContent = "link"; text.textContent = `Suit ${targetAbbr} ${lagStr}`;
+        btn.className = "dep-btn min-w-[90px] h-9 px-2 bg-blue-50 border border-blue-200 rounded-lg text-[9px] font-black uppercase text-blue-600 flex items-center justify-center gap-1";
+      }
+    });
+  }
+
+  // =========================================================
+  // TOGGLE WORKING DAY LOGIC
+  // =========================================================
+  
+  function promptToggleWorkingDay(dateStr, isCurrentlyNonWorking) {
+    // Prevent action if the user doesn't have edit rights
+    if (typeof canEdit !== 'undefined' && !canEdit) return;
+
+    const newStatusText = isCurrentlyNonWorking ? 'travaillé (ouvré)' : 'non travaillé (chômé)';
+    const newStatusValue = isCurrentlyNonWorking ? 1 : 0;
+    const dateFr = dateStr.split('-').reverse().join('/');
+
+    showModal({
+      title: 'Modifier le statut du jour',
+      html: `Voulez-vous définir le <b>${dateFr}</b> comme un jour <b class="text-primary">${newStatusText}</b> ?<br><br><span class="text-xs text-slate-500">Cela mettra à jour l'affichage de la colonne pour tout le projet.</span>`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: '#0d59f2',
+      confirmButtonText: 'Oui, modifier',
+      cancelButtonText: 'Annuler'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        showLoading('Mise à jour du calendrier...');
+        
+        google.script.run
+          .withSuccessHandler((res) => {
+            if (res && res.success) {
+              showToast('Journée mise à jour');
+              // Reload the planning to force the header and grid background (stripes) to refresh instantly
+              updateColumnVisuals(dateStr, newStatusValue === 0);
+            } else {
+              showModal({ icon: 'warning', title: 'Erreur', text: res.message });
+            }
+          })
+          .withFailureHandler((err) => {
+            showModal({ icon: 'error', title: 'Erreur serveur', text: err.message });
+          })
+          .gsToggleWorkingDay(APP_DATA.token, dateStr, newStatusValue);
+      }
+    });
+  }
+
+  function updateColumnVisuals(dateStr, isNonWorking) {
+    const elements = document.querySelectorAll(`[data-date="${dateStr}"]`);
+    elements.forEach(el => {
+      // 1. Mise à jour visuelle des classes CSS
+      if (isNonWorking) {
+        el.classList.add('bg-non-working', 'text-slate-400');
+        el.classList.remove('bg-white'); 
+      } else {
+        el.classList.remove('bg-non-working', 'text-slate-400');
+        if (el.tagName === 'TD') {
+          el.classList.remove('bg-white');
+        } else if (el.tagName === 'TH') {
+          el.classList.add('bg-white');
+        }
+      }
+      
+      // 2. Mise à jour de l'attribut HTML caché
+      el.setAttribute('data-working', isNonWorking ? "0" : "1");
+      
+      // 3. CORRECTION MAJEURE : On repasse l'état "isNonWorking" normal, sans le "!"
+      if (el.hasAttribute('ondblclick') && el.getAttribute('ondblclick').includes('promptToggleWorkingDay')) {
+        el.setAttribute('ondblclick', `promptToggleWorkingDay('${dateStr}', ${isNonWorking})`);
+      }
+    });
+
+    // 4. Mise à jour du cache de données local
+    if (window.masterProjectCalendar) {
+      window.masterProjectCalendar[dateStr] = isNonWorking ? 0 : 1;
+    }
+    
+    if (window.lastPlanningData && window.lastPlanningData.headers) {
+      const dateIdx = window.lastPlanningData.headers.dates.indexOf(dateStr);
+      if (dateIdx !== -1) {
+        window.lastPlanningData.headers.workingDays[dateIdx] = isNonWorking ? 0 : 1;
+      }
+    }
+  }
+
+</script>

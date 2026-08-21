@@ -1,0 +1,1492 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Planning Mobile | Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "background-light": "#f5f6f8",
+          },
+          fontFamily: { sans: ["Inter", "sans-serif"] },
+        },
+      },
+    }
+  </script>
+</head>
+
+<body class="bg-background-light font-sans text-slate-900 min-h-screen pb-20">
+
+  <div id="initial-loader" class="fixed inset-0 bg-background-light z-[100] flex flex-col items-center justify-center transition-opacity duration-300">
+    <span class="material-symbols-outlined animate-spin !text-5xl text-primary mb-4">refresh</span>
+    <h2 class="text-slate-800 text-lg font-black tracking-tight uppercase">Chargement...</h2>
+    <p class="text-slate-500 text-xs font-medium mt-1">Préparation de l'application</p>
+  </div>
+
+  <?!= include_('ClientLib', data); ?>
+  <?!= include_('HeaderMobile') ?>
+
+  <main class="flex flex-col items-center py-6 px-4">
+    <div class="w-full max-w-xl flex flex-col gap-8 relative min-h-[70vh]">
+
+      <!-- ========================================== -->
+      <!-- VIEW 1: HOME MENU (Grid)                     -->
+      <!-- ========================================== -->
+      <div id="view-home" class="flex flex-col gap-8 transition-transform duration-300 ease-in-out w-full">
+
+        <!-- Section: Par Date -->
+        <div class="flex flex-col gap-4">
+          <h2 class="text-slate-800 text-lg font-black tracking-tight uppercase px-2">Mon Planning</h2>
+          <div class="grid grid-cols-4 gap-3 sm:gap-4">
+
+            <button onclick="openDailyView(0, 'Aujourd\'hui')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-16 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">today</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[10px] sm:text-[11px] uppercase tracking-tight text-center">Aujourd'hui</span>
+            </button>
+
+            <button onclick="openDailyView(1, 'Demain')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-16 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">event</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[10px] sm:text-[11px] uppercase tracking-tight text-center">Demain</span>
+            </button>
+
+            <button onclick="openDailyView(-1, 'Hier')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-16 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">history</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[10px] sm:text-[11px] uppercase tracking-tight text-center">Hier</span>
+            </button>
+
+            <button onclick="openDatePicker()" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-16 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">calendar_month</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[10px] sm:text-[11px] uppercase tracking-tight text-center">Date</span>
+            </button>
+
+          </div>
+        </div>
+
+        <hr class="border-slate-200">
+
+        <!-- Section: Par Entité -->
+        <div class="flex flex-col gap-4">
+          <h2 class="text-slate-800 text-lg font-black tracking-tight uppercase px-2">Recherche par Lot</h2>
+          <div class="grid grid-cols-3 gap-4 sm:gap-6">
+
+            <button onclick="openEntitySelector('Locataires')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">groups</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Locataires</span>
+            </button>
+
+            <button onclick="openEntitySelector('Communs')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">domain</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Communs</span>
+            </button>
+
+            <button onclick="openEntitySelector('Façades')" class="flex flex-col items-center gap-2 group active:scale-90 transition-transform">
+              <div class="size-20 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined !text-3xl">architecture</span>
+              </div>
+              <span class="text-slate-600 font-bold text-[11px] uppercase tracking-tight">Façades</span>
+            </button>
+
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ========================================== -->
+      <!-- VIEW 2: TASK LIST                            -->
+      <!-- ========================================== -->
+      <div id="view-list" class="hidden flex flex-col gap-4 transition-transform duration-300 ease-in-out w-full bg-background-light z-10 min-h-full">
+
+        <!-- Header List -->
+        <div class="flex justify-between items-start px-2">
+          <div class="flex items-center gap-3">
+            <button onclick="closeListView()" class="p-2 -ml-2 rounded-full hover:bg-slate-200 active:bg-slate-300 transition-colors text-slate-600">
+              <span class="material-symbols-outlined">arrow_back</span>
+            </button>
+            <div class="flex flex-col">
+              <h2 id="list-title" class="text-slate-900 text-lg sm:text-xl font-black tracking-tight uppercase flex items-center gap-2">Tâches & Interventions</h2>
+              <p id="list-subtitle" class="text-slate-500 text-xs font-medium italic">Chargement...</p>
+            </div>
+          </div>
+          <button id="btn-edit-entity" onclick="openEntityGeneralEditor()" class="hidden p-2 rounded-full bg-slate-100 text-primary hover:bg-slate-200 active:bg-slate-300 transition-colors mt-1">
+            <span class="material-symbols-outlined">edit_note</span>
+          </button>
+        </div>
+
+        <!-- Entity Global Status / Note (Lot view only) -->
+        <div id="entity-meta-banner" class="hidden px-2"></div>
+
+        <!-- Filter Dropdown -->
+        <div class="px-2">
+          <select id="discipline-filter-select" onchange="applyDisciplineFilter()" class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring-primary sm:text-sm font-medium text-slate-700 bg-white">
+            <option value="">Toutes les disciplines</option>
+          </select>
+        </div>
+
+        <!-- Task Cards Container -->
+        <div id="task-container" class="flex flex-col gap-3 pb-8"></div>
+
+        <button onclick="promptAddType()" class="fixed bottom-6 right-6 w-14 h-14 bg-primary text-white rounded-full shadow-lg hover:bg-primary-dark active:scale-95 flex items-center justify-center transition-transform z-30">
+          <span class="material-symbols-outlined !text-3xl">add</span>
+        </button>
+
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ========================================== -->
+  <!-- MODAL: BOTTOM SHEET                          -->
+  <!-- ========================================== -->
+  <div id="task-modal-overlay" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 hidden transition-opacity opacity-0" onclick="closeTaskModal()"></div>
+
+  <div id="task-modal" class="fixed bottom-0 left-0 right-0 bg-white rounded-t-3xl z-50 transform translate-y-full transition-transform duration-300 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] max-h-[88vh] overflow-y-auto">
+    <!-- Drag Handle -->
+    <div class="w-full flex justify-center pt-3 pb-2" onclick="closeTaskModal()">
+      <div class="w-12 h-1.5 bg-slate-200 rounded-full"></div>
+    </div>
+
+    <div class="px-6 pb-8 pt-2 flex flex-col gap-6">
+
+      <!-- Modal Header -->
+      <div class="flex flex-col gap-1 border-b border-slate-100 pb-4">
+        <div class="flex justify-between items-center">
+          <h3 id="modal-id" class="text-2xl font-black text-slate-900 uppercase">—</h3>
+          <span id="modal-task" class="text-sm font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded">—</span>
+        </div>
+        <span id="modal-view" class="text-[10px] font-black uppercase tracking-widest text-primary"></span>
+      </div>
+
+      <!-- Quick Status Actions -->
+      <div class="flex flex-col gap-2">
+        <label class="text-xs font-bold uppercase text-slate-500 tracking-wider">Mettre à jour le statut</label>
+        <div id="modal-status-grid" class="grid grid-cols-2 gap-2"></div>
+        <p id="modal-date-caption" class="text-[11px] text-slate-400 italic mt-1"></p>
+      </div>
+
+      <!-- Informations techniques (Réserve / Autocontrôle uniquement — masqué pour les tâches) -->
+      <div id="modal-inter-info" class="hidden flex flex-col gap-2 bg-slate-50 rounded-xl border border-slate-200 p-3">
+        <label class="text-[10px] font-black uppercase text-slate-400 tracking-widest">Informations techniques</label>
+        <div id="modal-inter-info-grid" class="grid grid-cols-2 gap-y-2 gap-x-3 text-xs"></div>
+      </div>
+
+      <!-- Notes Fields -->
+      <div class="flex flex-col gap-2">
+        <label class="text-xs font-bold uppercase text-slate-500 tracking-wider">
+          <span id="modal-note-pub-label">Note publique</span> <span id="modal-note-pub-sub" class="normal-case font-medium text-slate-400">(visible client)</span>
+        </label>
+        <textarea id="modal-note-pub" rows="2" class="w-full rounded-xl border-slate-300 shadow-sm focus:border-primary focus:ring-primary sm:text-sm text-slate-700 resize-none p-3 bg-slate-50" placeholder="Ajouter une observation visible du client..."></textarea>
+      </div>
+      <div id="modal-note-int-wrap" class="flex flex-col gap-2 -mt-3">
+        <label class="text-xs font-bold uppercase text-indigo-500 tracking-wider">Note interne <span class="normal-case font-medium text-slate-400">(équipe uniquement)</span></label>
+        <textarea id="modal-note-int" rows="2" class="w-full rounded-xl border-indigo-200 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-slate-700 resize-none p-3 bg-indigo-50/40" placeholder="Note réservée à l'équipe..."></textarea>
+      </div>
+
+      <!-- Action Button -->
+      <div id="modal-actions-row" class="grid grid-cols-2 gap-3 mt-2 border-t border-slate-100 pt-4">
+        <button onclick="rescheduleTaskMobile()" class="w-full bg-slate-100 text-slate-700 font-black text-[11px] uppercase py-3 rounded-xl hover:bg-slate-200 active:scale-[0.98] transition-all flex justify-center items-center gap-1">
+          <span class="material-symbols-outlined !text-[16px]">event_repeat</span> Déplacer
+        </button>
+        <button onclick="deleteTaskMobile()" class="w-full bg-red-50 text-red-600 font-black text-[11px] uppercase py-3 rounded-xl hover:bg-red-100 active:scale-[0.98] transition-all flex justify-center items-center gap-1">
+          <span class="material-symbols-outlined !text-[16px]">delete</span> Supprimer
+        </button>
+      </div>
+
+      <button id="modal-save-btn" onclick="saveTaskModal()" class="w-full bg-primary hover:bg-blue-700 text-white font-black text-sm uppercase tracking-wider py-4 rounded-xl shadow-lg active:scale-[0.98] transition-all flex justify-center items-center gap-2 disabled:opacity-60">
+        <span class="material-symbols-outlined !text-xl">save</span>
+        <span id="modal-save-label">Enregistrer</span>
+      </button>
+
+    </div>
+  </div>
+
+  <script>
+  // ==========================================
+  // GLOBAL STATE
+  // ==========================================
+  let entityHierarchy = { locataires: [], communs: [], facades: [] };
+  let tasksMeta = {};           
+  let equipesList = [];         
+  let currentCyclesData = [];   // FIX: déclaré nulle part avant -> le groupe "Cycles" du formulaire d'ajout ne s'affichait jamais
+  let currentBaseTasks = [];    
+  let currentFilteredTasks = []; 
+  let currentModalCtx = null;   
+  let currentEntityMeta = { status: "", comment: "" };
+
+  // Échappe le texte saisi par les utilisateurs (notes, commentaires...) avant de
+  // l'insérer dans du innerHTML — évite qu'une note contenant du HTML ne s'exécute
+  // dans la liste des cartes (contrairement à une zone de texte, un conteneur div interprète le HTML).
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+
+  const STATUS_ORDER = ['Planifié', 'En cours', 'Bloqué', 'Bloquant', 'Réserves', 'Fini'];
+  // Statuts d'une intervention (Réserve/Autocontrôle) — PAS les mêmes que ceux d'une
+  // tâche : pas de "Réserves" ici (c'est un statut de tâche, sans rapport avec le
+  // TYPE d'intervention "Réserve"). Liste identique au <select id="input-inter-status">
+  // du desktop (Script3.html / drawInterventionUI).
+  const INTERVENTION_STATUS_ORDER = ['Planifié', 'En cours', 'Bloqué', 'Bloquant', 'Fini'];
+  const STATUS_STYLES = {
+    'Planifié':  { badge: 'bg-slate-100 text-slate-600 border-slate-200',  active: 'bg-slate-200 border-slate-400 text-slate-800' },
+    'En cours':  { badge: 'bg-blue-100 text-blue-700 border-blue-200',     active: 'bg-blue-50 border-blue-500 text-blue-700' },
+    'Bloqué':    { badge: 'bg-red-100 text-red-700 border-red-200',       active: 'bg-red-50 border-red-400 text-red-700' },
+    'Bloquant':  { badge: 'bg-red-600 text-white border-red-700',         active: 'bg-red-600 border-red-700 text-white' },
+    'Réserves':  { badge: 'bg-orange-100 text-orange-700 border-orange-200', active: 'bg-orange-50 border-orange-400 text-orange-700' },
+    'Fini':      { badge: 'bg-emerald-500 text-white border-emerald-600', active: 'bg-emerald-500 border-emerald-600 text-white' }
+  };
+  function getStatusStyle(status) { return STATUS_STYLES[status] || STATUS_STYLES['Planifié']; }
+  function getTaskDef(abbr) { return tasksMeta[String(abbr || '').trim().toUpperCase()] || null; }
+
+  // Équipe d'une entrée, qu'il s'agisse d'une tâche (résolue via tasksMeta) ou d'une
+  // intervention Réserve/Autocontrôle (l'équipe vient déjà toute faite du backend,
+  // colonne H de "Reserves"/"AutoControle") — utilisé par le filtre par équipe.
+  function getEntryEquipe_(t) {
+    if (t.type === 'intervention') return t.equipe || '';
+    const def = getTaskDef(t.abbr);
+    return def ? String(def.equipe || '').trim() : '';
+  }
+
+  function showLoading(msg) {
+    Swal.fire({ title: msg, allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+  }
+  function showToast(msg) {
+    Swal.fire({ icon: 'success', title: msg, timer: 1500, showConfirmButton: false, toast: true, position: 'top-end' });
+  }
+
+  // ==========================================
+  // INITIALIZATION
+  // ==========================================
+  window.onload = () => {
+    const currentUser = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user : null;
+    if (!currentUser) {
+      window.top.location.replace(BASE_URL + "?page=login");
+      return;
+    }
+
+    const savedState = sessionStorage.getItem('mobilePlanningState');
+    if (savedState) {
+      try {
+        const state = JSON.parse(savedState);
+        if (state.action === 'daily') openDailyView(state.offset, state.title, true);
+        else if (state.action === 'entity') fetchEntityTimeline(state.id, state.viewName, state.viewLabel, true);
+        else if (state.action === 'date') openSpecificDateView(state.dateISO, state.displayDate, true);
+      } catch (e) {}
+    }
+
+    const fetchHierarchy = () => new Promise(resolve => google.script.run.withSuccessHandler(resolve).withFailureHandler(() => resolve({ success: false, data: {} })).gsGetMobileHierarchy(APP_DATA.token));
+    // FIX: gsGetAppStartupData replaces the old separate gsGetTasks + gsGetEquipes calls.
+    // Same "tasks" and "equipes" arrays as before, but it also brings "cycles" (needed for
+    // the Add-flow's Cycles dropdown, previously never fetched) and "bounds" (needed for the
+    // calendar picker's project-range graying, previously never fetched) — one round trip
+    // instead of two, and two dead features start working.
+    const fetchStartupData = () => new Promise(resolve => google.script.run.withSuccessHandler(resolve).withFailureHandler(() => resolve({})).gsGetAppStartupData(APP_DATA.token));
+
+    Promise.all([fetchHierarchy(), fetchStartupData()]).then(([hierarchyRes, startupData]) => {
+      if (hierarchyRes && hierarchyRes.success) entityHierarchy = hierarchyRes.data;
+
+      tasksMeta = {};
+      (startupData.tasks || []).forEach(td => { if (td.abbr) tasksMeta[String(td.abbr).trim().toUpperCase()] = td; });
+
+      equipesList = startupData.equipes || [];
+      populateDisciplineFilter(currentBaseTasks);
+      applyDisciplineFilter();
+
+      currentCyclesData = startupData.cycles || [];
+
+      if (startupData.bounds) {
+        window.projectStart = startupData.bounds.start ? new Date(startupData.bounds.start) : null;
+        window.projectEnd = startupData.bounds.end ? new Date(startupData.bounds.end) : null;
+      }
+
+      // HIDE THE LOADER NOW THAT DATA IS READY
+      const loader = document.getElementById('initial-loader');
+      if (loader) {
+        loader.classList.add('opacity-0');
+        setTimeout(() => loader.classList.add('hidden'), 300);
+      }
+    });
+
+    initCalendarBackground();
+  };
+
+  // --- NOUVEAU FILTRE PAR DISCIPLINE ---
+  function getEntryDiscipline_(t) {
+    if (t.type === 'intervention') return t.discipline || ''; // La discipline vient de RESERVES_SS_ID[cite: 1, 2]
+    const def = getTaskDef(t.abbr);
+    return def ? String(def.discipline || '').trim() : ''; // Pour les tâches classiques
+  }
+
+  function populateDisciplineFilter(tasks) {
+    const sel = document.getElementById('discipline-filter-select');
+    if (!sel) return;
+    const currentVal = sel.value;
+    const disciplines = [...new Set(tasks.map(t => getEntryDiscipline_(t)).filter(Boolean))].sort();
+    
+    sel.innerHTML = '<option value="">Toutes les disciplines</option>' +
+      disciplines.map(d => `<option value="${escapeHtml(d)}" ${d === currentVal ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('');
+  }
+
+  function applyDisciplineFilter() {
+    const sel = document.getElementById('discipline-filter-select');
+    const val = sel ? sel.value : '';
+    currentFilteredTasks = !val
+      ? currentBaseTasks.slice()
+      : currentBaseTasks.filter(t => getEntryDiscipline_(t) === val);
+    paintTaskCards(currentFilteredTasks);
+  }
+
+  // Dans renderTaskCards, assurez-vous d'appeler ces nouvelles fonctions à la place du filtre équipe :
+  function renderTaskCards(tasks) {
+    currentBaseTasks = tasks || [];
+    populateDisciplineFilter(currentBaseTasks);
+    applyDisciplineFilter();
+  }
+
+  // ==========================================
+  // VIEW TRANSITIONS
+  // ==========================================
+  const viewHome = document.getElementById('view-home');
+  const viewList = document.getElementById('view-list');
+  const listTitle = document.getElementById('list-title');
+  const listSubtitle = document.getElementById('list-subtitle');
+  const taskContainer = document.getElementById('task-container');
+
+  function showListView(title, subtitle) {
+    document.getElementById('btn-edit-entity').classList.add('hidden');
+    document.getElementById('entity-meta-banner').classList.add('hidden');
+    listTitle.textContent = title;
+    listSubtitle.textContent = subtitle;
+    taskContainer.innerHTML = `
+      <div class="py-12 flex flex-col items-center justify-center opacity-50">
+        <span class="material-symbols-outlined animate-spin !text-4xl text-primary mb-2">refresh</span>
+        <span class="text-xs font-bold uppercase tracking-widest text-slate-500">Chargement...</span>
+      </div>`;
+    viewList.classList.remove('hidden');
+    setTimeout(() => viewHome.classList.add('hidden'), 10);
+    window.scrollTo(0, 0);
+  }
+
+  function closeListView() {
+    viewHome.classList.remove('hidden');
+    viewList.classList.add('hidden');
+    sessionStorage.removeItem('mobilePlanningState');
+  }
+
+  // FIX: currentEntityMeta.status/comment were fetched and editable (pencil icon) but never
+  // actually rendered anywhere — the only way to see the current value was to open the edit
+  // sheet. This renders it as a banner at the top of the entity/lot timeline view.
+  function renderEntityMetaBanner() {
+    const el = document.getElementById('entity-meta-banner');
+    if (!el) return;
+
+    const status = currentEntityMeta.status || '';
+    let parsedNote = { pub: '', priv: '' };
+    try { if (currentEntityMeta.comment) parsedNote = JSON.parse(currentEntityMeta.comment); } catch (e) {}
+    const pub = parsedNote.pub || '';
+    const priv = parsedNote.priv || parsedNote.int || '';
+
+    if (!status && !pub && !priv) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+
+    const GLOBAL_STATUS_STYLES = {
+      'Info':      { badge: 'bg-blue-100 text-blue-700 border-blue-200',   icon: 'info' },
+      'Attention': { badge: 'bg-amber-100 text-amber-700 border-amber-200', icon: 'warning' },
+      'Bloquant':  { badge: 'bg-red-100 text-red-700 border-red-200',      icon: 'block' }
+    };
+    const s = GLOBAL_STATUS_STYLES[status];
+
+    let html = '<div class="flex flex-col gap-1.5 bg-white rounded-xl border border-slate-100 p-3">';
+    if (s) html += `<span class="self-start px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-wider border flex items-center gap-1 ${s.badge}"><span class="material-symbols-outlined !text-[14px]">${s.icon}</span>${escapeHtml(status)}</span>`;
+    if (pub) html += `<div class="text-[11px] text-slate-700"><strong class="font-black uppercase tracking-tight text-slate-500">Note Globale : </strong>${escapeHtml(pub)}</div>`;
+    if (priv) html += `<div class="text-[11px] text-indigo-800"><strong class="font-black uppercase tracking-tight text-indigo-500">Interne : </strong>${escapeHtml(priv)}</div>`;
+    html += '</div>';
+
+    el.innerHTML = html;
+    el.classList.remove('hidden');
+  }
+
+  // ==========================================
+  // WORKFLOW 1: TIME-BASED
+  // ==========================================
+  function openDailyView(dayOffset, titleStr, isRestore = false) {
+    if (!isRestore) sessionStorage.setItem('mobilePlanningState', JSON.stringify({ action: 'daily', offset: dayOffset, title: titleStr }));
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + dayOffset);
+    const dateStrISO = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+    const displayDate = targetDate.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    showListView(titleStr, displayDate);
+
+    google.script.run
+      .withSuccessHandler(res => { 
+        if (res.success) {
+          // Inject the date so it is never 'inconnue'
+          const tasksWithDate = res.data.map(t => ({ ...t, date: t.date || dateStrISO }));
+          renderTaskCards(tasksWithDate);
+        } else {
+          showError("Erreur", res.message);
+        }
+      })
+      .withFailureHandler(err => showError("Erreur serveur", err.message))
+      .gsGetMobileDailyTasks(APP_DATA.token, dateStrISO);
+  }
+
+  function openSpecificDateView(dateISO, displayDate, isRestore = false) {
+    if (!isRestore) sessionStorage.setItem('mobilePlanningState', JSON.stringify({ action: 'date', dateISO: dateISO, displayDate: displayDate }));
+    showListView("Date Spécifique", displayDate);
+
+    google.script.run
+      .withSuccessHandler(res => { 
+        if (res.success) {
+          // Inject the date so it is never 'inconnue'
+          const tasksWithDate = res.data.map(t => ({ ...t, date: t.date || dateISO }));
+          renderTaskCards(tasksWithDate);
+        } else {
+          showError("Erreur", res.message);
+        }
+      })
+      .withFailureHandler(err => showError("Erreur", err.message))
+      .gsGetMobileDailyTasks(APP_DATA.token, dateISO);
+  }
+
+  function openDatePicker() {
+    renderCustomCalendarPicker('daily', 'datePicker', '', null, null);
+  }
+
+  // ==========================================
+  // WORKFLOW 2: ENTITY-BASED
+  // ==========================================
+  let currentSelectorView = 'locataires';
+
+  // --- RECHERCHE PAR LOT (Mise à jour Bâtiment/Hall combiné) ---
+  function openEntitySelector(viewLabel) {
+    currentSelectorView = viewLabel.toLowerCase() === 'façades' ? 'facades' : viewLabel.toLowerCase();
+    if (!entityHierarchy[currentSelectorView] || entityHierarchy[currentSelectorView].length === 0) {
+      return showError("Oups", "Les données sont encore en cours de chargement. Réessayez dans un instant.");
+    }
+
+    const groupLabel = (entityHierarchy[currentSelectorView][0] && entityHierarchy[currentSelectorView][0].groupLabel) || 'Étage';
+    const batHallOptions = getBatHallOptions(currentSelectorView);
+    let optionsHtml = '<option value="">-- Choisir Bâtiment / Hall --</option>';
+    batHallOptions.forEach(opt => optionsHtml += `<option value="${escapeHtml(opt[0])}">${escapeHtml(opt[1])}</option>`);
+
+    Swal.fire({
+      title: `Recherche ${viewLabel}`,
+      html: `
+        <div class="flex flex-col gap-3 text-left mt-2">
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400 ml-1">Bâtiment / Hall</label>
+            <select id="swal-sel-bat-hall" onchange="mobileCascadeBatHall()" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700 focus:ring-primary">${optionsHtml}</select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400 ml-1">${groupLabel}</label>
+            <select id="swal-sel-etage" onchange="mobileCascadeEtage()" disabled class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700 focus:ring-primary disabled:opacity-50"><option>-- En attente --</option></select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400 ml-1">Identifiant</label>
+            <select id="swal-sel-id" disabled class="w-full bg-white border-primary rounded-xl p-3 font-black text-sm text-primary focus:ring-primary disabled:opacity-50 border-2"><option>-- En attente --</option></select>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Voir Historique',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#0d59f2',
+      preConfirm: () => {
+        const id = document.getElementById('swal-sel-id').value;
+        if (!id || id.startsWith('--')) Swal.showValidationMessage('Veuillez aller jusqu\'à la sélection de l\'identifiant');
+        return id;
+      }
+    }).then((result) => {
+      if (result.isConfirmed) fetchEntityTimeline(result.value, currentSelectorView, viewLabel);
+    });
+  }
+
+  function mobileCascadeBatHall() {
+    const batHall = document.getElementById('swal-sel-bat-hall').value;
+    const groupSel = document.getElementById('swal-sel-etage');
+    if (!batHall) { groupSel.disabled = true; return; }
+
+    const [bat, hall] = batHall.split('|');
+    const filtered = entityHierarchy[currentSelectorView].filter(i => i.batiment === bat && (i.hall || '') === hall);
+
+    const groups = [...new Set(filtered.map(i => i.groupValue))].sort((a, b) => {
+      const na = parseFloat(a), nb = parseFloat(b);
+      return (!isNaN(na) && !isNaN(nb)) ? na - nb : String(a).localeCompare(String(b));
+    });
+
+    groupSel.innerHTML = '<option value="">-- Choisir --</option>';
+    groups.forEach(g => groupSel.innerHTML += `<option value="${escapeHtml(g)}">${escapeHtml(g || 'N/A')}</option>`);
+    groupSel.disabled = false;
+    document.getElementById('swal-sel-id').disabled = true;
+  }
+
+  function mobileCascadeEtage() {
+    const batHall = document.getElementById('swal-sel-bat-hall').value;
+    const [bat, hall] = (batHall || '|').split('|');
+    const groupVal = document.getElementById('swal-sel-etage').value;
+    const idSel = document.getElementById('swal-sel-id');
+
+    if (groupVal === "") { idSel.disabled = true; return; }
+
+    const filtered = entityHierarchy[currentSelectorView].filter(i => 
+      i.batiment === bat && (i.hall || '') === hall && String(i.groupValue).trim() === groupVal
+    );
+    
+    idSel.innerHTML = '<option value="">-- Choisir ID --</option>';
+    filtered.forEach(item => {
+      let label = item.id + (item.nom ? ` (${item.nom})` : '');
+      idSel.innerHTML += `<option value="${escapeHtml(item.id)}">${escapeHtml(label)}</option>`;
+    });
+    idSel.disabled = false;
+  }
+  
+
+  // --- UTILITAIRE BÂTIMENT + HALL ---
+  function getBatHallOptions(view) {
+    const items = entityHierarchy[view] || []; // Basé sur les données de gsGetMobileHierarchy[cite: 1, 2]
+    const combos = new Map();
+    items.forEach(i => {
+      if (!i.batiment) return;
+      const key = `${i.batiment}|${i.hall || ''}`;
+      const label = `Bâtiment ${i.batiment}` + (i.hall ? ` - Hall ${i.hall}` : ` - Sans Hall`);
+      combos.set(key, label);
+    });
+    return Array.from(combos.entries()).sort((a,b) => a[1].localeCompare(b[1]));
+  }
+
+  function fetchEntityTimeline(entityId, viewName, viewLabel, isRestore = false) {
+    // FIX: currentSelectorView used to only be set inside openEntitySelector(), so it went
+    // stale (or stayed at its 'locataires' default) on a page-restore, or was simply never
+    // set when arriving here any other way. It's read later by the Add-flow and by the
+    // "Infos Générales" editor to decide which sheet to write to, so it must always reflect
+    // whatever entity is actually on screen.
+    currentSelectorView = viewName;
+
+    if (!isRestore) sessionStorage.setItem('mobilePlanningState', JSON.stringify({ action: 'entity', id: entityId, viewName: viewName, viewLabel: viewLabel }));
+    showListView(entityId, viewLabel);
+    document.getElementById('btn-edit-entity').classList.remove('hidden');
+
+    google.script.run
+      .withSuccessHandler(res => {
+        if (res.success) {
+          currentEntityMeta = res.meta || { status: "", comment: "" };
+          renderEntityMetaBanner();
+          const timelineData = res.data.map(item => ({ ...item, id: entityId, view: viewName, viewLabel: viewLabel, isTimelineMode: true }));
+          renderTaskCards(timelineData);
+        } else {
+          showError("Erreur", res.message);
+        }
+      })
+      .withFailureHandler(err => showError("Erreur serveur", err.message))
+      .gsGetMobileEntityTimeline(APP_DATA.token, viewName, entityId);
+  }
+
+  // ==========================================
+  // RENDERING & FILTERING
+  // ==========================================
+
+  function paintTaskCards(tasks) {
+    if (!tasks || tasks.length === 0) {
+      taskContainer.innerHTML = `
+        <div class="py-16 flex flex-col items-center justify-center opacity-40 text-center px-6">
+          <span class="material-symbols-outlined !text-5xl text-slate-400 mb-3">task_alt</span>
+          <h3 class="text-sm font-black uppercase tracking-widest text-slate-600 mb-1">Rien à afficher</h3>
+          <p class="text-xs font-medium text-slate-500">Aucune tâche ou intervention n'est prévue.</p>
+        </div>`;
+      return;
+    }
+
+    let html = '';
+    tasks.forEach((t, index) => {
+      const isIntervention = t.type === 'intervention';
+      const def = isIntervention ? null : getTaskDef(t.abbr);
+
+      // Réserve = orange (comme les points rouges/points du desktop sur le Gantt,
+      // ici on garde la même logique de couleur "orange pour Réserve" que le badge
+      // du desktop), Autocontrôle = bleu — cf. drawInterventionUI côté desktop.
+      const stripeColor = isIntervention
+        ? (t.isReserve ? '#f97316' : '#3b82f6')
+        : ((def && def.bgColor) || '#0d59f2');
+
+      // Assure interventions fallback map safely if 'abbr' is omitted
+      const label = isIntervention
+        ? (t.isReserve ? 'Réserve' : 'Autocontrôle')
+        : ((def && def.descCourte) ? def.descCourte : (t.abbr || t.intervention || t.name || 'Intervention'));
+      const teamName = isIntervention
+        ? (t.equipe || 'Non spécifiée')
+        : ((def && def.equipe) ? def.equipe : 'Non spécifiée');
+
+      const lookup = (entityHierarchy[t.view] || []).find(item => String(item.id).trim() === String(t.id).trim());
+      let infoRows = [];
+
+      // Locataires Owner
+      if (t.view === 'locataires' && lookup && lookup.nom) {
+        infoRows.push(`<div class="text-slate-700 font-medium">Locataire : <span class="font-bold text-slate-900">${escapeHtml(lookup.nom)}</span></div>`);
+      }
+
+      // Explicitly removed structural location details (bat/hall/etage)
+
+      // Assigned Operation Team
+      infoRows.push(`<div class="text-slate-500 font-medium">Équipe : <span class="text-primary font-bold">${escapeHtml(teamName)}</span></div>`);
+
+      // Discipline (Réserve/Autocontrôle uniquement — vient directement de la fiche
+      // détail RESERVES_SS_ID, pas de la feuille Taches).
+      if (isIntervention && t.discipline) {
+        infoRows.push(`<div class="text-slate-500 font-medium">Discipline : <span class="text-slate-800 font-bold">${escapeHtml(t.discipline)}</span></div>`);
+      }
+
+      // ----------------------------------------------------
+      // NOTES PARSER: Convert JSON to separate visual notes
+      // ----------------------------------------------------
+      let notesHtml = '';
+
+      // Global Entity Notes / Context
+      if (t.context) {
+        try {
+          const parsedCtx = JSON.parse(t.context);
+          if (parsedCtx.pub) notesHtml += `<div class="text-[11px] mt-1 text-slate-700 bg-slate-100 p-2 rounded-lg border border-slate-200"><strong class="font-black text-slate-800 uppercase tracking-tight">Note Globale :</strong><br>${escapeHtml(parsedCtx.pub)}</div>`;
+          if (parsedCtx.priv || parsedCtx.int) notesHtml += `<div class="text-[11px] mt-1 text-slate-700 bg-slate-100 p-2 rounded-lg border border-slate-200"><strong class="font-black text-slate-800 uppercase tracking-tight">Interne Globale :</strong><br>${escapeHtml(parsedCtx.priv || parsedCtx.int)}</div>`;
+        } catch(e) {
+          if (t.context.toLowerCase() !== (t.viewLabel || t.view || '').toLowerCase() && !['locataires','communs','facades','façades'].includes(t.context.toLowerCase())) {
+            notesHtml += `<div class="text-[11px] mt-1 text-slate-700 bg-slate-100 p-2 rounded-lg border border-slate-200"><strong class="font-black text-slate-800 uppercase tracking-tight">Info :</strong><br>${escapeHtml(t.context)}</div>`;
+          }
+        }
+      }
+
+      // Task-Specific Notes
+      if (t.note) {
+        let notePub = null, noteInt = null;
+        if (typeof t.note === 'object') {
+          notePub = t.note.pub; noteInt = t.note.int;
+        } else if (typeof t.note === 'string') {
+          try {
+            const parsedNote = JSON.parse(t.note);
+            notePub = parsedNote.pub; noteInt = parsedNote.int;
+          } catch(e) {
+            notePub = t.note;
+          }
+        }
+        // Pour un Autocontrôle, le champ unique n'est pas "publié" côté client (les
+        // autocontrôles ne sont jamais visibles des clients, cf. desktop) : on
+        // évite donc le libellé "Note Client" et on l'appelle simplement "Description".
+        const pubLabel = (isIntervention && !t.isReserve) ? 'Description' : 'Note Client';
+        if (notePub) notesHtml += `<div class="text-[11px] mt-1 text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200"><strong class="font-black text-amber-900 uppercase tracking-tight">${pubLabel} :</strong><br>${escapeHtml(notePub)}</div>`;
+        if (noteInt) notesHtml += `<div class="text-[11px] mt-1 text-indigo-800 bg-indigo-50 p-2 rounded-lg border border-indigo-200"><strong class="font-black text-indigo-900 uppercase tracking-tight">Note Interne :</strong><br>${escapeHtml(noteInt)}</div>`;
+      }
+
+      // ----------------------------------------------------
+      // CORRECT & ENLARGED DATE DISPLAY
+      // ----------------------------------------------------
+      let displayDate = t.displayDate || t.date || 'Date inconnue';
+      if (displayDate !== 'Date inconnue') {
+        if (displayDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            displayDate = displayDate.split('-').reverse().join('/');
+        } else if (displayDate.includes('T')) {
+            displayDate = displayDate.split('T')[0].split('-').reverse().join('/');
+        }
+      }
+      
+      const timeframeLabel = `<span class="flex items-center gap-1.5"><span class="material-symbols-outlined !text-[18px]">event</span>${displayDate}</span>`;
+
+      const style = getStatusStyle(t.status);
+
+      html += `
+        <div onclick="openTaskModalByIndex(${index})" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex flex-col gap-3 active:bg-slate-50 transition-all cursor-pointer group hover:border-primary/40 hover:shadow-md">
+          <div class="flex items-center justify-between border-b border-slate-50 pb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-2 h-5 rounded-full" style="background-color: ${stripeColor};"></div>
+              <span class="text-slate-900 font-black text-base uppercase tracking-tight">${escapeHtml(t.id) || 'N/A'}</span>
+              <span class="text-[10px] font-bold tracking-wider text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded ml-1">${t.viewLabel || t.view || ''}</span>
+            </div>
+            <span class="px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider border shrink-0 ${style.badge}">${t.status || 'Planifié'}</span>
+          </div>
+          
+          <div class="flex flex-col gap-2">
+            <div class="text-slate-800 font-bold text-sm flex items-center">
+              ${escapeHtml(label)}
+              ${isIntervention
+                ? `<span class="text-[9px] font-black bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded ml-2">${escapeHtml(t.interId)}</span>`
+                : (t.ampm ? `<span class="text-[9px] font-black bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded ml-2">${t.ampm}</span>` : '')}
+            </div>
+            
+            <div class="text-xs flex flex-col gap-1 border-l-2 border-slate-100 pl-2.5">
+              ${infoRows.join('')}
+            </div>
+
+            <!-- Notes Section -->
+            ${notesHtml ? `<div class="flex flex-col gap-1.5 mt-1 border-t border-slate-50 pt-2">${notesHtml}</div>` : ''}
+          </div>
+
+          <!-- Enlarged Target Date -->
+          <div class="text-sm text-slate-700 font-black pt-2 mt-1 border-t border-dashed border-slate-200 flex items-center justify-between">
+            ${timeframeLabel}
+          </div>
+        </div>
+      `;
+    });
+
+    taskContainer.innerHTML = html;
+  }
+
+  // ==========================================
+  // MODAL: OPEN / STATUS SELECT / SAVE / CLOSE
+  // ==========================================
+  const modal = document.getElementById('task-modal');
+  const modalOverlay = document.getElementById('task-modal-overlay');
+
+  function openTaskModalByIndex(idx) {
+    const t = currentFilteredTasks[idx];
+    if (!t) return;
+    const isIntervention = t.type === 'intervention';
+    currentModalCtx = { ...t, pendingStatus: t.status, statusList: isIntervention ? INTERVENTION_STATUS_ORDER : STATUS_ORDER };
+
+    document.getElementById('modal-id').textContent = t.id || 'N/A';
+    document.getElementById('modal-view').textContent = t.viewLabel || t.view || '';
+
+    if (isIntervention) {
+      const typeLabel = t.isReserve ? 'Réserve' : 'Autocontrôle';
+      document.getElementById('modal-task').textContent = `${typeLabel} · ${t.interId}`;
+      document.getElementById('modal-date-caption').textContent =
+        `Le statut et la ${t.isReserve ? 'note' : 'description'} s'appliquent à ce point d'intervention précis.`;
+    } else {
+      const def = getTaskDef(t.abbr);
+      const label = (def && def.descCourte) ? def.descCourte : (t.abbr || t.intervention || 'Intervention');
+      document.getElementById('modal-task').textContent = label + (t.ampm ? ` (${t.ampm})` : '');
+      document.getElementById('modal-date-caption').textContent = "Le statut et les notes s'appliquent à toutes les dates de cette tâche/intervention pour ce lot.";
+    }
+
+    renderStatusButtons(t.status, currentModalCtx.statusList);
+
+    // Bloc "Informations techniques" — Réserve/Autocontrôle uniquement.
+    const interInfoBlock = document.getElementById('modal-inter-info');
+    if (isIntervention) {
+      document.getElementById('modal-inter-info-grid').innerHTML = `
+        <div><span class="block text-[10px] font-black uppercase text-slate-400">Discipline</span><span class="font-bold text-slate-700">${escapeHtml(t.discipline || '—')}</span></div>
+        <div><span class="block text-[10px] font-black uppercase text-slate-400">Équipe</span><span class="font-bold text-slate-700">${escapeHtml(t.equipe || '—')}</span></div>
+        <div><span class="block text-[10px] font-black uppercase text-slate-400">Créneau</span><span class="font-bold text-slate-700">${escapeHtml(t.creneau || '—')}</span></div>
+        <div><span class="block text-[10px] font-black uppercase text-slate-400">Date limite</span><span class="font-bold text-slate-700">${escapeHtml(t.dueDateStr || '—')}</span></div>
+      `;
+      interInfoBlock.classList.remove('hidden');
+    } else {
+      interInfoBlock.classList.add('hidden');
+    }
+
+    // Libellés des notes — "Description" pour un Autocontrôle (jamais de volet
+    // privé côté desktop pour ce type), sinon "Note publique" + volet interne normal.
+    const pubLabelEl = document.getElementById('modal-note-pub-label');
+    const pubSubEl = document.getElementById('modal-note-pub-sub');
+    const noteIntWrap = document.getElementById('modal-note-int-wrap');
+    if (isIntervention && !t.isReserve) {
+      pubLabelEl.textContent = 'Description';
+      pubSubEl.textContent = '';
+      noteIntWrap.classList.add('hidden');
+    } else {
+      pubLabelEl.textContent = 'Note publique';
+      pubSubEl.textContent = '(visible client)';
+      noteIntWrap.classList.remove('hidden');
+    }
+
+    // Déplacer/Supprimer : pas encore pris en charge pour les interventions
+    // (Réserve/Autocontrôle) depuis le mobile — masqué plutôt que proposé et refusé.
+    document.getElementById('modal-actions-row').classList.toggle('hidden', isIntervention);
+
+    // Ensure modal values handle standard strings vs parsed JSON internally
+    let notePubValue = '';
+    let noteIntValue = '';
+    if (t.note) {
+      if (typeof t.note === 'object') {
+        notePubValue = t.note.pub || '';
+        noteIntValue = t.note.int || '';
+      } else if (typeof t.note === 'string') {
+        try {
+          const parsedModalNote = JSON.parse(t.note);
+          notePubValue = parsedModalNote.pub || '';
+          noteIntValue = parsedModalNote.int || '';
+        } catch (e) { notePubValue = t.note; }
+      }
+    }
+    
+    document.getElementById('modal-note-pub').value = notePubValue;
+    document.getElementById('modal-note-int').value = noteIntValue;
+
+    modalOverlay.classList.remove('hidden');
+    setTimeout(() => {
+      modalOverlay.classList.remove('opacity-0');
+      modal.classList.remove('translate-y-full');
+    }, 10);
+  }
+
+  function renderStatusButtons(activeStatus, statusList) {
+    const list = statusList || STATUS_ORDER;
+    const grid = document.getElementById('modal-status-grid');
+    grid.innerHTML = list.map(s => {
+      const isActive = s === activeStatus;
+      const style = getStatusStyle(s);
+      const cls = isActive ? `border-2 font-black shadow-sm ${style.active}` : `border border-slate-200 text-slate-600 font-semibold active:bg-slate-50`;
+      return `<button type="button" onclick="selectModalStatus('${s}')" class="py-3 rounded-xl text-xs uppercase transition-colors ${cls}">${s}</button>`;
+    }).join('');
+  }
+
+  function selectModalStatus(status) {
+    if (!currentModalCtx) return;
+    currentModalCtx.pendingStatus = status;
+    renderStatusButtons(status, currentModalCtx.statusList);
+  }
+
+  function saveTaskModal() {
+    if (!currentModalCtx) return;
+    if (currentModalCtx.type === 'intervention') return saveInterventionModal_();
+
+    const t = currentModalCtx;
+    const newStatus = t.pendingStatus || t.status;
+    const notePub = document.getElementById('modal-note-pub').value.trim();
+    const noteInt = document.getElementById('modal-note-int').value.trim();
+    const notesJSON = JSON.stringify({ pub: notePub, int: noteInt });
+
+    const btn = document.getElementById('modal-save-btn');
+    const btnLabel = document.getElementById('modal-save-label');
+    btn.disabled = true;
+    if (btnLabel) btnLabel.textContent = 'Enregistrement...';
+
+    const saveStatus = new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsUpdateTaskStatusMobile(APP_DATA.token, t.id, t.date || '', t.abbr, newStatus, t.view));
+    const saveNotes = new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsUpdateTaskNotesMobile(APP_DATA.token, t.id, t.date || '', t.abbr, notesJSON, t.view));
+
+    Promise.all([saveStatus, saveNotes]).then(([statusRes, notesRes]) => {
+      btn.disabled = false;
+      if (btnLabel) btnLabel.textContent = 'Enregistrer';
+
+      if (statusRes && statusRes.success === false) return showError('Statut non enregistré', statusRes.message);
+      if (notesRes && notesRes.success === false) return showError('Note non enregistrée', notesRes.message);
+
+      currentBaseTasks.forEach(x => {
+        if (x.id === t.id && x.abbr === t.abbr) {
+          x.status = newStatus;
+          x.note = { pub: notePub, int: noteInt };
+        }
+      });
+
+      applyDisciplineFilter();
+      closeTaskModal();
+      Swal.fire({ icon: 'success', title: 'Enregistré', timer: 1200, showConfirmButton: false });
+    }).catch(err => {
+      btn.disabled = false;
+      if (btnLabel) btnLabel.textContent = 'Enregistrer';
+      showError('Erreur serveur', err.message);
+    });
+  }
+
+  /**
+   * Sauvegarde d'une intervention (Réserve/Autocontrôle) : statut + description
+   * uniquement (discipline/équipe/date/créneau restent réservés au desktop pour
+   * l'instant). Réutilise gsSaveInterventionDetailsMobile — un seul appel réseau
+   * au lieu de deux, car le statut et la description partagent la même feuille/
+   * la même ligne (contrairement aux tâches, où statut et notes vivent dans deux
+   * feuilles séparées).
+   */
+  function saveInterventionModal_() {
+    const t = currentModalCtx;
+    const newStatus = t.pendingStatus || t.status;
+    const pubText = document.getElementById('modal-note-pub').value.trim();
+    const intText = document.getElementById('modal-note-int').value.trim();
+    // Format JSON {pub,priv} attendu par le desktop pour une Réserve (voir
+    // saveInterventionNotes côté Script3.html) ; texte brut pour un Autocontrôle.
+    const description = t.isReserve ? JSON.stringify({ pub: pubText, priv: intText }) : pubText;
+
+    const btn = document.getElementById('modal-save-btn');
+    const btnLabel = document.getElementById('modal-save-label');
+    btn.disabled = true;
+    if (btnLabel) btnLabel.textContent = 'Enregistrement...';
+
+    google.script.run
+      .withSuccessHandler(res => {
+        btn.disabled = false;
+        if (btnLabel) btnLabel.textContent = 'Enregistrer';
+        if (res && res.success === false) return showError('Non enregistré', res.message);
+
+        currentBaseTasks.forEach(x => {
+          if (x.type === 'intervention' && x.interId === t.interId) {
+            x.status = newStatus;
+            x.note = { pub: pubText, int: intText };
+          }
+        });
+
+        applyDisciplineFilter();
+        closeTaskModal();
+        Swal.fire({ icon: 'success', title: 'Enregistré', timer: 1200, showConfirmButton: false });
+      })
+      .withFailureHandler(err => {
+        btn.disabled = false;
+        if (btnLabel) btnLabel.textContent = 'Enregistrer';
+        showError('Erreur serveur', err.message);
+      })
+      .gsSaveInterventionDetailsMobile(APP_DATA.token, t.interId, { status: newStatus, description: description }, t.view);
+  }
+
+  function closeTaskModal() {
+    modal.classList.add('translate-y-full');
+    modalOverlay.classList.add('opacity-0');
+    setTimeout(() => {
+      modalOverlay.classList.add('hidden');
+    }, 300);
+  }
+
+  function showError(title, msg) {
+    Swal.fire({ icon: 'error', title: title, text: msg, confirmButtonColor: '#0d59f2' });
+  }
+
+  // ==========================================
+  // CUSTOM CALENDAR IMPLEMENTATION
+  // ==========================================
+  function renderCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr) {
+    if (window.calendarLoadingState === 'loading') {
+      Swal.fire({
+        icon: 'info',
+        title: 'Un instant...',
+        text: 'Le calendrier est en cours d\'initialisation en arrière-plan. Veuillez réessayer dans quelques secondes.',
+        confirmButtonColor: '#0d59f2'
+      });
+      return; // On bloque l'ouverture
+    }
+    const dateToDisplay = navDateStr ? new Date(navDateStr) : (currentDateStr ? new Date(currentDateStr) : new Date());
+    const currentYear = dateToDisplay.getFullYear();
+    const currentMonth = dateToDisplay.getMonth();
+    
+    const projStart = window.projectStart ? new Date(window.projectStart) : null;
+    const projEnd = window.projectEnd ? new Date(window.projectEnd) : null;
+    const monthNames = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+    const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+    
+    const realTodayObj = new Date();
+    const realTodayStr = `${realTodayObj.getFullYear()}-${String(realTodayObj.getMonth() + 1).padStart(2, '0')}-${String(realTodayObj.getDate()).padStart(2, '0')}`;
+
+    let firstDayIndex = (new Date(currentYear, currentMonth, 1).getDay() + 6) % 7;
+    let calendarHtml = `
+      <div class="flex justify-between items-center mb-4 bg-slate-50 p-2 rounded-lg border border-slate-200">
+        <button onclick="renderCustomCalendarPicker('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${new Date(currentYear, currentMonth - 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_left</span></button>
+        <div class="font-bold text-slate-800 text-sm">${monthNames[currentMonth]} ${currentYear}</div>
+        <button onclick="renderCustomCalendarPicker('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${new Date(currentYear, currentMonth + 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_right</span></button>
+      </div>
+      <div class="grid grid-cols-7 gap-1 text-center text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+        <div>Lu</div><div>Ma</div><div>Me</div><div>Je</div><div>Ve</div><div>Sa</div><div>Di</div>
+      </div>
+      <div class="grid grid-cols-7 gap-1.5 text-center">
+    `;
+
+    for (let i = 0; i < firstDayIndex; i++) { calendarHtml += `<div class="p-2 text-transparent select-none">.</div>`; }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayStr = String(day).padStart(2, '0');
+      const monthStr = String(currentMonth + 1).padStart(2, '0');
+      const loopDateStr = `${currentYear}-${monthStr}-${dayStr}`;
+      const loopDateObj = new Date(currentYear, currentMonth, day);
+      
+      const isOutOfRange = (projStart && loopDateObj < projStart) || (projEnd && loopDateObj > projEnd);
+      const isSelected = (loopDateStr === currentDateStr);
+      const isRealToday = (loopDateStr === realTodayStr);
+
+      let isNonWorking = false;
+      if (window.masterProjectCalendar && window.masterProjectCalendar[loopDateStr] !== undefined) {
+        isNonWorking = (window.masterProjectCalendar[loopDateStr] === 0);
+      } else {
+        isNonWorking = (loopDateObj.getDay() === 0 || loopDateObj.getDay() === 6);
+      }
+
+      let baseClass = "p-2 text-xs rounded-lg transition-all ";
+      
+      if (isOutOfRange) {
+          calendarHtml += `<div class="${baseClass} text-slate-200 bg-slate-50 select-none">${day}</div>`;
+      } else if (isNonWorking) {
+        calendarHtml += `<div class="p-2 text-xs font-bold text-red-400 bg-red-50/70 border border-red-100 rounded-lg line-through pointer-events-none select-none">${day}</div>`;
+      } else if (isSelected && isRealToday) {
+        calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border-2 border-amber-500 ring-2 ring-amber-500/50">${day}</div>`;
+      } else if (isSelected) {
+        calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border border-primary">${day}</div>`;
+      } else if (isRealToday) {
+        calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-amber-500 shadow-sm cursor-pointer border border-amber-600 hover:bg-amber-600">${day}</div>`;
+      } else {
+        calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-bold text-slate-700 bg-white border border-slate-200 cursor-pointer hover:bg-primary hover:text-white hover:border-primary">${day}</div>`;
+      }
+    }
+
+    calendarHtml += `</div>`;
+
+    Swal.fire({
+      title: 'Choisir une date',
+      html: calendarHtml,
+      showConfirmButton: false,
+      showCancelButton: true,
+      cancelButtonText: 'Fermer',
+      width: '380px',
+      customClass: { popup: 'rounded-2xl' }
+    });
+  }
+
+  function selectCustomCalendarDate(targetType, targetId, extraParam, oldDate, newDateStr) {
+    Swal.close();
+    
+    if (targetType === 'add_task') {
+      tempAddFlowState.date = newDateStr; // Sauvegarder la nouvelle date
+      openMobileAddFlow(true); // Rouvrir le formulaire avec l'état sauvegardé
+    } else if (targetType === 'mobile_reschedule') {
+      showLoading("Déplacement...");
+      google.script.run
+        .withSuccessHandler(res => {
+          if(res.success === false) return showError("Erreur", res.message);
+          showToast("Tâche déplacée");
+          refreshCurrentMobileView();
+        })
+        .withFailureHandler(err => showError("Erreur", err.message))
+        .gsShiftTaskWithDominoMobile(APP_DATA.token, targetId, extraParam, oldDate, newDateStr, currentSelectorView || 'locataires', 'only-this');
+    } else {
+      const displayDate = newDateStr.split('-').reverse().join('/');
+      openSpecificDateView(newDateStr, displayDate);
+    }
+  }
+
+  window.masterProjectCalendar = null;
+  window.calendarLoadingState = 'idle';
+
+  function initCalendarBackground() {
+    if (window.calendarLoadingState !== 'idle') return;
+    
+    window.calendarLoadingState = 'loading';
+    google.script.run
+      .withSuccessHandler((calendarMap) => {
+        window.masterProjectCalendar = calendarMap;
+        window.calendarLoadingState = 'ready';
+      })
+      .withFailureHandler((err) => {
+        window.calendarLoadingState = 'idle';
+      })
+      .gsGetProjectCalendar(APP_DATA.token);
+  }
+
+  async function openEntityGeneralEditor() {
+    const entityId = document.getElementById('list-title').textContent;
+    let parsedNote = { pub: "", priv: "" };
+    try { if (currentEntityMeta.comment) parsedNote = JSON.parse(currentEntityMeta.comment); } catch(e) {}
+
+    const result = await Swal.fire({
+      title: `Infos Générales<br><span class="text-sm text-primary">${entityId}</span>`,
+      html: `
+        <div class="flex flex-col gap-4 text-left mt-2">
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Statut Global</label>
+            <select id="swal-global-status" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700 focus:ring-primary">
+              <option value="" ${currentEntityMeta.status === "" ? "selected" : ""}>Aucun</option>
+              <option value="Info" ${currentEntityMeta.status === "Info" ? "selected" : ""}>Info</option>
+              <option value="Attention" ${currentEntityMeta.status === "Attention" ? "selected" : ""}>Attention</option>
+              <option value="Bloquant" ${currentEntityMeta.status === "Bloquant" ? "selected" : ""}>Bloquant</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Note Publique</label>
+            <textarea id="swal-global-pub" rows="2" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 text-sm focus:ring-primary">${parsedNote.pub || ''}</textarea>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-indigo-400">Note Interne</label>
+            <textarea id="swal-global-priv" rows="2" class="w-full bg-indigo-50 border-indigo-200 rounded-xl p-3 text-sm focus:ring-indigo-500">${parsedNote.priv || ''}</textarea>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Sauvegarder',
+      cancelButtonText: 'Annuler',
+      preConfirm: () => {
+        return {
+          status: document.getElementById('swal-global-status').value,
+          pub: document.getElementById('swal-global-pub').value,
+          priv: document.getElementById('swal-global-priv').value
+        };
+      }
+    });
+
+    if (result.isConfirmed) {
+      const val = result.value;
+      const notesJSON = JSON.stringify({ pub: val.pub, priv: val.priv });
+      showLoading("Enregistrement...");
+
+      const saveStatus = new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsUpdateGlobalStatus(APP_DATA.token, entityId, val.status, currentSelectorView));
+      const saveNotes = new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).gsUpdateIdNotes(APP_DATA.token, entityId, notesJSON, currentSelectorView));
+
+      Promise.all([saveStatus, saveNotes]).then(([statusRes, notesRes]) => {
+        // FIX: gsUpdateGlobalStatus/gsUpdateIdNotes return {success:false, message} on a
+        // soft failure (e.g. row not found) instead of throwing — withFailureHandler never
+        // sees that case, so it has to be checked explicitly here, same as saveTaskModal().
+        if (statusRes && statusRes.success === false) return showError('Statut non enregistré', statusRes.message);
+        if (notesRes && notesRes.success === false) return showError('Note non enregistrée', notesRes.message);
+
+        currentEntityMeta.status = val.status;
+        currentEntityMeta.comment = notesJSON;
+        showToast("Mise à jour réussie");
+        refreshCurrentMobileView(); // Reload so parent cards sync the newly attached notes.
+      }).catch(err => showError("Erreur", err.message));
+    }
+  }
+
+  function deleteTaskMobile() {
+    if (!currentModalCtx) return;
+    // Sécurité : le bouton est masqué pour les interventions (voir modal-actions-row
+    // dans openTaskModalByIndex), mais on se protège quand même d'un appel direct.
+    if (currentModalCtx.type === 'intervention') return;
+    const t = currentModalCtx;
+    closeTaskModal();
+    
+    Swal.fire({
+      title: 'Supprimer ?',
+      text: `Voulez-vous supprimer l'intervention de ${t.id} ?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Oui, supprimer',
+      cancelButtonText: 'Annuler'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        showLoading("Suppression...");
+        const cellsData = [{ logementId: t.id, cellContent: t.abbr, date: t.date }];
+        google.script.run
+          .withSuccessHandler(res => {
+             if (!res.success) return showError("Erreur", res.error);
+             let actions = res.validActions || [];
+             actions.forEach(a => a.mode = 'full');
+             if(actions.length === 0) { actions = res.conflicts || []; actions.forEach(a => a.mode = 'full'); }
+             google.script.run
+               .withSuccessHandler(() => { showToast("Supprimé"); refreshCurrentMobileView(); })
+               .withFailureHandler(err => showError("Erreur", err.message))
+               .gsExecuteDeletionMobile(APP_DATA.token, actions, t.view);
+          })
+          .withFailureHandler(err => showError("Erreur", err.message))
+          .gsAnalyzeDeletion(APP_DATA.token, cellsData, t.view);
+      }
+    });
+  }
+
+  function rescheduleTaskMobile() {
+    if (!currentModalCtx) return;
+    if (currentModalCtx.type === 'intervention') return;
+    const t = currentModalCtx;
+    closeTaskModal();
+    renderCustomCalendarPicker('mobile_reschedule', t.id, t.abbr, t.date, null);
+  }
+
+  // --- AJOUTER UNE TÂCHE / RÉSERVE ---
+  let tempAddFlowState = { item: '', view: '', batHall: '', etage: '', id: '', date: '' };
+
+  function promptAddType() {
+    Swal.fire({
+      title: 'Que souhaitez-vous ajouter ?',
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: '<span class="material-symbols-outlined !text-sm mr-1">task</span> Une Tâche',
+      denyButtonText: '<span class="material-symbols-outlined !text-sm mr-1">report_problem</span> Une Réserve',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#0d59f2',
+      denyButtonColor: '#f97316', // Orange pour les réserves
+    }).then((result) => {
+      if (result.isConfirmed) {
+        
+        // 1. Initialisation des valeurs par défaut
+        let defaultView = currentSelectorView || 'locataires';
+        let defaultBatHall = '';
+        let defaultEtage = '';
+        let defaultId = '';
+        let defaultDate = '';
+
+        // 2. Lecture de l'état actuel de la navigation
+        const stateStr = sessionStorage.getItem('mobilePlanningState');
+        
+        if (stateStr) {
+          try {
+            const state = JSON.parse(stateStr);
+            
+            if (state.action === 'daily') {
+              // L'utilisateur est sur la vue "Aujourd'hui / Demain / Hier"
+              defaultDate = getDailyOffsetDate(state.offset || 0);
+              
+            } else if (state.action === 'date') {
+              // L'utilisateur est sur une date spécifique via le calendrier
+              defaultDate = state.dateISO;
+              
+            } else if (state.action === 'entity') {
+              // L'utilisateur est sur la vue d'un Lot/ID spécifique
+              defaultView = state.viewName;
+              defaultId = state.id;
+              defaultDate = ''; // On garde la date vide comme demandé
+              
+              // 3. Recherche des informations parentes (Bâtiment/Hall et Étage)
+              const items = entityHierarchy[defaultView] || [];
+              const foundItem = items.find(i => String(i.id).trim() === String(defaultId).trim());
+              
+              if (foundItem) {
+                defaultBatHall = foundItem.batiment + '|' + (foundItem.hall || '');
+                defaultEtage = String(foundItem.groupValue).trim();
+              }
+            }
+          } catch (e) {
+            console.warn("Erreur lors de la lecture de l'état pour l'ajout:", e);
+          }
+        } else {
+          // 4. Cas de repli (ex: clic depuis le menu d'accueil)
+          defaultDate = getDailyOffsetDate(0);
+        }
+
+        // 5. Assignation de l'état et ouverture du formulaire
+        tempAddFlowState = { 
+          item: '', 
+          view: defaultView, 
+          batHall: defaultBatHall, 
+          etage: defaultEtage, 
+          id: defaultId, 
+          date: defaultDate 
+        };
+        
+        openMobileAddFlow();
+        
+      } else if (result.isDenied) {
+        // Option 2 prévue pour plus tard
+        Swal.fire({ icon: 'info', title: 'Bientôt disponible', text: 'Le développement de l\'ajout de Réserve est prévu prochainement.', confirmButtonColor: '#0d59f2' });
+      }
+    });
+  }
+
+  async function openMobileAddFlow(restoreState = false) {
+    const taskOptions = Object.values(tasksMeta).map(t => `<option value="TASK|${escapeHtml(t.abbr)}">${escapeHtml(t.abbr)} - ${escapeHtml(t.descCourte)}</option>`).join('');
+    let cycleOptions = "";
+    if (currentCyclesData && currentCyclesData.length > 0) { // currentCyclesData vient de startupData[cite: 2]
+       cycleOptions = `<optgroup label="Cycles">` + currentCyclesData.map(c => `<option value="CYCLE|${escapeHtml(c.nom)}">${escapeHtml(c.nom)}</option>`).join('') + `</optgroup>`;
+    }
+
+    const VIEW_LABELS = { locataires: 'Locataires', communs: 'Communs', facades: 'Façades' };
+    const viewOptions = Object.keys(VIEW_LABELS).map(v =>
+      `<option value="${v}" ${v === tempAddFlowState.view ? 'selected' : ''}>${VIEW_LABELS[v]}</option>`
+    ).join('');
+
+    // Formatage de la date pour un affichage joli (DD/MM/YYYY)
+    let displayDate = "Choisir une date";
+    if (tempAddFlowState.date) {
+      displayDate = tempAddFlowState.date.split('-').reverse().join('/');
+    }
+
+    const { value: formValues } = await Swal.fire({
+      title: 'Ajouter une tâche',
+      html: `
+        <div class="flex flex-col gap-4 text-left mt-2">
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Tâche / Cycle</label>
+            <select id="swal-add-item" onchange="onAddStateChange('item')" class="w-full bg-white border-2 border-primary rounded-xl p-3 font-bold text-sm text-slate-700">
+              <option value="" disabled ${!tempAddFlowState.item ? 'selected' : ''}>Sélectionnez...</option>
+              <optgroup label="Tâches">${taskOptions}</optgroup>
+              ${cycleOptions}
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Vue</label>
+            <select id="swal-add-view" onchange="onAddViewChange()" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700">
+              ${viewOptions}
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Bâtiment / Hall</label>
+            <select id="swal-add-bat-hall" onchange="onAddBatHallChange()" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700"></select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Étage / Niveau</label>
+            <select id="swal-add-etage" onchange="onAddEtageChange()" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700"></select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400">Identifiant du Lot</label>
+            <select id="swal-add-id" onchange="onAddStateChange('id')" class="w-full bg-slate-50 border-slate-200 rounded-xl p-3 font-bold text-sm text-slate-700"></select>
+          </div>
+          <div>
+            <label class="text-[10px] font-black uppercase text-slate-400 mb-1">Date</label>
+            <div onclick="openAddFlowCalendar()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm font-bold flex justify-between items-center cursor-pointer hover:bg-slate-100 transition-colors">
+               <span id="swal-add-date-display" class="text-slate-800">${displayDate}</span>
+               <span class="material-symbols-outlined text-slate-500">calendar_month</span>
+            </div>
+            <p id="swal-add-date-warning" class="hidden text-[10px] font-bold text-amber-600 mt-1">⚠ Ce jour n'est pas un jour ouvré sur le planning.</p>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Ajouter',
+      confirmButtonColor: '#0d59f2',
+      didOpen: () => {
+        // On rétablit la sélection du champ Item si présente
+        if (tempAddFlowState.item) document.getElementById('swal-add-item').value = tempAddFlowState.item;
+        // On cascade pour reconstruire les dropdowns
+        refreshAddFlowBatHall();
+        checkAddDateWorking(tempAddFlowState.date);
+      },
+      preConfirm: () => {
+        const item = document.getElementById('swal-add-item').value;
+        const view = document.getElementById('swal-add-view').value;
+        const id = document.getElementById('swal-add-id').value;
+        const date = tempAddFlowState.date; // Sauvegardée via le calendrier personnalisé
+        
+        if (!item || !view || !id || !date) { Swal.showValidationMessage("Veuillez remplir tous les champs (y compris la date)"); return false; }
+        return { item, id, date, view };
+      }
+    });
+
+    // Exécution de l'ajout via l'API Apps Script (gsExecuteInterventionMobile)[cite: 1, 2]
+    if (formValues) {
+      showLoading("Analyse de faisabilité...");
+      const isTask = formValues.item.startsWith('TASK|');
+      const itemName = formValues.item.split('|')[1];
+      const targetView = formValues.view;
+      
+      const payload = {
+        type: isTask ? 'task' : 'cycle',
+        itemName: itemName,
+        cells: [{ logementId: formValues.id, date: formValues.date, isWorking: true }],
+        currentView: targetView,
+        customDuree: null
+      };
+
+      google.script.run
+        .withSuccessHandler(res => {
+           if (!res.success) return showError("Erreur", res.error);
+           const actions = res.validActions || [];
+           actions.forEach(a => a.mode = 'replace');
+           if (actions.length === 0 && res.conflicts && res.conflicts.length > 0) {
+             res.conflicts.forEach(c => { c.mode = 'replace'; c.noteAction = 'keep'; actions.push(c); });
+           }
+           if (actions.length === 0) return showError("Aucune action possible", "Aucune correspondance n'a été trouvée.");
+
+           showLoading("Planification...");
+           google.script.run
+             .withSuccessHandler(() => { showToast("Tâche ajoutée !"); refreshCurrentMobileView(); })
+             .withFailureHandler(err => showError("Erreur", err.message))
+             .gsExecuteInterventionMobile(APP_DATA.token, actions, targetView); //[cite: 1]
+        })
+        .withFailureHandler(err => showError("Erreur", err.message))
+        .gsAnalyzeIntervention(APP_DATA.token, payload);
+    }
+  }
+
+  // --- LOGIQUE DE CASCADE POUR L'AJOUT ---
+  function onAddStateChange(field) {
+    tempAddFlowState[field] = document.getElementById('swal-add-' + field).value;
+  }
+
+  function onAddViewChange() {
+    tempAddFlowState.view = document.getElementById('swal-add-view').value;
+    tempAddFlowState.batHall = ''; tempAddFlowState.etage = ''; tempAddFlowState.id = '';
+    refreshAddFlowBatHall();
+  }
+
+  function onAddBatHallChange() {
+    tempAddFlowState.batHall = document.getElementById('swal-add-bat-hall').value;
+    tempAddFlowState.etage = ''; tempAddFlowState.id = '';
+    refreshAddFlowEtage();
+  }
+
+  function onAddEtageChange() {
+    tempAddFlowState.etage = document.getElementById('swal-add-etage').value;
+    tempAddFlowState.id = '';
+    refreshAddFlowId();
+  }
+
+  function refreshAddFlowBatHall() {
+    const sel = document.getElementById('swal-add-bat-hall');
+    const options = getBatHallOptions(tempAddFlowState.view);
+    sel.innerHTML = '<option value="" disabled>-- Bâtiment/Hall --</option>' + 
+      options.map(o => `<option value="${escapeHtml(o[0])}">${escapeHtml(o[1])}</option>`).join('');
+    
+    if (!tempAddFlowState.batHall && options.length > 0) tempAddFlowState.batHall = "";
+    sel.value = tempAddFlowState.batHall || '';
+    refreshAddFlowEtage();
+  }
+
+  function refreshAddFlowEtage() {
+    const sel = document.getElementById('swal-add-etage');
+    if (!tempAddFlowState.batHall) { sel.disabled = true; sel.innerHTML = '<option>-- En attente --</option>'; refreshAddFlowId(); return; }
+
+    const [bat, hall] = tempAddFlowState.batHall.split('|');
+    const filtered = (entityHierarchy[tempAddFlowState.view] || []).filter(i => i.batiment === bat && (i.hall || '') === hall);
+    const groups = [...new Set(filtered.map(i => i.groupValue))].sort((a,b) => {
+      const na = parseFloat(a), nb = parseFloat(b);
+      return (!isNaN(na) && !isNaN(nb)) ? na - nb : String(a).localeCompare(String(b));
+    });
+
+    sel.innerHTML = '<option value="" disabled selected>-- Étage --</option>' +
+      groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g || 'N/A')}</option>`).join('');
+    
+    sel.disabled = false;
+    if (tempAddFlowState.etage) sel.value = tempAddFlowState.etage;
+    refreshAddFlowId();
+  }
+
+  function refreshAddFlowId() {
+    const sel = document.getElementById('swal-add-id');
+    if (!tempAddFlowState.etage) { sel.disabled = true; sel.innerHTML = '<option>-- En attente --</option>'; return; }
+
+    const [bat, hall] = tempAddFlowState.batHall.split('|');
+    const filtered = (entityHierarchy[tempAddFlowState.view] || []).filter(i => 
+      i.batiment === bat && (i.hall || '') === hall && String(i.groupValue).trim() === tempAddFlowState.etage
+    );
+
+    sel.innerHTML = '<option value="" disabled selected>-- ID --</option>' +
+      filtered.map(i => {
+        let label = i.id + (i.nom ? ` (${i.nom})` : '');
+        return `<option value="${escapeHtml(i.id)}">${escapeHtml(label)}</option>`;
+      }).join('');
+      
+    sel.disabled = false;
+    if (tempAddFlowState.id) sel.value = tempAddFlowState.id;
+  }
+
+  // --- CALENDRIER POUR L'AJOUT ---
+  function openAddFlowCalendar() {
+    onAddStateChange('item');
+    onAddStateChange('id');
+    // On ferme temporairement la modale d'ajout pour afficher le calendrier de l'application[cite: 2]
+    renderCustomCalendarPicker('add_task', '', '', tempAddFlowState.date, null); 
+  }
+
+  function checkAddDateWorking(dateStr) {
+    const warn = document.getElementById('swal-add-date-warning');
+    if (!warn) return;
+    const isNonWorking = !!(dateStr && window.masterProjectCalendar && window.masterProjectCalendar[dateStr] === 0);
+    warn.classList.toggle('hidden', !isNonWorking);
+  }
+
+  function getDailyOffsetDate(offset) {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function refreshCurrentMobileView() {
+    const stateStr = sessionStorage.getItem('mobilePlanningState');
+    if (!stateStr) return;
+    const state = JSON.parse(stateStr);
+    
+    if (state.action === 'daily') openDailyView(state.offset, state.title, true);
+    else if (state.action === 'entity') fetchEntityTimeline(state.id, state.viewName, state.viewLabel, true);
+    else if (state.action === 'date') openSpecificDateView(state.dateISO, state.displayDate, true);
+  }
+  </script>
+</body>
+</html>

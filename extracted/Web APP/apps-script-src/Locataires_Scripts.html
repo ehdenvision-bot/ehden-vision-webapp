@@ -1,0 +1,1180 @@
+<script>
+
+  // =========================================================
+  // 1. GLOBAL STATE & CONFIGURATION
+  // =========================================================
+
+  const PROJECT_ID = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId : "";
+  const APP_USER_EMAIL = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user.email : "Email inconnu";
+
+  let rawData = { locataires: [], communs: [], facades: [], configFacades: [] };
+  let facadeDescriptions = {};
+
+  const urlParams = new URLSearchParams(window.location.search);
+  let currentView = urlParams.get('currentView') || (typeof APP_DATA !== 'undefined' && APP_DATA.currentView ? APP_DATA.currentView : null) || localStorage.getItem('currentView') || 'locataires';
+  
+  if (currentView === 'communes') currentView = 'communs';
+  if (!['locataires', 'communs', 'facades'].includes(currentView)) currentView = 'locataires';
+  window.currentView = currentView;
+
+  let sortConfig = { key: 'id', dir: 'asc' };
+  let selectedFilters = {};
+  let currentEditingItemOriginal = null;
+
+  const projectName  = APP_DATA.projectName;
+  const isAuthorized = APP_DATA.isAuthorized;
+  const isClient     = APP_DATA.isClient;
+
+  const storedClientView = localStorage.getItem('isClientViewActive');
+  window.isClientViewActive = storedClientView !== null
+    ? storedClientView === 'true'
+    : (typeof APP_DATA !== 'undefined' && APP_DATA.isClientViewActive === true);
+
+  // =========================================================
+  // 2. INITIALIZATION & NAVIGATION UI
+  // =========================================================
+
+  const userBtn  = document.getElementById('userMenuBtn');
+  const userMenu = document.getElementById('userMenu');
+  const navBtn   = document.getElementById('navMenuBtn');
+  const navMenu  = document.getElementById('navMenu');
+
+  if (userBtn) userBtn.onclick = (e) => { e.stopPropagation(); userMenu.classList.toggle('hidden'); navMenu.classList.add('hidden'); };
+  if (navBtn)  navBtn.onclick  = (e) => { e.stopPropagation(); navMenu.classList.toggle('hidden'); userMenu.classList.add('hidden'); };
+  document.onclick = (e) => {
+    if (userMenu && !userBtn.contains(e.target) && !userMenu.contains(e.target)) userMenu.classList.add('hidden');
+    if (navMenu  && !navBtn.contains(e.target)  && !navMenu.contains(e.target))  navMenu.classList.add('hidden');
+  };
+
+  window.onload = function init() {
+    const currentUser = APP_DATA.user || null;
+    if (!currentUser) {
+      window.top.location.replace(BASE_URL + "?page=login");
+      return;
+    }
+
+    const role = (currentUser.role || '').toLowerCase();
+    if (role === 'admin' || role === 'directeur') document.getElementById('navSettings')?.classList.remove('hidden');
+    if (role === 'admin' || role === 'directeur') document.getElementById('navUsers')?.classList.remove('hidden');
+
+    const name = currentUser.name || "collaborateur";
+    safeSetText('u_name',         name);
+    safeSetText('u_role',         currentUser.role || 'Utilisateur');
+    safeSetText('topProjectName', projectName);
+    safeSetText('pageMainTitle',  'Info Batiments');
+    safeSetText('pageSubTitle',   'Gestion technique et administrative des lots.');
+
+    const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    safeSetText('u_initials', initials);
+
+    injectHeaderButtons();
+    if (!isClient) injectClientViewToggle();
+
+    setActiveTab(currentView === 'locataires' ? 'btnTabLoc' : currentView === 'communs' ? 'btnTabCom' : 'btnTabFas');
+    applyFilterVisibility(currentView);
+    loadLocatairesData();
+  };
+
+  /**
+   * Fetches all page data from the server.
+   */
+  function loadLocatairesData() {
+    showLoading('Chargement en cours...', 'Récupération des données depuis le serveur, veuillez patienter.');
+
+    google.script.run
+      .withSuccessHandler(data => {
+        if (!data) {
+          Swal.close();
+          return;
+        }
+        rawData       = data;
+        facadeDescriptions = {};
+        if (rawData.configFacades) {
+          rawData.configFacades.forEach(c => {
+            if (c.type) facadeDescriptions[c.type] = c.description;
+          });
+        }
+        currentView   = currentView || 'locataires';
+        selectedFilters = getDefaultFiltersForView(currentView);
+        applyFilterVisibility(currentView);
+        populateFilters();
+        renderTable();
+        Swal.close();
+      })
+      .withFailureHandler(err => {
+        document.getElementById('statsCount').textContent = "ERREUR CHARGEMENT";
+        appErrorLog(err, "loadLocatairesData", {
+          view:      currentView,
+          projectId: PROJECT_ID_FROM_SERVER
+        });
+        showModal({
+          icon:  'error',
+          title: 'Erreur de chargement',
+          text:  'Impossible de récupérer les données de la feuille de calcul.'
+        });
+      })
+      .getLocatairesPageData(APP_DATA.token, APP_DATA.projectId);
+  }
+
+  function injectHeaderButtons() {
+    const actionArea = document.getElementById('headerActionArea');
+    if (!actionArea) return;
+
+    const isAuthorized = APP_DATA.isAuthorized || false;
+
+    actionArea.innerHTML = `
+      <div class="flex items-center gap-3">
+        <div class="flex bg-slate-200/50 p-1 rounded-xl w-fit shadow-inner border border-slate-300/50">
+          <button onclick="switchView('locataires')" id="btnTabLoc" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all bg-white shadow-sm text-primary">LOCATAIRES</button>
+          <button onclick="switchView('communs')"    id="btnTabCom" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">COMMUNS</button>
+          <button onclick="switchView('facades')"    id="btnTabFas" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">FACADES</button>
+        </div>
+
+        ${isAuthorized ? `
+          <button onclick="exportToExcel()" class="flex items-center gap-2 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[11px] font-black transition-all shadow-md active:scale-95">
+            <span class="material-symbols-outlined !text-[16px]">download</span>
+            EXCEL
+          </button>
+        ` : ''}
+      </div>`;
+  }
+
+  /**
+   * ==========================================
+   * 3. FILTERING LOGIC
+   * ==========================================
+   */
+
+  function getFilterConfigsForView(view) {
+    if (view === 'locataires') return [
+      { id: 'batiment', label: 'Bâtiment',    key: 'batiment' },
+      { id: 'hall',     label: 'Hall',         key: 'hall' },
+      { id: 'etage',    label: 'Étage',        key: 'etage' },
+      { id: 'empilement', label: 'Empil.',     key: 'empilement' },
+      { id: 'typeLog',  label: 'Type',         key: 'typeLog' },
+      { id: 'configLogement', label: 'Config', key: 'configLogement' }
+    ];
+    if (view === 'communs') return [
+      { id: 'batiment',    label: 'Bâtiment',    key: 'batiment' },
+      { id: 'hall',        label: 'Hall',         key: 'hall' },
+      { id: 'etage',       label: 'Étage',        key: 'etage' },
+      { id: 'description', label: 'Description',  key: 'description' }
+    ];
+    if (view === 'facades') return [
+      { id: 'batiment',    label: 'Bâtiment',    key: 'batiment' },
+      { id: 'hall',        label: 'Hall',         key: 'hall' },
+      { id: 'orientation', label: 'Orientation', key: 'orientation' },
+      { id: 'trame',       label: 'Trame',        key: 'trame' },
+      { id: 'type',        label: 'Type',         key: 'type' }
+    ];
+    return [];
+  }
+
+  const ALL_FILTER_IDS = [
+    'batiment','hall','etage','empilement','typeLog','configLogement',
+    'description', 'orientation','trame','type'
+  ];
+
+  function applyFilterVisibility(view) {
+    const allowed = new Set(getFilterConfigsForView(view).map(c => c.id));
+    ALL_FILTER_IDS.forEach(id => {
+      const container = document.getElementById(`drop-${id}`);
+      if (!container) return;
+      const show = allowed.has(id);
+      container.classList.toggle('hidden', !show);
+      if (!show) container.innerHTML = '';
+    });
+  }
+
+  function populateFilters() {
+    applyFilterVisibility(currentView);
+    const sourceData = rawData[currentView] || [];
+    const configs    = getFilterConfigsForView(currentView);
+
+    configs.forEach(conf => {
+      const container = document.getElementById(`drop-${conf.id}`);
+      if (!container) return;
+
+      const wasOpen = document.getElementById(`menu-${conf.id}`)?.classList.contains('show');
+      container.style.zIndex   = wasOpen ? "120" : "auto";
+      container.style.position = "relative";
+
+      if (currentView === 'communs' && (conf.id === 'empilement' || conf.id === 'typeLog')) {
+        container.classList.add('hidden');
+        return;
+      }
+      container.classList.remove('hidden');
+
+      const nonNullValues = [...new Set(sourceData
+        .map(item => item[conf.key])
+        .filter(val => val !== "" && val !== null && val !== undefined && String(val).trim() !== "")
+      )].map(String);
+
+      const hasEmpty = sourceData.some(item => {
+        const v = item[conf.key];
+        return v === "" || v === null || v === undefined || String(v).trim() === "";
+      });
+
+      nonNullValues.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      const uniqueValues = hasEmpty ? ["MOD_EMPTY_VAL", ...nonNullValues] : nonNullValues;
+      const count = (selectedFilters[conf.key] || []).length;
+
+      container.innerHTML = `
+        <label class="text-[9px] font-black text-slate-400 uppercase ml-1 mb-1">${conf.label}</label>
+        <button onclick="toggleDropdown('${conf.id}')" class="bg-slate-50 px-3 py-2 rounded-xl text-xs font-bold ${count > 0 ? 'text-primary ring-2 ring-primary/20' : 'text-slate-600'} border-none flex items-center justify-between min-w-[100px] h-9 transition-all">
+          <span>${count > 0 ? count + ' sélect.' : 'TOUT'}</span>
+          <span class="material-symbols-outlined !text-[14px]">expand_more</span>
+        </button>
+        <div id="menu-${conf.id}" class="dropdown-menu shadow-xl border border-slate-200 ${wasOpen ? 'show' : ''}">
+          <div class="dropdown-item border-b border-slate-100 font-black text-primary uppercase text-[10px]" onclick="clearSpecificFilter('${conf.key}')">Réinitialiser</div>
+          ${uniqueValues.map(val => {
+            const isSelected = (selectedFilters[conf.key] || []).includes(val);
+            let displayLabel = (val === "MOD_EMPTY_VAL") ? "(Vide)" : val;
+            if (conf.key === 'typeLog' && val !== "MOD_EMPTY_VAL") displayLabel = "L" + val;
+            return `
+              <label class="dropdown-item" onclick="event.stopPropagation()">
+                <input type="checkbox" value="${val}" ${isSelected ? 'checked' : ''} onchange="handleCheckboxChange('${conf.key}', '${val}', this.checked)">
+                <span class="${val === "MOD_EMPTY_VAL" ? 'italic text-slate-400' : ''}">${displayLabel}</span>
+              </label>`;
+          }).join('')}
+        </div>`;
+    });
+
+    updateFilterLocks();
+  }
+
+  function updateFilterLocks(forceAll = false) {
+    const search   = document.getElementById('globalSearch')?.value.toLowerCase() || "";
+    const baseData = rawData[currentView] || [];
+    const configs  = getFilterConfigsForView(currentView).map(c => ({ id: c.id, key: c.key }));
+
+    configs.forEach(conf => {
+      const menu   = document.getElementById(`menu-${conf.id}`);
+      const isOpen = menu?.classList.contains('show');
+      const skipOwnCategory = isOpen && !forceAll;
+
+      let dataForThisFilter = [...baseData];
+      if (search) {
+        dataForThisFilter = dataForThisFilter.filter(item =>
+          Object.values(item).some(val => String(val).toLowerCase().includes(search))
+        );
+      }
+
+      const activeFilterKeys = configs.map(c => c.key);
+      activeFilterKeys.forEach(filterKey => {
+        if (skipOwnCategory && filterKey === conf.key) return;
+        if (selectedFilters[filterKey].length > 0) {
+          dataForThisFilter = dataForThisFilter.filter(item => {
+            const itemValue = (item[filterKey] === "" || item[filterKey] === null || item[filterKey] === undefined)
+              ? "MOD_EMPTY_VAL"
+              : String(item[filterKey]);
+            return selectedFilters[filterKey].includes(itemValue);
+          });
+        }
+      });
+
+      const validValues = new Set();
+      let hasEmpty = false;
+      dataForThisFilter.forEach(item => {
+        const val = item[conf.key];
+        if (val === "" || val === null || val === undefined || String(val).trim() === "") {
+          hasEmpty = true;
+        } else {
+          validValues.add(String(val));
+        }
+      });
+
+      const container = document.getElementById(`menu-${conf.id}`);
+      if (!container) return;
+
+      container.querySelectorAll('label.dropdown-item').forEach(label => {
+        const checkbox = label.querySelector('input[type="checkbox"]');
+        if (!checkbox) return;
+        const val     = checkbox.value;
+        const isValid = (val === "MOD_EMPTY_VAL") ? hasEmpty : validValues.has(val);
+        if (!isValid && !checkbox.checked) {
+          checkbox.disabled      = true;
+          label.style.opacity    = '0.4';
+          label.style.cursor     = 'not-allowed';
+          checkbox.style.cursor  = 'not-allowed';
+        } else {
+          checkbox.disabled      = false;
+          label.style.opacity    = '1';
+          label.style.cursor     = 'pointer';
+          checkbox.style.cursor  = 'pointer';
+        }
+      });
+
+      const count     = (selectedFilters[conf.key] || []).length;
+      const btn       = document.querySelector(`#drop-${conf.id} button span:first-child`);
+      if (btn) btn.textContent = count > 0 ? count + ' sélect.' : 'TOUT';
+
+      const btnParent = document.querySelector(`#drop-${conf.id} button`);
+      if (btnParent) {
+        if (count > 0) {
+          btnParent.classList.add('text-primary', 'ring-2', 'ring-primary/20');
+          btnParent.classList.remove('text-slate-600');
+        } else {
+          btnParent.classList.remove('text-primary', 'ring-2', 'ring-primary/20');
+          btnParent.classList.add('text-slate-600');
+        }
+      }
+    });
+  }
+
+  function toggleDropdown(id) {
+    const menu      = document.getElementById(`menu-${id}`);
+    const container = document.getElementById(`drop-${id}`);
+    const isShowing = menu.classList.contains('show');
+    document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
+    document.querySelectorAll('[id^="drop-"]').forEach(c => c.style.zIndex = "10");
+    if (!isShowing) {
+      menu.classList.add('show');
+      container.style.zIndex = "999";
+    }
+  }
+
+  function handleCheckboxChange(key, value, isChecked) {
+    if (isChecked) selectedFilters[key].push(String(value));
+    else selectedFilters[key] = selectedFilters[key].filter(v => v !== String(value));
+    renderTable();
+  }
+
+  function clearSpecificFilter(key) {
+    selectedFilters[key] = [];
+    const menu = document.getElementById(`menu-${key}`);
+    if (menu) menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+    renderTable();
+  }
+
+  /**
+   * Returns a Tailwind bg-color class for a planning status string.
+   */
+  function getStatusColor(status) {
+    if (status === 'Bloquant')  return 'bg-red-500';
+    if (status === 'Bloqué')    return 'bg-red-300';
+    if (status === 'Attention') return 'bg-orange-400';
+    if (status === 'Info')      return 'bg-blue-500';
+    return 'bg-transparent';
+  }
+
+  /**
+   * ==========================================
+   * 4. TABLE RENDERING & SORTING
+   * ==========================================
+   */
+
+  function getFacadesGroupMode(search) {
+    const hasSearch = !!search;
+    const hasBat    = (selectedFilters.batiment || []).length > 0;
+    const hasHall   = (selectedFilters.hall     || []).length > 0;
+    if (hasSearch || hasBat || hasHall)                    return { key: 'batiment',    label: 'Bâtiment' };
+    if ((selectedFilters.orientation || []).length > 0)    return { key: 'orientation', label: 'Orientation' };
+    if ((selectedFilters.trame       || []).length > 0)    return { key: 'trame',       label: 'Trame' };
+    if ((selectedFilters.type        || []).length > 0)    return { key: 'type',        label: 'Type' };
+    return { key: 'batiment', label: 'Bâtiment' };
+  }
+
+  function buildFacadeGroupKey(row, groupKey) {
+    if (groupKey === 'batiment')    return row.hall ? `Bâtiment ${row.batiment} • Hall ${row.hall}` : `Bâtiment ${row.batiment}`;
+    if (groupKey === 'orientation') return `Orientation : ${row.orientation || '—'}`;
+    if (groupKey === 'trame')       return `Trame : ${row.trame || '—'}`;
+    if (groupKey === 'type')        return `Type : ${row.type || '—'}`;
+    return '';
+  }
+
+  function renderTable() {
+    const tableBody = document.getElementById('tableBody');
+    const search    = document.getElementById('globalSearch').value.toLowerCase();
+    const resetBtn  = document.getElementById('resetFiltersBtn');
+
+    let data = [...(rawData[currentView] || [])];
+
+    if (search) {
+      data = data.filter(item =>
+        Object.values(item).some(val => String(val).toLowerCase().includes(search))
+      );
+    }
+
+    Object.keys(selectedFilters).forEach(key => {
+      if ((selectedFilters[key] || []).length > 0) {
+        data = data.filter(item => {
+          const itemValue = (item[key] === "" || item[key] === null || item[key] === undefined)
+            ? "MOD_EMPTY_VAL"
+            : String(item[key]);
+          return selectedFilters[key].includes(itemValue);
+        });
+      }
+    });
+
+    const hasActiveFilters = search || Object.values(selectedFilters).some(v => (v || []).length > 0);
+    resetBtn.classList.toggle('hidden', !hasActiveFilters);
+
+    data.sort((a, b) => {
+      if (sortConfig.key === 'porte') {
+        const buildA = String(a.batiment || '').padStart(5, '0') + String(a.hall || '');
+        const buildB = String(b.batiment || '').padStart(5, '0') + String(b.hall || '');
+        if (buildA !== buildB) return buildA.localeCompare(buildB, undefined, { numeric: true });
+        return sortConfig.dir === 'asc'
+          ? String(a.porte ?? '').localeCompare(String(b.porte ?? ''), undefined, { numeric: true })
+          : String(b.porte ?? '').localeCompare(String(a.porte ?? ''), undefined, { numeric: true });
+      }
+      const v1 = a[sortConfig.key] ?? '';
+      const v2 = b[sortConfig.key] ?? '';
+      return sortConfig.dir === 'asc'
+        ? String(v1).localeCompare(String(v2), undefined, { numeric: true })
+        : String(v2).localeCompare(String(v1), undefined, { numeric: true });
+    });
+
+    const label = (currentView === 'facades') ? 'FAÇADES' : 'LOTS';
+    document.getElementById('statsCount').textContent = `${data.length} ${label}`;
+
+    const tableEl       = document.getElementById('dataTable');
+    tableEl.dataset.view = currentView;
+    if (currentView === 'communs') {
+      tableEl.style.width    = 'auto';
+      tableEl.style.minWidth = '690px';
+      tableEl.style.maxWidth = '1000px';
+    } else if (currentView === 'facades') {
+      tableEl.style.width    = 'auto';
+      tableEl.style.minWidth = '740px';
+      tableEl.style.maxWidth = '1000px';
+    } else {
+      tableEl.style.width    = '100%';
+      tableEl.style.minWidth = '1620px';
+    }
+
+    let cols = [];
+    const editCol = Permissions.canEdit() ? [{ 
+      label: 'Editer', key: 'actions', cls: 'text-center w-[70px]',
+      custom: (r) => `<button onclick="openEditModal('${r.id}')" class="p-1.5 hover:bg-primary hover:text-white text-primary rounded-lg transition-all border border-primary/20"><span class="material-symbols-outlined text-[16px]">edit</span></button>`
+    }] : [];
+
+    if (currentView === 'locataires') {
+      cols = [
+        ...editCol,
+        { label: 'ID',              key: 'id',              cls: 'text-slate-700 font-black text-[11px] text-center w-[120px]' },
+        { label: 'Bâtiment',       key: 'batiment',        cls: 'text-center w-[100px]' },
+        { label: 'Hall',            key: 'hall',            cls: 'text-center w-[80px]' },
+        { label: 'Etage',           key: 'etage',           cls: 'text-center w-[80px]' },
+        { label: 'Empil.',          key: 'empilement',      cls: 'text-center w-[80px]' },
+        { label: 'Porte',           key: 'porte',           cls: 'text-center w-[80px]' },
+        { label: 'Type',            key: 'typeLog',         cls: 'text-center w-[80px]', custom: (r) => r.typeLog ? `L${r.typeLog}` : '—' },
+        { label: 'Config.<br>Logement', key: 'configLogement', cls: 'text-center italic w-[90px]' },
+        { label: 'Surface',         key: 'surface',         cls: 'text-center w-[80px]', custom: (r) => r.surface ? `${r.surface}m²` : '—' },
+        { label: 'Occupant',        key: 'nom',             cls: 'text-center w-[230px]', custom: (r) => `${r.nom} ${r.prenom}` },
+        { label: 'Téléphones',      key: 'phones',          cls: 'text-center w-[120px]', custom: (r) => [r.telFixe, r.telPort1, r.telPort2].filter(Boolean).join('<br>') },
+        { label: 'Emails',          key: 'emails',          cls: 'text-center w-[230px]', custom: (r) => [r.email, r.email2].filter(Boolean).join('<br>') },
+        { label: 'ID Propriétaire', key: 'reference',       cls: 'text-center w-[120px]' }
+      ];
+    } else if (currentView === 'communs') {
+      cols = [
+        ...editCol,
+        { label: 'ID',          key: 'id',          cls: 'text-slate-700 font-black text-[11px] text-center w-[120px]' },
+        { label: 'Bâtiment',   key: 'batiment',    cls: 'text-center w-[80px]' },
+        { label: 'Hall',        key: 'hall',        cls: 'text-center w-[80px]' },
+        { label: 'Etage',       key: 'etage',       cls: 'text-center w-[80px]' },
+        { label: 'Description', key: 'description', cls: 'text-center w-[250px]' },
+        { label: 'Ref',         key: 'ref',         cls: 'text-center w-[80px]' }
+      ];
+    } else if (currentView === 'facades') {
+      cols = [
+        ...editCol,
+        { label: 'ID',          key: 'id',          cls: 'text-slate-700 font-black text-[11px] text-center w-[120px]' },
+        { label: 'Bâtiment',   key: 'batiment',    cls: 'text-center w-[100px]' },
+        { label: 'Hall',        key: 'hall',        cls: 'text-center w-[80px]' },
+        { label: 'Orientation', key: 'orientation', cls: 'text-center w-[80px]' },
+        { label: 'Trame',       key: 'trame',       cls: 'text-center w-[80px]' },
+        { label: 'Partie',      key: 'partie',      cls: 'text-center w-[80px]' },
+        { label: 'Type',        key: 'type',        cls: 'text-center w-[80px]' },
+        { label: 'Description', key: 'description', cls: 'text-center w-[200px]', custom: (r) => r.type && facadeDescriptions[r.type] ? facadeDescriptions[r.type] : '—' }
+      ];
+    }
+
+    // Apply strict column width and CSS class globally
+    let col1Width = Permissions.canEdit() ? 80 : 120;
+    tableEl.style.setProperty('--sticky-col1-width', `${col1Width}px`);
+    if (Permissions.canEdit()) {
+      tableEl.classList.add('has-edit-col');
+    } else {
+      tableEl.classList.remove('has-edit-col');
+    }
+
+    document.getElementById("tableHeader").innerHTML =
+      `<tr>` +
+      cols.map(c => `
+        <th onclick="handleSort('${c.key}')" class="px-2 py-3 text-[10px] font-black uppercase text-slate-500 cursor-pointer hover:bg-slate-200 transition-all leading-tight bg-white ${c.cls || ''}">
+          <div class="flex items-center justify-center gap-1">
+            <span>${c.label}</span>
+            <span class="text-[10px]">${sortConfig.key === c.key ? (sortConfig.dir === 'asc' ? '↑' : '↓') : ''}</span>
+          </div>
+        </th>`).join('') +
+      `</tr>`;
+
+    if (currentView === 'facades') {
+      let lastGroup = "";
+      let html      = "";
+      const mode    = getFacadesGroupMode(search);
+      const counts  = new Map();
+
+      data.forEach(r => {
+        const gk = buildFacadeGroupKey(r, mode.key);
+        counts.set(gk, (counts.get(gk) || 0) + 1);
+      });
+
+      data.forEach(row => {
+        const groupKey = buildFacadeGroupKey(row, mode.key);
+        if (groupKey !== lastGroup) {
+          html += `
+            <tr class="bg-indigo-50/80 sticky z-10" style="top: 48px; backdrop-filter: blur(4px);">
+              <td colspan="${cols.length}" class="px-4 py-2 text-[10px] font-black text-indigo-600 tracking-widest border-y border-indigo-100 shadow-sm">
+                <div class="sticky-subtitle-content">
+                  <span class="material-symbols-outlined !text-[14px] mr-2">domain</span>
+                  ${groupKey} <span class="ml-1 opacity-60">(${counts.get(groupKey) || 0})</span>
+                </div>
+              </td>
+            </tr>`;
+          lastGroup = groupKey;
+        }
+        html += `
+          <tr data-id="${row.id}" class="hover:bg-primary/5 transition-colors cursor-pointer" title="Double-cliquez pour choisir un module">
+            ${cols.map(c => {
+              const value = c.custom ? c.custom(row) : (row[c.key] === 0 ? 0 : (row[c.key] || '—'));
+              const plan = rawData.planning ? rawData.planning[row.id] : null;
+              let leftBar = '';
+              if (c.key === 'id' && plan && plan.status) leftBar = `border-l-[6px] ${getStatusColor(plan.status)}`;
+              return `<td class="px-4 py-2 border-b border-slate-100 ${c.cls || ''} ${leftBar}">${value}</td>`;
+            }).join('')}
+          </tr>`;
+      });
+
+      tableBody.innerHTML = html;
+      setTimeout(applyTargetIdHighlight, 100);
+      return;
+    }
+
+    // Locataires / Communs rendering
+    let lastGroup = "";
+    let html      = "";
+    const buildingGroupKeys = ['id', 'batiment', 'hall', 'porte', 'actions'];
+
+    const groupCountsMap = new Map();
+    if (!search) {
+      data.forEach(row => {
+        let gk = "";
+        if      (buildingGroupKeys.includes(sortConfig.key)) gk = row.hall ? `Bâtiment ${row.batiment} • Hall ${row.hall}` : `Bâtiment ${row.batiment} • Sans Hall`;
+        else if (sortConfig.key === 'etage')        gk = `Étage : ${row.etage}`;
+        else if (sortConfig.key === 'empilement')   gk = `Empilement : ${row.empilement}`;
+        else if (sortConfig.key === 'typeLog')      gk = `Type : L${row.typeLog}`;
+        else if (sortConfig.key === 'configLogement') gk = `Configuration : ${row.configLogement}`;
+        if (gk) groupCountsMap.set(gk, (groupCountsMap.get(gk) || 0) + 1);
+      });
+    }
+
+    data.forEach(row => {
+      let showSubtitle = false;
+      let groupKey     = "";
+
+      if      (buildingGroupKeys.includes(sortConfig.key)) { showSubtitle = true; groupKey = row.hall ? `Bâtiment ${row.batiment} • Hall ${row.hall}` : `Bâtiment ${row.batiment} • Sans Hall`; }
+      else if (sortConfig.key === 'etage')        { showSubtitle = true; groupKey = `Étage : ${row.etage}`; }
+      else if (sortConfig.key === 'empilement')   { showSubtitle = true; groupKey = `Empilement : ${row.empilement}`; }
+      else if (sortConfig.key === 'typeLog')      { showSubtitle = true; groupKey = `Type : L${row.typeLog}`; }
+      else if (sortConfig.key === 'configLogement') { showSubtitle = true; groupKey = `Configuration : ${row.configLogement}`; }
+
+      if (showSubtitle && groupKey !== lastGroup && !search) {
+        const groupCount = groupCountsMap.get(groupKey) || 0;
+        let icon = 'domain';
+        if (sortConfig.key === 'etage')      icon = 'layers';
+        if (sortConfig.key === 'empilement') icon = 'reorder';
+
+        html += `
+          <tr class="bg-indigo-50/80 sticky z-10" style="top: 48px; backdrop-filter: blur(4px);">
+            <td colspan="${cols.length}" class="px-4 py-2 text-[10px] font-black text-indigo-600 tracking-widest border-y border-indigo-100 shadow-sm">
+              <div class="sticky-subtitle-content">
+                <span class="material-symbols-outlined !text-[14px] mr-2">${icon}</span>
+                ${groupKey} <span class="ml-1 opacity-60">(${groupCount})</span>
+              </div>
+            </td>
+          </tr>`;
+        lastGroup = groupKey;
+      }
+
+      html += `
+        <tr data-id="${row.id}" class="hover:bg-primary/5 transition-colors cursor-pointer" title="Double-cliquez pour choisir un module">
+          ${cols.map(c => {
+            if (c.key === 'id') {
+              const plan     = rawData.planning ? rawData.planning[row.id] : null;
+              const status   = plan ? plan.status : 'Aucun';
+              let statusBg   = '';
+              if (status === 'Info')                              statusBg = 'bg-blue-50';
+              if (status === 'Attention')                         statusBg = 'bg-orange-50';
+              if (status === 'Bloqué' || status === 'Bloquant')  statusBg = 'bg-red-50';
+
+              let tooltip = `Statut : ${status}`;
+              if (plan && plan.note) tooltip += `\nNote : ${plan.note}`;
+              if (plan && plan.privateNote && !window.isClientViewActive) tooltip += `\nPrivée : ${plan.privateNote}`;
+              const safeTooltip = tooltip.replace(/"/g, '&quot;');
+              const barColor    = getStatusColor(status);
+
+              return `<td title="${safeTooltip}" class="px-4 py-2 border-b border-slate-100 ${c.cls || ''} ${statusBg} cursor-help relative">
+                        <div class="status-line ${barColor} w-1 h-full absolute left-0 top-0"></div>
+                        ${row.id}
+                      </td>`;
+            }
+            const value = c.custom ? c.custom(row) : (row[c.key] === 0 ? 0 : (row[c.key] || '—'));
+            return `<td class="px-4 py-2 border-b border-slate-100 ${c.cls || ''}">${value}</td>`;
+          }).join('')}
+        </tr>`;
+    });
+
+    tableBody.innerHTML = html;
+    setTimeout(applyTargetIdHighlight, 100);
+  }
+
+  /**
+   * ==========================================
+   * 5. MODAL MANAGEMENT (EDIT)
+   * ==========================================
+   */
+
+  function openEditModal(id) {
+    // Look in the active view's array
+    const item = rawData[currentView].find(l => String(l.id) === String(id));
+    if (!item) return;
+    currentEditingItemOriginal = { ...item };
+
+    document.getElementById('field-id').value = item.id;
+
+    // Toggle contact fields based on the view
+    const contactSection = document.getElementById('contact-fields-section');
+    if (currentView === 'locataires') {
+      contactSection.classList.remove('hidden');
+      document.getElementById('field-nom').value    = item.nom || '';
+      document.getElementById('field-prenom').value = item.prenom || '';
+      document.getElementById('field-email').value  = item.email  || '';
+      document.getElementById('field-email2').value = item.email2 || '';
+      document.getElementById('field-fixe').value   = item.telFixe  || '';
+      document.getElementById('field-port1').value  = item.telPort1 || '';
+      document.getElementById('field-port2').value  = item.telPort2 || '';
+      
+      document.getElementById('field-nom').required = true;
+      document.getElementById('field-prenom').required = true;
+    } else {
+      contactSection.classList.add('hidden');
+      // Must remove requirements otherwise the hidden form will block submission
+      document.getElementById('field-nom').required = false;
+      document.getElementById('field-prenom').required = false;
+    }
+
+    const plan = rawData.planning ? rawData.planning[id] : null;
+    currentEditingItemOriginal.planStatus      = plan ? plan.status      : '';
+    currentEditingItemOriginal.planNote        = plan ? plan.note        : '';
+    currentEditingItemOriginal.planPrivateNote = plan ? plan.privateNote : '';
+
+    document.getElementById('field-plan-status').value  = currentEditingItemOriginal.planStatus;
+    updateSelectBg(document.getElementById('field-plan-status'));
+    document.getElementById('field-plan-note').value    = currentEditingItemOriginal.planNote;
+    document.getElementById('field-plan-private').value = currentEditingItemOriginal.planPrivateNote;
+
+    document.getElementById('plan-private-container').classList.toggle('hidden', window.isClientViewActive);
+    document.getElementById('modalSubId').textContent = "ID: " + item.id;
+    document.getElementById('editModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('modalContainer').classList.remove('scale-95'), 10);
+  }
+
+  function closeModal() {
+    document.getElementById('modalContainer').classList.add('scale-95');
+    setTimeout(() => document.getElementById('editModal').classList.add('hidden'), 200);
+  }
+
+  function handleSave(e) {
+    e.preventDefault();
+    const saveBtn = document.getElementById('saveBtn');
+    saveBtn.disabled    = true;
+    saveBtn.textContent = "VALIDATION...";
+
+    const formElements = document.querySelectorAll('#editForm input, #editForm select, #editForm textarea');
+    const setFormLocked = (isLocked) => formElements.forEach(el => el.disabled = isLocked);
+
+    const newValues = {
+      id:             document.getElementById('field-id').value,
+      nom:            document.getElementById('field-nom').value,
+      prenom:         document.getElementById('field-prenom').value,
+      email:          document.getElementById('field-email').value,
+      email2:         document.getElementById('field-email2').value,
+      telFixe:        document.getElementById('field-fixe').value,
+      telPort1:       document.getElementById('field-port1').value,
+      telPort2:       document.getElementById('field-port2').value,
+      planStatus:     document.getElementById('field-plan-status').value,
+      planNote:       document.getElementById('field-plan-note').value,
+      planPrivateNote: document.getElementById('field-plan-private').value
+    };
+
+    // Validation logic (LOCATAIRES ONLY)
+    if (currentView === 'locataires') {
+      const phonesToValidate = [
+        { val: newValues.telPort1, label: "Portable 1" },
+        { val: newValues.telPort2, label: "Portable 2" },
+        { val: newValues.telFixe,  label: "Téléphone Fixe" }
+      ];
+      for (let p of phonesToValidate) {
+        if (p.val && !validatePhone(p.val)) {
+          showModal({ icon: 'error', title: 'Format Téléphone Incorrect', html: `Le numéro <b>${p.label}</b> (${p.val}) est invalide.<br>10 chiffres commençant par 0.` });
+          saveBtn.disabled = false; saveBtn.textContent = "ENREGISTRER";
+          return;
+        }
+      }
+      if (newValues.email && !validateEmail(newValues.email)) {
+        showModal({ icon: 'error', title: 'Email Invalide', text: "Vérifiez le format de l'adresse email." });
+        saveBtn.disabled = false; saveBtn.textContent = "ENREGISTRER";
+        return;
+      }
+      if (newValues.email2 && !validateEmail(newValues.email2)) {
+        showModal({ icon: 'error', title: 'Email 2 Invalide', text: "Vérifiez le format de la 2ème adresse email." });
+        saveBtn.disabled = false; saveBtn.textContent = "ENREGISTRER";
+        return;
+      }
+    }
+
+    const modificationsMilestone = {};
+    const modificationsDetail    = {};
+    
+    // Track milestones ONLY for locataires
+    const fieldsMilestone = currentView === 'locataires' 
+      ? ['nom', 'prenom', 'email', 'email2', 'telFixe', 'telPort1', 'telPort2'] 
+      : [];
+    const fieldsDetail    = ['planStatus', 'planNote', 'planPrivateNote'];
+
+    fieldsMilestone.forEach(key => {
+      const oldVal = String(currentEditingItemOriginal[key] || "").trim();
+      const newVal = String(newValues[key] || "").trim();
+      if (oldVal !== newVal) modificationsMilestone[key] = { old: oldVal, new: newVal };
+    });
+
+    fieldsDetail.forEach(key => {
+      const oldVal = String(currentEditingItemOriginal[key] || "").trim();
+      const newVal = String(newValues[key] || "").trim();
+      if (oldVal !== newVal) modificationsDetail[key] = { old: oldVal, new: newVal };
+    });
+
+    if (Object.keys(modificationsMilestone).length === 0 && Object.keys(modificationsDetail).length === 0) {
+      closeModal();
+      saveBtn.disabled = false; saveBtn.textContent = "ENREGISTRER";
+      return;
+    }
+
+    // --- CORE EXECUTION LOGIC ---
+  const executeSave = (justification) => {
+    setFormLocked(true);
+
+    if (justification) {
+      modificationsMilestone.justification = justification;
+    }
+
+    const token     = APP_DATA.token;
+    const projectId = APP_DATA.projectId;
+
+    const successHandler = () => {
+      const listIndex = rawData[currentView].findIndex(l => String(l.id) === String(newValues.id));
+      if (listIndex !== -1) rawData[currentView][listIndex] = { ...rawData[currentView][listIndex], ...newValues };
+
+      if (!rawData.planning) rawData.planning = {};
+      rawData.planning[newValues.id] = {
+        status:      newValues.planStatus,
+        note:        newValues.planNote,
+        privateNote: newValues.planPrivateNote
+      };
+
+      setFormLocked(false);
+      closeModal();
+      renderTable();
+      
+      saveBtn.disabled    = false;
+      saveBtn.textContent = "ENREGISTRER";
+      showToast('Modifications enregistrées', 'success', '', 2000);
+
+      if (Object.keys(modificationsMilestone).length > 0) {
+        appLog(currentView, newValues.id, "MODIFICATION_FICHE_LOCATAIRE", "Public", "Milestone", modificationsMilestone);
+      }
+      if (Object.keys(modificationsDetail).length > 0) {
+        appLog(currentView, newValues.id, "MODIFICATION_SUIVI_PLANNING", "Public", "Detail", modificationsDetail);
+      }
+    };
+
+    const failureHandler = (err) => {
+      const isSecurityError = err.message.includes('Sécurité');
+      showModal({
+        icon:  isSecurityError ? 'warning' : 'error',
+        title: isSecurityError ? 'Action Refusée' : 'Erreur de Sauvegarde',
+        text:  err.message
+      });
+      
+      setFormLocked(false);
+      saveBtn.disabled = false;
+      saveBtn.textContent = "ENREGISTRER";
+      
+      appErrorLog(err, "handleSave", { newValues, projectId });
+    };
+
+    // Explicit routing via the view parameters rather than ID format guessing
+    if (currentView === 'locataires') {
+      google.script.run
+        .withSuccessHandler(successHandler)
+        .withFailureHandler(failureHandler)
+        .updateLocataireData(token, projectId, newValues);
+    } else {
+      google.script.run
+        .withSuccessHandler(successHandler)
+        .withFailureHandler(failureHandler)
+        .updatePlanningOnlyData(token, projectId, currentView, newValues); // Passing currentView right here!
+    }
+  };
+
+    if (Object.keys(modificationsMilestone).length > 0) {
+      Swal.fire({
+        // ... (SweetAlert configuration remains exactly the same as before) ...
+        title: 'Justification requise',
+        text: 'Vous avez modifié les informations de la fiche. Veuillez expliquer la raison de cette modification :',
+        input: 'textarea',
+        inputPlaceholder: 'Saisissez votre note ici...',
+        showCancelButton: true,
+        confirmButtonText: 'Valider et enregistrer',
+        cancelButtonText: 'Annuler',
+        confirmButtonColor: '#0d59f2',
+        inputValidator: (value) => {
+          if (!value || value.trim() === '') return 'Une justification est obligatoire pour sauvegarder ces modifications.';
+        }
+      }).then((result) => {
+        if (result.isConfirmed) executeSave(result.value.trim());
+        else { saveBtn.disabled = false; saveBtn.textContent = "ENREGISTRER"; }
+      });
+    } else {
+      executeSave(null);
+    }
+  }
+
+  /**
+   * ==========================================
+   * 6. UTILITIES & UI HELPERS
+   * ==========================================
+   */
+
+  function handleSort(key) {
+    if (sortConfig.key === key) sortConfig.dir = sortConfig.dir === 'asc' ? 'desc' : 'asc';
+    else { sortConfig.key = key; sortConfig.dir = 'asc'; }
+    renderTable();
+  }
+
+  function getDefaultFiltersForView(view) {
+    if (view === 'locataires') return { batiment: [], hall: [], etage: [], empilement: [], typeLog: [], configLogement: [] };
+    if (view === 'communs')    return { batiment: [], hall: [], etage: [], description: [] };
+    if (view === 'facades')    return { batiment: [], hall: [], orientation: [], trame: [], type: [] };
+    return {};
+  }
+
+  function switchView(view) {
+    currentView        = view;
+    window.currentView = view;
+    localStorage.setItem('currentView', view);
+
+    if (window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('currentView', view);
+      window.history.replaceState({ path: url.href }, '', url.href);
+    }
+
+    selectedFilters = getDefaultFiltersForView(view);
+    sortConfig      = (view === 'facades') ? { key: 'batiment', dir: 'asc' } : { key: 'id', dir: 'asc' };
+
+    setActiveTab(view === 'locataires' ? 'btnTabLoc' : view === 'communs' ? 'btnTabCom' : 'btnTabFas');
+    applyFilterVisibility(view);
+    populateFilters();
+    renderTable();
+  }
+
+  function setActiveTab(activeId) {
+    ['btnTabLoc', 'btnTabCom', 'btnTabFas'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      const isActive = (id === activeId);
+      btn.classList.toggle('bg-white',          isActive);
+      btn.classList.toggle('shadow-sm',         isActive);
+      btn.classList.toggle('text-primary',      isActive);
+      btn.classList.toggle('text-slate-600',    !isActive);
+      btn.classList.toggle('hover:text-primary', !isActive);
+    });
+  }
+
+  function formatPhoneInput(input) {
+    let val  = input.value.replace(/\D/g, '').substring(0, 10);
+    input.value = val.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
+  }
+
+  function resetAllFilters() {
+    selectedFilters = getDefaultFiltersForView(currentView);
+    document.getElementById('globalSearch').value = '';
+    populateFilters();
+    renderTable();
+  }
+
+  // Sidebar State (UX preference — correct to store in localStorage)
+  const sidebar   = document.getElementById('mainSidebar');
+  const toggleBtn = document.getElementById('toggleSidebar');
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      sidebar.classList.toggle('collapsed');
+      localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    };
+  }
+  if (localStorage.getItem('sidebarCollapsed') === 'true') sidebar?.classList.add('collapsed');
+
+  // =========================================================
+  // LAZY SCRIPT LOADER
+  // =========================================================
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s   = document.createElement('script');
+      s.src     = src;
+      s.onload  = resolve;
+      s.onerror = () => reject(new Error('Failed to load: ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  /**
+   * Exports the current view data to an XLSX file.
+   */
+  async function exportToExcel() {
+    try {
+      if (typeof ExcelJS === 'undefined' || typeof saveAs === 'undefined') {
+        await Promise.all([
+          typeof ExcelJS === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js') : Promise.resolve(),
+          typeof saveAs  === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js') : Promise.resolve()
+        ]);
+      }
+
+      const data = rawData[currentView] || [];
+      if (data.length === 0) {
+        return showModal({ icon: 'info', title: 'Info', text: 'Aucune donnée à exporter' });
+      }
+
+      const workbook  = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet(`Export_${projectName}`);
+
+      if (currentView === 'facades') {
+        worksheet.columns = [
+          { header: 'Identifiant', key: 'id',          width: 22 },
+          { header: 'Bâtiment',   key: 'batiment',     width: 12 },
+          { header: 'Hall',        key: 'hall',         width: 10 },
+          { header: 'Orientation', key: 'orientation',  width: 14 },
+          { header: 'Trame',       key: 'trame',        width: 12 },
+          { header: 'Partie',      key: 'partie',       width: 18 },
+          { header: 'Type',        key: 'type',         width: 14 },
+          { header: 'Description', key: 'description',  width: 35 }
+        ];
+        data.forEach(item => worksheet.addRow({
+          id: item.id || '', batiment: item.batiment || '', hall: item.hall || '',
+          orientation: item.orientation || '', trame: item.trame || '',
+          partie: item.partie || '', type: item.type || '',
+          description: (item.type && facadeDescriptions[item.type]) ? facadeDescriptions[item.type] : ''
+        }));
+      } else if (currentView === 'communs') {
+        worksheet.columns = [
+          { header: 'Identifiant', key: 'id',           width: 22 },
+          { header: 'Bâtiment',    key: 'batiment',     width: 12 },
+          { header: 'Hall',        key: 'hall',         width: 10 },
+          { header: 'Etage',       key: 'etage',        width: 10 },
+          { header: 'Description', key: 'description',  width: 30 },
+          { header: 'Ref',         key: 'ref',          width: 18 }
+        ];
+        data.forEach(item => worksheet.addRow({
+          id: item.id || '', batiment: item.batiment || '', hall: item.hall || '',
+          etage: (item.etage === 0 || item.etage === "0") ? 0 : (item.etage || ''),
+          description: item.description || '', ref: item.ref || ''
+        }));
+      } else {
+        worksheet.columns = [
+          { header: 'ID',               key: 'id',       width: 15 },
+          { header: 'Bâtiment',         key: 'bat',      width: 12 },
+          { header: 'Hall',              key: 'hall',     width: 10 },
+          { header: 'Étage',             key: 'etage',    width: 10 },
+          { header: 'Empilement',        key: 'empilement', width: 12 },
+          { header: 'Porte',             key: 'porte',    width: 10 },
+          { header: 'Type',              key: 'type',     width: 10 },
+          { header: 'Config. Logement',  key: 'config',   width: 18 },
+          { header: 'Surface (m²)',      key: 'surf',     width: 12 },
+          { header: 'Nom',               key: 'nom',      width: 20 },
+          { header: 'Prénom',            key: 'prenom',   width: 20 },
+          { header: 'Tél Fixe',          key: 'fixe',     width: 15 },
+          { header: 'Portable 1',        key: 'port1',    width: 15 },
+          { header: 'Portable 2',        key: 'port2',    width: 15 },
+          { header: 'Email 1',           key: 'email',    width: 30 },
+          { header: 'Email 2',           key: 'email2',   width: 30 },
+          { header: 'ID Propriétaire',   key: 'refProp',  width: 15 }
+        ];
+        data.forEach(item => worksheet.addRow({
+          id: item.id || '', bat: item.batiment || '', hall: item.hall || '',
+          etage: (item.etage === 0 || item.etage === "0") ? 0 : (item.etage || ''),
+          empilement: item.empilement || '', porte: item.porte || '',
+          type: item.typeLog ? `L${item.typeLog}` : '', config: item.configLogement || '',
+          surf: item.surface || '', nom: item.nom || '', prenom: item.prenom || '',
+          fixe: item.telFixe || '', port1: item.telPort1 || '', port2: item.telPort2 || '',
+          email: item.email || '', email2: item.email2 || '', refProp: item.reference || ''
+        }));
+      }
+
+      const headerRow = worksheet.getRow(1);
+      headerRow.height = 25;
+      headerRow.eachCell(cell => {
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004595' } };
+        cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      });
+      worksheet.eachRow(row => {
+        row.eachCell(cell => {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.border    = {
+            top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+            bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+          };
+        });
+      });
+
+      const buffer  = await workbook.xlsx.writeBuffer();
+      const blob    = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const dateStr = new Date().toISOString().slice(0, 10);
+      saveAs(blob, `${projectName}_${currentView.toUpperCase()}_${dateStr}.xlsx`);
+
+    } catch (e) {
+      console.error("Export Error:", e);
+      showModal({ icon: 'error', title: 'Erreur', text: "Échec de l'enregistrement" });
+      appErrorLog(e, "exportToExcel", {
+        context:   "ExcelJS export crash",
+        view:      window.currentView,
+        projectId: APP_DATA.projectId   // FIX: was PROJECT_ID_FROM_SERVER (same value, explicit now)
+      });
+    }
+  }
+
+  // =========================================================
+  // CLIENT VIEW MODE
+  // =========================================================
+
+  /**
+   * Injects the Client View toggle into #pageExtensionZone.
+   * This page uses a different injection target than the ClientLib default (#userMenu).
+   */
+  function injectClientViewToggle() {
+    const container = document.getElementById('pageExtensionZone');
+    if (!container || !isAuthorized) return;
+
+    const isChecked = window.isClientViewActive ? 'checked' : '';
+    container.innerHTML = `
+      <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between mb-1">
+        <div class="flex flex-col">
+          <span class="text-[10px] font-black text-slate-700 uppercase tracking-widest flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px] text-slate-400">visibility_off</span>
+            Vue Client
+          </span>
+          <p class="text-[9px] text-slate-400 font-medium">Masquer les notes privées</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="clientViewToggle" class="sr-only peer" onchange="toggleClientView(this.checked)" ${isChecked}>
+          <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+        </label>
+      </div>`;
+  }
+
+  /**
+   * Page-specific toggleClientView: persists state + re-renders table.
+   */
+  function toggleClientView(isActive) {
+    window.isClientViewActive = isActive;
+    localStorage.setItem('isClientViewActive', isActive);
+    showToast(isActive ? "Mode Présentation : Données privées masquées" : "Vue complète : Données privées affichées", 'info', '', 2000);
+    renderTable();
+  }
+
+  // =========================================================
+  // UNIFIED DROPDOWN, HIGHLIGHT & DOUBLE-CLICK LOGIC
+  // =========================================================
+
+  let clickTimer = null;
+
+  document.addEventListener('click', function(e) {
+    const openDropdowns = document.querySelectorAll('.dropdown-menu.show');
+    let wasDropdownClosed = false;
+    openDropdowns.forEach(function(dropdown) {
+      if (!dropdown.parentElement.contains(e.target)) {
+        dropdown.classList.remove('show');
+        wasDropdownClosed = true;
+        updateFilterLocks();
+      }
+    });
+    if (wasDropdownClosed) return;
+
+    const td = e.target.closest('td');
+    if (!td || !td.closest('tbody')) return;
+    if (e.target.closest('button')) return;
+    const tr = td.parentElement;
+    if (!tr || !tr.hasAttribute('data-id')) return;
+
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => {
+      const isMultiSelect = e.ctrlKey || e.metaKey;
+      if (isMultiSelect) {
+        tr.classList.toggle('row-highlight');
+      } else {
+        const allHighlighted = document.querySelectorAll('tr.row-highlight');
+        if (tr.classList.contains('row-highlight') && allHighlighted.length === 1) {
+          tr.classList.remove('row-highlight');
+        } else {
+          allHighlighted.forEach(row => row.classList.remove('row-highlight'));
+          tr.classList.add('row-highlight');
+        }
+      }
+    }, 250);
+  });
+
+  document.addEventListener('dblclick', function(e) {
+    const td = e.target.closest('td');
+    if (!td || !td.closest('tbody')) return;
+    if (e.target.closest('button')) return;
+    const tr = td.parentElement;
+    if (!tr) return;
+    const id = tr.getAttribute('data-id');
+    if (id) {
+      document.querySelectorAll('tr.row-highlight').forEach(row => row.classList.remove('row-highlight'));
+      tr.classList.add('row-highlight');
+      openNavModal(id);
+    }
+  });
+
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape' || event.key === 'Esc') {
+      const openMenus = document.querySelectorAll('.dropdown-menu.show');
+      let wasMenuClosed = false;
+      
+      openMenus.forEach(d => {
+        d.classList.remove('show');
+        wasMenuClosed = true;
+      });
+      
+      document.querySelectorAll('tr.row-highlight').forEach(r => r.classList.remove('row-highlight'));
+      
+      if (wasMenuClosed) {
+        updateFilterLocks();
+      }
+    }
+  });
+
+  function updateSelectBg(el) {
+    el.classList.remove('bg-white', 'bg-blue-200', 'bg-orange-200', 'bg-red-400');
+    if      (el.value === 'Info')      el.classList.add('bg-blue-200');
+    else if (el.value === 'Attention') el.classList.add('bg-orange-200');
+    else if (el.value === 'Bloquant')  el.classList.add('bg-red-400');
+    else                               el.classList.add('bg-white');
+  }
+
+</script>

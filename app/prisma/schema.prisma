@@ -1,0 +1,459 @@
+// Schema derived from analysis of the source Google Apps Script app
+// (WepAPP.json: Pages/Login_Code/Security_Code/Logs/Projects_Code/
+// Locataires_Code/Planing_Code/Planning_Mobile_Code/EDL_Code/Settings_Code)
+// and the 11 exported Google Sheets workbooks. See TODO.md for the full
+// migration notes and open decisions (in particular: the wide date-grid
+// "Planning" sheets are normalized here into ScheduleEntry/TaskProgress
+// rather than replicated as wide tables).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 00 Platform / auth ============
+
+model AppSetting {
+  id       String @id @default(uuid())
+  category String // e.g. "company", "dropdown:xxx"
+  key      String
+  value    String
+
+  @@unique([category, key])
+}
+
+model Role {
+  id    String @id @default(uuid())
+  name  String @unique // Admin, Directeur, Utilisateur, MOA, MOE/Architect, MOE/BET, BC, SPS, AMO, Sous-Traitant, Viseur
+  // edit permission derived from name in source app (authorizedRoles / clientExcludedRoles);
+  // made explicit here instead of hardcoded in app logic.
+  canEdit      Boolean @default(false)
+  isClientRole Boolean @default(true)
+
+  users User[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  fullName     String
+  company      String?
+  email        String   @unique
+  // bcrypt going forward; legacyPasswordHash retained for the
+  // HASHv1:<saltHex>:<hashHex> scheme to support one-time re-hash-on-login.
+  passwordHash       String?
+  legacyPasswordHash String?
+  roleId       String?
+  role         Role?    @relation(fields: [roleId], references: [id])
+  team         String?
+  status       String   @default("Actif") // Actif / Bloqué
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  projectAccess   UserProjectAccess[]
+  sessions        Session[]
+  resetTokens     PasswordResetToken[]
+  assignedReserves Reserve[] @relation("ReserveTeamContact")
+}
+
+model Session {
+  token     String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}
+
+model PasswordResetToken {
+  token     String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+}
+
+// ============ 01 Projects ============
+
+model Project {
+  id          String    @id @default(uuid())
+  code        String    @unique // "2602-0001"
+  name        String
+  owner       String?
+  status      String    @default("Active") // Active / Ended / Blocked / Archived
+  startDate   DateTime?
+  endDate     DateTime?
+  city        String?
+  country     String?
+  progressPct Decimal?  @db.Decimal(5, 2)
+  units       Int?
+  description String?
+  logoPath    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  userAccess     UserProjectAccess[]
+  buildings      Building[]
+  disciplines    Discipline[]
+  teams          Team[]
+  taskTypes      TaskType[]
+  taskCycles     TaskCycle[]
+  calendarExceptions CalendarException[]
+  planAssets     PlanAsset[]
+  activityLogs   ActivityLog[]
+}
+
+model UserProjectAccess {
+  id        String  @id @default(uuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  @@unique([userId, projectId])
+}
+
+// ============ 02 Buildings / units / common areas / facades ============
+
+model Building {
+  id        String  @id @default(uuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  code      String // e.g. "A"
+
+  units       Unit[]
+  commonAreas CommonArea[]
+  facades     Facade[]
+
+  @@unique([projectId, code])
+}
+
+// "Identifiant" scheme: project-building-level-stack-door, e.g. 1-A-B01-01-100
+model Unit {
+  id             String   @id @default(uuid())
+  buildingId     String
+  building       Building @relation(fields: [buildingId], references: [id])
+  identifiant    String   @unique
+  hall           String?
+  floor          String? // "Etage"
+  stackNumber    String? // "N° Empilement"
+  doorNumber     String? // "N° Porte"
+  type           String? // logement type code
+  unitTypeConfig String? // "Config.Logement" -> UnitTypeRoomConfig.code
+  surfaceM2      Decimal? @db.Decimal(8, 2)
+
+  tenants        Tenant[]
+  reserves       Reserve[] @relation("ReserveUnit")
+  edlNotes       EdlNote[]
+  edlPhotos      EdlPhoto[]
+  scheduleEntries ScheduleEntry[] @relation("ScheduleUnit")
+  taskProgress   TaskProgress[]  @relation("TaskProgressUnit")
+  workFieldValues WorkFieldValue[]
+}
+
+model Tenant {
+  id         String  @id @default(uuid())
+  unitId     String
+  unit       Unit    @relation(fields: [unitId], references: [id])
+  lastName   String?
+  firstName  String?
+  street     String?
+  city       String?
+  phone      String?
+  email      String?
+  moveInDate DateTime?
+  isCurrent  Boolean @default(true)
+}
+
+model UnitTypeRoomConfig {
+  id       String @id @default(uuid())
+  code     String @unique // e.g. "L1A", "L2B"
+  room     String // e.g. "Séjour", "Chambre 1"
+  present  Boolean @default(true)
+
+  @@unique([code, room])
+}
+
+model CommonArea {
+  id          String   @id @default(uuid())
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  identifiant String   @unique
+  hall        String?
+  floor       String?
+  description String?
+  typeRef     String? // -> CommonAreaType.abbreviation
+  abbreviation String?
+
+  reserves        Reserve[] @relation("ReserveCommonArea")
+  scheduleEntries ScheduleEntry[] @relation("ScheduleCommonArea")
+  taskProgress    TaskProgress[]  @relation("TaskProgressCommonArea")
+}
+
+model CommonAreaType {
+  id           String @id @default(uuid())
+  name         String @unique
+  abbreviation String
+}
+
+model Facade {
+  id          String   @id @default(uuid())
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  identifiant String   @unique
+  orientation String?
+  trame       String?
+  part        String? // "Partie"
+  type        String? // -> FacadeType
+
+  reserves        Reserve[] @relation("ReserveFacade")
+  scheduleEntries ScheduleEntry[] @relation("ScheduleFacade")
+  taskProgress    TaskProgress[]  @relation("TaskProgressFacade")
+}
+
+model FacadeType {
+  id          String @id @default(uuid())
+  type        String @unique
+  description String
+}
+
+// ============ 03 Planning / scheduling engine ============
+
+model Discipline {
+  id        String  @id @default(uuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  name      String
+
+  reserves  Reserve[]
+
+  @@unique([projectId, name])
+}
+
+model Team {
+  id        String  @id @default(uuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  name      String
+
+  taskTypes TaskType[]
+  reserves  Reserve[] @relation("ReserveTeam")
+
+  @@unique([projectId, name])
+}
+
+model TaskType {
+  id              String   @id @default(uuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id])
+  abbreviation    String // EDL, ELEC, CHUT, CHAU, CUR, PLB, FAI, PEIN, SOL, FINI, OPR, CONT
+  activityType    String?
+  teamId          String?
+  team            Team?    @relation(fields: [teamId], references: [id])
+  description     String?
+  shortDescription String?
+  color           String?
+  defaultDuration Decimal? @db.Decimal(6, 2)
+  durationType    String? // e.g. hours/days
+
+  scheduleEntries ScheduleEntry[]
+  taskProgress    TaskProgress[]
+
+  @@unique([projectId, abbreviation])
+}
+
+model TaskCycle {
+  id          String  @id @default(uuid())
+  projectId   String
+  project     Project @relation(fields: [projectId], references: [id])
+  name        String
+  description String?
+  sequence    Json // ordered task list + dependency links (e.g. finish-to-start)
+
+  @@unique([projectId, name])
+}
+
+model CalendarException {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  date      DateTime @db.Date
+  description String?
+  type      String? // Fixe / Personnalisé
+  isWorkingDay Boolean @default(false)
+
+  @@unique([projectId, date])
+}
+
+// Normalized replacement for the wide date-grid "Planning*" sheets
+// (one column per calendar day in the source spreadsheets).
+model ScheduleEntry {
+  id             String    @id @default(uuid())
+  unitId         String?
+  unit           Unit?     @relation("ScheduleUnit", fields: [unitId], references: [id])
+  commonAreaId   String?
+  commonArea     CommonArea? @relation("ScheduleCommonArea", fields: [commonAreaId], references: [id])
+  facadeId       String?
+  facade         Facade?   @relation("ScheduleFacade", fields: [facadeId], references: [id])
+  taskTypeId     String
+  taskType       TaskType  @relation(fields: [taskTypeId], references: [id])
+  scheduledDate  DateTime  @db.Date
+  slot           String? // AM/PM if applicable
+  status         String?
+}
+
+// Normalized replacement for the parallel wide "Recap"/"Notes"/"Avancement"
+// sheets (per entity x task-type target date, notes, progress status).
+model TaskProgress {
+  id              String    @id @default(uuid())
+  unitId          String?
+  unit            Unit?     @relation("TaskProgressUnit", fields: [unitId], references: [id])
+  commonAreaId    String?
+  commonArea      CommonArea? @relation("TaskProgressCommonArea", fields: [commonAreaId], references: [id])
+  facadeId        String?
+  facade          Facade?   @relation("TaskProgressFacade", fields: [facadeId], references: [id])
+  taskTypeId      String
+  taskType        TaskType  @relation(fields: [taskTypeId], references: [id])
+  targetDate      DateTime? @db.Date
+  completionDate  DateTime? @db.Date
+  notePublic      String?
+  notePrivate     String?
+  status          String? // Fini / Planifié / En cours
+
+  @@unique([unitId, commonAreaId, facadeId, taskTypeId])
+}
+
+// ============ 04 Reserves (punch-list) ============
+
+model Reserve {
+  id             String   @id @default(uuid())
+  code           String   @unique // "A-L-000001" (autocontrole) / "R-L-000001" (reserve)
+  kind           String // autocontrole / reserve
+  unitId         String?
+  unit           Unit?    @relation("ReserveUnit", fields: [unitId], references: [id])
+  commonAreaId   String?
+  commonArea     CommonArea? @relation("ReserveCommonArea", fields: [commonAreaId], references: [id])
+  facadeId       String?
+  facade         Facade?  @relation("ReserveFacade", fields: [facadeId], references: [id])
+  disciplineId   String?
+  discipline     Discipline? @relation(fields: [disciplineId], references: [id])
+  description    String?
+  coordX         Decimal? @db.Decimal(8, 4) // pin position on plan image
+  coordY         Decimal? @db.Decimal(8, 4)
+  status         String   @default("open")
+  teamId         String?
+  team           Team?    @relation("ReserveTeam", fields: [teamId], references: [id])
+  teamContactId  String?
+  teamContact    User?    @relation("ReserveTeamContact", fields: [teamContactId], references: [id])
+  interventionDate DateTime? @db.Date
+  interventionSlot String?
+  dueDate        DateTime? @db.Date
+  history        Json? // array of timestamped status-change events
+  needsValidation Boolean @default(false)
+  cleared        Boolean  @default(false) // "Levée"/"Non levée"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// ============ 05 EDL (état des lieux) ============
+
+model EdlNote {
+  id           String @id @default(uuid())
+  unitId       String
+  unit         Unit   @relation(fields: [unitId], references: [id])
+  room         String
+  notePublic   String?
+  notePrivate  String?
+
+  @@unique([unitId, room])
+}
+
+model EdlPhoto {
+  id        String   @id @default(uuid())
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id])
+  room      String?
+  filePath  String
+  addedAt   DateTime @default(now())
+}
+
+// "Config Travaux": dynamic form-field definitions driving "Données Travaux"
+model WorkFieldDefinition {
+  id               String @id @default(uuid())
+  code             String @unique // "ID_Work", e.g. "ELEC-01"
+  targetEntityType String // Locataires / Communs / Facades
+  subCategory      String?
+  discipline       String?
+  workType         String?
+  applicableRooms  Json? // list of room names this field applies to
+  fieldType        String // Checkbox / Menu Déroulant / ...
+  fieldDetails     String?
+  options          Json?
+
+  values WorkFieldValue[]
+}
+
+model WorkFieldValue {
+  id            String   @id @default(uuid())
+  unitId        String
+  unit          Unit     @relation(fields: [unitId], references: [id])
+  fieldId       String
+  field         WorkFieldDefinition @relation(fields: [fieldId], references: [id])
+  value         Json?
+
+  @@unique([unitId, fieldId])
+}
+
+// ============ 06 Logs / audit ============
+
+model ActivityLog {
+  id         String   @id @default(uuid())
+  projectId  String?
+  project    Project? @relation(fields: [projectId], references: [id])
+  entityKind String // locataires / communs / facades / system
+  entityId   String?
+  visibility String?
+  type       String?
+  userEmail  String?
+  action     String
+  payload    Json? // secrets/private fields redacted before persisting, see Logs.js _stripPrivateDetailsDeep
+  createdAt  DateTime @default(now())
+}
+
+model ErrorLog {
+  id           String   @id @default(uuid())
+  userEmail    String?
+  errorMessage String
+  stackTrace   String?
+  context      String?
+  payload      Json?
+  treated      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
+
+model PermissionAuditLog {
+  id            String   @id @default(uuid())
+  userEmail     String?
+  role          String?
+  status        String?
+  itemName      String?
+  action        String?
+  rightTargeted String?
+  rightBefore   String?
+  result        String?
+  message       String?
+  createdAt     DateTime @default(now())
+}
+
+// ============ 07 File assets ============
+
+model PlanAsset {
+  id        String  @id @default(uuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  baseFilename String @unique // resolves a unit/common-area/facade to its plan image
+  filePath  String
+}

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html class="light" lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "primary-hover": "#0b4ecf",
+            "background-light": "#f5f6f8",
+            "text-main": "#1e293b",
+            "text-secondary": "#64748b",
+          },
+          fontFamily: { display: ["Inter", "sans-serif"] },
+          borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" },
+        },
+      },
+    };
+  </script>
+</head>
+
+<body class="font-display bg-background-light min-h-screen flex flex-col text-slate-800">
+
+<?!= include_('ClientLib', data); ?>
+
+<header class="absolute top-0 w-full z-20 flex items-center justify-between px-6 py-4 md:px-10">
+  <div class="flex items-center gap-3 text-slate-900">
+    <div class="size-8 flex items-center justify-center text-primary bg-white rounded shadow-sm">
+      <span class="material-symbols-outlined text-3xl">domain</span>
+    </div>
+    <h2 id="company-name-1" class="text-lg font-bold leading-tight tracking-tight text-white drop-shadow-md lg:text-slate-900 lg:drop-shadow-none">
+      ...
+    </h2>
+  </div>
+
+  <a href="#" onclick="navTo('supportlogin'); return false;"
+     class="flex items-center justify-center rounded-lg h-9 px-4 bg-white/90 text-slate-900 text-sm font-medium hover:bg-white transition-colors shadow-sm backdrop-blur-sm">
+    <span class="mr-2">Support</span>
+    <span class="material-symbols-outlined text-sm">help</span>
+  </a>
+</header>
+
+<main class="relative flex flex-1 flex-col items-center justify-center min-h-screen w-full overflow-hidden">
+
+  <div class="absolute inset-0 z-0">
+    <div class="absolute inset-0 bg-slate-50/40 mix-blend-overlay z-10"></div>
+    <div class="w-full h-full bg-cover bg-center bg-no-repeat"
+         style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuC64qs4jnIUYmkrPYhFuL30TYNVkDvmLmhW4UtncrkZ03kEqd1X1_RUsvLvI2VicQPElB-iN19SeALVAhXvcunRiKu8JzmYmz_Sbmr_KB4YIaSK0mSe-cNNWk3eDHpaiw3O6Lo8osdztdb4ETPfn9r8lZAe6uZ9Ad0T9ady4AHCdnZEYxyASdI5JnWoMAAymPz1WyOZwDVQhe-1c7UCzr_MPcO5lq6GM_c-z-iq96LycjdjhIddqC1A3jaX2XdSdpkbb57qtwZUL4A");
+                filter: brightness(1.2) contrast(0.9) saturate(0.8);'>
+    </div>
+    <div class="absolute inset-0 bg-gradient-to-t from-slate-100/50 to-transparent z-10"></div>
+  </div>
+
+  <div class="relative z-10 w-full max-w-md px-4">
+    <div class="w-full rounded-2xl bg-white border border-slate-200 shadow-xl shadow-slate-200/50 p-8 md:p-10 flex flex-col items-center text-center">
+
+      <div class="mb-6 rounded-xl bg-blue-50 p-4 inline-flex items-center justify-center ring-1 ring-blue-100">
+        <span class="material-symbols-outlined text-5xl text-primary">engineering</span>
+      </div>
+
+      <h1 class="text-2xl md:text-3xl font-bold text-slate-900 mb-2">Bienvenue</h1>
+      <p class="text-slate-600 text-base font-normal mb-8 leading-relaxed">
+        Connectez-vous à votre espace projet <br>
+        <span id="company-name-2">...</span>
+      </p>
+
+      <form id="loginForm" class="w-full space-y-4">
+
+        <div class="group relative">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+            <span class="material-symbols-outlined text-lg">mail</span>
+          </div>
+          <input id="email" type="email" required
+                 class="block w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl bg-slate-50 text-slate-900 
+                        placeholder-slate-400 focus:ring-2 focus:ring-primary"
+                 placeholder="Email">
+        </div>
+
+        <div class="group relative">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+            <span class="material-symbols-outlined text-lg">lock</span>
+          </div>
+          <input id="password" type="password" required minlength="8"
+                 class="block w-full pl-10 pr-10 py-3 border border-slate-200 rounded-xl bg-slate-50 text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-primary"
+                 placeholder="Mot de passe">
+
+          <button type="button" id="togglePwd"
+                  class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+            <span class="material-symbols-outlined text-lg">visibility</span>
+          </button>
+        </div>
+
+        <div class="flex items-center justify-between">
+          <a href="#" onclick="navTo('reset-request'); return false;" class="text-sm text-primary hover:text-primary-hover underline">
+            Mot de passe oublié ?
+          </a>
+        </div>
+
+        <button type="submit" id="loginBtn"
+                class="w-full flex items-center justify-center gap-2 rounded-xl h-11 px-6 bg-primary 
+                       hover:bg-primary-hover text-white font-medium shadow-lg shadow-blue-500/20">
+          <span>Se connecter</span>
+          <span class="material-symbols-outlined text-lg">arrow_forward</span>
+        </button>
+
+      </form>
+
+    </div>
+  </div>
+</main>
+
+<footer class="absolute bottom-0 w-full z-20 py-4 px-6 text-center md:text-left">
+  <div class="flex flex-col md:flex-row justify-between items-center text-xs text-slate-600 max-w-7xl mx-auto">
+    <p>© 2026 Ehden Vision. Tous droits réservés.</p>
+  </div>
+</footer>
+
+<script>
+  /**
+   * Update the Browser Tab Title and company name placeholders
+   */
+  const companyName = APP_DATA.companyName;
+  document.getElementById('company-name-1').innerText = companyName;
+  document.getElementById('company-name-2').innerText = companyName;
+
+  /**
+   * Password Visibility Toggle
+   */
+  document.getElementById('togglePwd').addEventListener('click', () => {
+    const p = document.getElementById('password');
+    p.type = p.type === 'password' ? 'text' : 'password';
+  });
+
+  /**
+   * Form Submission Logic
+   */
+  document.getElementById('loginForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    const email    = document.getElementById('email').value.trim();
+    const pass     = document.getElementById('password').value;
+    const loginBtn = document.getElementById('loginBtn');
+
+    if (!email || !pass)
+      return showToast("Attention", "warning", "Merci de renseigner email et mot de passe.");
+
+    if (pass.length < 8)
+      return showToast("Attention", "warning", "Le mot de passe doit contenir au moins 8 caractères.");
+
+    loginBtn.disabled = true;
+    loginBtn.innerHTML = `
+      <span>Vérification en cours…</span>
+      <span class="material-symbols-outlined text-lg animate-spin">sync</span>
+    `;
+    loginBtn.classList.add('opacity-70', 'cursor-not-allowed');
+
+    google.script.run
+      .withSuccessHandler(r => {
+        persistSessionAndGo(r.sessionToken);
+      })
+      .withFailureHandler(err => {
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = `
+          <span>Se connecter</span>
+          <span class="material-symbols-outlined text-lg">arrow_forward</span>
+        `;
+        loginBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+
+        showModal({
+          icon:  'error',
+          title: 'Échec de connexion',
+          text:  err.message
+        });
+
+        appErrorLog(err, "gsLoginWithEmailPassword", { attemptedEmail: email });
+      })
+      .gsLoginWithEmailPassword(email, pass);
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Sélection du projet | Ehden Vision</title>
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "corporate-blue": "#004595",
+            "background-page": "#f8fafc",
+            "border-light": "#e2e8f0",
+          },
+          fontFamily: { display: ["Inter", "sans-serif"] },
+          borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" },
+        },
+      },
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .material-symbols-outlined { font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+    /* Custom Avatar Styling */
+    #avatarBtn {
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.875rem; color: #004595;
+      background-color: #ffffff; text-transform: uppercase; transition: all 0.2s;
+    }
+    #avatarBtn:hover { background-color: #f1f5f9; transform: scale(1.05); }
+
+    /* Status Chips Styling */
+    .chip-active   { background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; }
+    .chip-blocked  { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
+    .chip-ended    { background:#f1f5f9; color:#334155; border:1px solid #e2e8f0; }
+    .chip-archived { background:#f8fafc; color:#64748b; border:1px solid #e2e8f0; }
+  </style>
+</head>
+
+<body class="bg-background-page text-slate-900 min-h-screen flex flex-col font-display antialiased">
+
+  <?!= include_('ClientLib', data); ?>
+
+  <header class="sticky top-0 z-50 flex items-center justify-between bg-corporate-blue px-6 py-4 lg:px-10 shadow-sm">
+    <div class="flex items-center gap-4">
+      <div class="flex items-center justify-center size-10 rounded bg-white/10 text-white">
+        <span class="material-symbols-outlined text-[28px]">apartment</span>
+      </div>
+      <h1 class="text-xl font-bold tracking-tight text-white uppercase">
+        <span id="company-name">...</span>
+      </h1>
+    </div>
+
+    <div class="flex items-center gap-4 md:gap-8">
+
+      <button id="btnNewProject"
+              class="hidden items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-white/20 border border-dashed border-white/30 shadow-sm group uppercase whitespace-nowrap"
+              type="button" title="Visible uniquement pour les administrateurs">
+        <span class="material-symbols-outlined text-[18px]">add</span>
+        <span>Initialiser un nouveau projet</span>
+      </button>
+
+      <div class="flex items-center gap-3 border-l border-white/20 pl-4 md:pl-8 relative inline-block">
+        <div class="hidden md:flex flex-col items-end">
+          <span id="u_name" class="text-sm font-semibold text-white">Utilisateur</span>
+        </div>
+
+        <div class="relative inline-block">
+          <button id="avatarBtn" type="button"
+                  class="size-10 rounded-full shadow-sm ring-2 ring-white/20 focus:outline-none focus:ring-white/40 flex items-center justify-center">
+            --
+          </button>
+
+          <div id="userMenu" class="hidden absolute right-0 mt-3 w-64 rounded-xl border border-slate-200 bg-white shadow-2xl py-2 z-[100] text-slate-900">
+
+            <div id="clientViewToggleContainer" class="hidden w-full items-center justify-between px-4 py-3 border-b border-slate-100 hover:bg-slate-50 transition-colors" onclick="event.stopPropagation()">
+              <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined text-[18px] text-slate-400">visibility_off</span>
+                <span class="text-sm font-bold text-slate-700">Vue Client</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="clientViewToggle" class="sr-only peer" onchange="toggleClientView(this.checked)">
+                <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+              </label>
+            </div>
+
+            <button onclick="clearSessionAndGoLogin()" class="flex w-full items-center gap-3 px-4 py-3 text-sm text-red-600 hover:bg-red-50 font-bold transition-colors">
+              <span class="material-symbols-outlined text-[18px]">logout</span>
+              <span>Se déconnecter</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 w-full max-w-[1400px] mx-auto p-6 lg:p-10">
+
+    <div class="mb-8 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+      <div class="flex flex-col gap-2">
+        <h2 class="text-3xl font-bold tracking-tight text-slate-900">Sélection du projet</h2>
+        <p class="text-slate-600">Gérez vos chantiers en cours ou accédez aux archives.</p>
+      </div>
+
+      <div class="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+        <div class="relative w-full sm:w-80">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <span class="material-symbols-outlined text-slate-400">search</span>
+          </div>
+          <input id="searchInput"
+                 class="block w-full rounded-lg border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-primary focus:border-primary focus:outline-none shadow-sm"
+                 placeholder="Rechercher par nom, ID ou lieu…" type="text"/>
+        </div>
+      </div>
+    </div>
+
+    <div class="mb-8 overflow-x-auto pb-2">
+      <div class="flex gap-2 min-w-max">
+        <button data-filter="ALL"      class="chip rounded-full bg-primary px-6 py-2 text-sm font-semibold text-white shadow-sm transition-colors">Tous les projets</button>
+        <button data-filter="Active"   class="chip rounded-full bg-white border border-slate-200 px-6 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors shadow-sm">Actifs</button>
+        <button data-filter="Blocked"  class="chip rounded-full bg-white border border-slate-200 px-6 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors shadow-sm">Bloqués</button>
+        <button data-filter="Ended"    class="chip rounded-full bg-white border border-slate-200 px-6 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors shadow-sm">Terminés</button>
+        <button data-filter="Archived" class="chip rounded-full bg-white border border-slate-200 px-6 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors shadow-sm">Archivés</button>
+      </div>
+    </div>
+
+    <div id="grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8"></div>
+
+    <div id="emptyState" class="hidden p-12 text-center">
+      <div class="mx-auto w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
+        <span class="material-symbols-outlined text-3xl text-slate-300">construction</span>
+      </div>
+      <h4 class="text-slate-900 font-semibold">Aucun projet à afficher</h4>
+      <p class="text-slate-500 text-sm max-w-xs mx-auto mt-2">
+        Modifiez vos filtres ou votre recherche pour voir les projets correspondants.
+      </p>
+    </div>
+  </main>
+
+  <footer class="mt-auto bg-white border-t border-slate-200 py-6">
+    <div class="max-w-[1400px] mx-auto px-10 flex flex-col md:flex-row justify-between items-center gap-4 text-slate-400 text-[11px] font-medium uppercase tracking-wider">
+      <p>© 2026 Ehden Vision — Plateforme Projets</p>
+      <div class="flex gap-8">
+        <a class="hover:text-primary transition-colors" href="#" onclick="navTo('support'); return false;">Support</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const companyName  = APP_DATA.companyName;
+    const isAuthorized = APP_DATA.isAuthorized || false;
+    const isClient     = APP_DATA.isClient     || false;
+
+    // isClientViewActive: localStorage is the source of truth for this UX preference.
+    // Fall back to APP_DATA only on first visit (when localStorage has no entry yet).
+    const storedClientView = localStorage.getItem('isClientViewActive');
+    window.isClientViewActive = storedClientView !== null
+      ? storedClientView === 'true'
+      : (typeof APP_DATA !== 'undefined' && APP_DATA.isClientViewActive === true);
+
+    document.getElementById('company-name').innerText = companyName;
+
+    /**
+     * UI State
+     */
+    const state = {
+      raw:    [],
+      filter: 'ALL',
+      q:      ''
+    };
+
+    /**
+     * String normalization for searching
+     */
+    function normalize(str) { return (str || '').toString().toLowerCase(); }
+
+    /**
+     * Filtering Logic
+     */
+    function applyFilters() {
+      const q = normalize(state.q);
+      const f = state.filter;
+
+      let list = state.raw.slice();
+
+      // Hide archived projects unless the Archived filter is explicitly selected
+      if (f === 'ALL')       list = list.filter(p => (p.status || '').toLowerCase() !== 'archived');
+      else if (f !== 'ALL')  list = list.filter(p => (p.status || '').toLowerCase() === f.toLowerCase());
+
+      // Text search across name, ID, city, country
+      if (q) {
+        list = list.filter(p =>
+          normalize(p.name).includes(q)    ||
+          normalize(p.id).includes(q)      ||
+          normalize(p.city).includes(q)    ||
+          normalize(p.country).includes(q)
+        );
+      }
+      renderGrid(list);
+    }
+
+    /**
+     * Grid Rendering
+     */
+    function renderGrid(projects) {
+      const grid  = document.getElementById('grid');
+      const empty = document.getElementById('emptyState');
+      grid.innerHTML = '';
+
+      if (!projects.length) {
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+
+      for (const p of projects) {
+        const badge     = getStatusBadge(p.status);
+        const isBlocked = (p.status || '').toLowerCase() === 'blocked';
+
+        const card = document.createElement('a');
+        card.href = '#';
+        card.className = isBlocked
+          ? "group relative flex flex-col overflow-hidden rounded-xl bg-slate-50 border border-slate-200 shadow-sm cursor-not-allowed opacity-75"
+          : "group relative flex flex-col overflow-hidden rounded-xl bg-white border border-slate-200 shadow-sm transition-all hover:shadow-md";
+
+        card.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (isBlocked) return;
+          setProjectAndGo(p.id);
+        });
+
+        card.innerHTML = `
+          <div class="relative h-48 w-full overflow-hidden bg-slate-200">
+            <img src="${p.image}" alt="${p.name}" loading="lazy"
+                 class="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ${isBlocked ? '' : 'group-hover:scale-105'}"
+                 style="filter: ${isBlocked ? 'grayscale(100%)' : 'none'}">
+            <div class="absolute bottom-4 left-4">
+              <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold border shadow-sm ${badge.cls}">
+                ${badge.icon ? `<span class="material-symbols-outlined text-[14px]">${badge.icon}</span>` : `<span class="size-2 rounded-full bg-emerald-500"></span>`}
+                ${badge.text}
+              </span>
+            </div>
+          </div>
+          <div class="flex flex-1 flex-col p-6">
+            <div class="mb-6">
+              <h3 class="text-base font-bold text-slate-900 ${isBlocked ? '' : 'group-hover:text-primary'} transition-colors tracking-tight uppercase">${p.name || '—'}</h3>
+              <div class="mt-1.5 flex items-center gap-1 text-sm text-slate-500">
+                <span class="material-symbols-outlined text-[18px]">location_on</span>
+                <span>${[p.city, p.country].filter(Boolean).join(', ') || '—'}</span>
+              </div>
+            </div>
+            <div class="mt-auto pt-4 border-t border-slate-100 flex items-center justify-between text-sm">
+              <div class="flex items-center gap-3">
+                <div class="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div class="h-full ${isBlocked ? 'bg-slate-300' : 'bg-primary'} rounded-full" style="width:${p.progress || 0}%"></div>
+                </div>
+                <span class="text-xs font-bold text-slate-700">${p.progress || 0}%</span>
+              </div>
+              <span class="text-[10px] font-medium text-slate-400 uppercase tracking-wider">${p.startDate ? `Début ${p.startDate}` : ''}</span>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      }
+    }
+
+    /**
+     * Page Initialization
+     */
+    function initUI() {
+      const user = (typeof APP_DATA !== 'undefined') ? APP_DATA.user : null;
+      if (!user) return;
+
+      // Identity display
+      const name = user.name || user.email || 'Utilisateur';
+      document.getElementById('u_name').textContent = name;
+
+      const avatarBtn = document.getElementById('avatarBtn');
+      avatarBtn.textContent = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+
+      // Show "New Project" button for admins only
+      const role = (user.role || '').toLowerCase();
+      if (role === 'admin') document.getElementById('btnNewProject')?.classList.remove('hidden');
+
+      // Show Client View toggle for authorized non-client users
+      if (!isClient && isAuthorized) {
+        const toggleContainer = document.getElementById('clientViewToggleContainer');
+        const toggleInput     = document.getElementById('clientViewToggle');
+        if (toggleContainer && toggleInput) {
+          toggleContainer.classList.remove('hidden');
+          toggleContainer.classList.add('flex');
+          toggleInput.checked = window.isClientViewActive;
+        }
+      }
+
+      // User menu toggle
+      const menu = document.getElementById('userMenu');
+      avatarBtn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); };
+      document.onclick  = () => menu.classList.add('hidden');
+
+      // Search input
+      document.getElementById('searchInput').oninput = (e) => {
+        state.q = e.target.value;
+        applyFilters();
+      };
+
+      // Filter chips
+      document.querySelectorAll('.chip').forEach(btn => {
+        btn.onclick = () => {
+          state.filter = btn.dataset.filter;
+          document.querySelectorAll('.chip').forEach(b => {
+            b.classList.replace('bg-primary', 'bg-white');
+            b.classList.replace('text-white', 'text-slate-600');
+          });
+          btn.classList.replace('bg-white', 'bg-primary');
+          btn.classList.replace('text-slate-600', 'text-white');
+          applyFilters();
+        };
+      });
+
+      // Load projects from server
+      google.script.run
+        .withSuccessHandler(rows => { state.raw = rows || []; applyFilters(); })
+        .withFailureHandler(err => {
+          showModal({
+            icon:  'error',
+            title: 'Erreur de chargement',
+            text:  err.message
+          });
+          appErrorLog(err, "gsListProjects", { context: "Portfolio Load" });
+        })
+        .gsListProjects(APP_DATA.token);
+    }
+
+    window.addEventListener('DOMContentLoaded', initUI);
+
+    /**
+     * Called when a user clicks a project card.
+     *
+     * localStorage usage here is correct per the architecture:
+     *   - 'currentProjectId' : navigation context (not security-sensitive)
+     *   - 'view'             : UX preference (mobile/desktop)
+     *   - 'locataireId'      : cleared on project switch to avoid stale deep-links
+     *
+     * What is NOT stored anymore:
+     *   - 'projectName'   : was redundant and spoofable — now always from DB
+     *   - 'projectStatus' : was redundant and spoofable — now always from DB
+     */
+    function setProjectAndGo(projectId) {
+      if (!projectId) return;
+      try {
+        // Store only navigation/UX context in localStorage
+        localStorage.setItem('currentProjectId', projectId);
+        localStorage.removeItem('transferId');  // Clear stale deep-link from previous project
+
+        const isMobile = window.innerWidth < 1024;
+        const viewType = isMobile ? 'mobile' : 'desktop';
+        localStorage.setItem('view', viewType);
+
+        // navToWithParams will pass projectId in the URL.
+        // The server reads projectName + projectStatus from the DB via projectId.
+        navToWithParams('project-dashboard', {
+          projectId: projectId,
+          view:      viewType,
+          transferId: ''
+        });
+
+      } catch (e) {
+        console.error("Navigation error:", e);
+        appErrorLog(e, "setProjectAndGo", { projectId: projectId });
+      }
+    }
+
+  </script>
+</body>
+</html>

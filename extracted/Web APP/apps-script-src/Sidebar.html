@@ -1,0 +1,274 @@
+<style>
+  /* =========================================================
+     SIDEBAR (Tailwind CDN compatible - no @apply)
+     ========================================================= */
+
+  #mainSidebar { width: 280px; }
+  #mainSidebar.collapsed { width: 72px !important; }
+
+  #mainSidebar.collapsed .nav-text,
+  #mainSidebar.collapsed .nav-header {
+    display: none !important;
+  }
+
+  #mainSidebar.collapsed .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
+  }
+
+  #mainSidebar { transition: width 0.3s ease; }
+  .nav-text { transition: opacity 0.2s ease; }
+  #mainSidebar.collapsed .nav-text { opacity: 0; }
+
+  .nav-item-special {
+    background-color: #f0f4ff;
+    border: 1px solid #e2e8f0;
+  }
+  .nav-item-special:hover {
+    background-color: #eef2ff;
+  }
+</style>
+
+<aside id="mainSidebar" class="flex flex-col border-r border-slate-200 bg-background-light shadow-sm transition-all duration-300 overflow-hidden">
+  <div class="flex items-center gap-4 p-4 bg-corporate-blue text-white">
+    <button id="toggleSidebar" class="text-white hover:bg-white/10 p-2 rounded-lg transition-colors shrink-0">
+      <span class="material-symbols-outlined">menu</span>
+    </button>
+
+    <div class="relative groupnav-text">
+      <button id="navMenuBtn" class="flex items-center gap-4 text-left focus:outline-none hover:opacity-90 transition-opacity">
+        <div class="flex size-10 shrink-0 items-center justify-center rounded bg-white/10 text-white">
+          <span class="material-symbols-outlined text-[28px]">apartment</span>
+        </div>
+        <div class="flex flex-col">
+          <h1 id="topProjectName" class="text-sm font-black text-white truncate uppercase leading-none tracking-tight">Chargement...</h1>
+          <div class="flex items-center gap-1 mt-1">
+            <p class="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-100 opacity-80">
+              <span id="company-name">...</span>
+            </p>
+            <span class="material-symbols-outlined text-blue-100 text-[14px]">arrow_drop_down</span>
+          </div>
+        </div>
+      </button>
+
+      <div id="navMenu" class="hidden absolute left-0 mt-4 w-64 rounded-xl border border-slate-200 bg-white shadow-2xl py-2 z-50 text-slate-900">
+        <div class="px-4 py-2 border-b border-slate-100 mb-2">
+          <span class="text-[9px] font-black uppercase tracking-widest text-slate-400">Navigation</span>
+        </div>
+        <!-- Portfolio has no project context — navTo is correct here -->
+        <button onclick="navTo('project-portfolio')" class="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 hover:text-primary font-semibold transition-colors">
+          <span class="material-symbols-outlined text-[20px]">grid_view</span>
+          <span>Tous les projets</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <nav class="flex-1 overflow-y-auto px-3 py-6 space-y-6">
+    <div>
+      <p class="nav-header px-3 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Principal</p>
+      <ul class="space-y-1">
+        <li>
+          <a href="#" onclick="navToWithParams('project-dashboard', {})" data-page="project-dashboard"
+             class="nav-item flex items-center gap-3 rounded-lg bg-primary/10 px-3 py-2.5 text-primary transition-all">
+            <span class="material-symbols-outlined text-[20px]">dashboard</span>
+            <span class="nav-text text-xs font-bold">Tableau de bord</span>
+          </a>
+        </li>
+      </ul>
+    </div>
+
+    <div>
+      <p class="nav-header px-3 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Outils Projet</p>
+      <ul class="space-y-1">
+        <li>
+          <a href="#" onclick="navToWithParams('locataires', {})" data-page="locataires"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">group</span>
+            <span class="nav-text">Info Batiments</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('planning', {})" data-page="planning"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">calendar_month</span>
+            <span class="nav-text">Planning</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('passage', {})" data-page="passage"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">mail</span>
+            <span class="nav-text">Avis de Passage</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('edl', {})" data-page="edl"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">assignment_turned_in</span>
+            <span class="nav-text">EDL</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('travaux', {})" data-page="travaux"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">construction</span>
+            <span class="nav-text">Travaux</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('sous-traitants', {})" data-page="sous-traitants"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">engineering</span>
+            <span class="nav-text">Sous-Traitants</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('auto-controles', {})" data-page="auto-controles"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">fact_check</span>
+            <span class="nav-text">Auto contrôles</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('avancement', {})" data-page="avancement"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">trending_up</span>
+            <span class="nav-text">Avancement</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('opr', {})" data-page="opr"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">rule</span>
+            <span class="nav-text">OPR</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('synoptiques', {})" data-page="synoptiques"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">account_tree</span>
+            <span class="nav-text">Synoptiques</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('reserves', {})" data-page="reserves"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">warning</span>
+            <span class="nav-text">Réserves</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('quitus', {})" data-page="quitus"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">verified</span>
+            <span class="nav-text">Quitus</span>
+          </a>
+        </li>
+        <li>
+          <!-- FIX: data-page was "quitus" — corrected to "rapport" -->
+          <a href="#" onclick="navToWithParams('rapport', {})" data-page="rapport"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">assessment</span>
+            <span class="nav-text">Rapport</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('reclamations', {})" data-page="reclamations"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">feedback</span>
+            <span class="nav-text">Réclamations</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('satisfaction', {})" data-page="satisfaction"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">sentiment_satisfied</span>
+            <span class="nav-text">Satisfaction</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('plans', {})" data-page="plans"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">architecture</span>
+            <span class="nav-text">Plans</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" onclick="navToWithParams('documents', {})" data-page="documents"
+            class="nav-item flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+            <span class="material-symbols-outlined">description</span>
+            <span class="nav-text">Documents</span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="border-t border-slate-100 p-3 flex flex-col gap-1">
+    <div id="navUsers" class="hidden">
+      <a href="#" onclick="navToWithParams('users', {})" data-page="users"
+        class="nav-item nav-item-special flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+        <span class="material-symbols-outlined">group_add</span>
+        <span class="nav-text text-xs font-medium">Utilisateurs</span>
+      </a>
+    </div>
+    <div id="navSettings" class="hidden">
+      <a href="#" onclick="navToWithParams('settings', {})" data-page="settings"
+        class="nav-item nav-item-special flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+        <span class="material-symbols-outlined">settings</span>
+        <span class="nav-text text-xs font-medium">Paramètres</span>
+      </a>
+    </div>
+    <!-- Support passes returnTo as a real param — navToWithParams stays as-is -->
+    <a href="#" onclick="navToWithParams('support', { returnTo: getCurrentPage() })" data-page="support"
+      class="nav-item nav-item-special flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+      <span class="material-symbols-outlined">help_outline</span>
+      <span class="nav-text text-xs font-medium">Support</span>
+    </a>
+  </div>
+</aside>
+
+<script>
+  const companyName = APP_DATA.companyName;
+  document.getElementById('company-name').innerText = companyName;
+
+  function highlightActivePage() {
+    const currentPage = (typeof APP_DATA !== 'undefined' && APP_DATA.page)
+                       ? APP_DATA.page.toLowerCase()
+                       : 'project-dashboard';
+
+    document.querySelectorAll('.nav-item').forEach(link => {
+      const linkPage = link.getAttribute('data-page');
+      if (linkPage === currentPage) {
+        link.classList.remove('text-slate-600', 'hover:bg-slate-50');
+        link.classList.add('bg-primary/10', 'text-primary', 'font-bold');
+      } else {
+        link.classList.remove('bg-primary/10', 'text-primary', 'font-bold');
+        link.classList.add('text-slate-600', 'hover:bg-slate-50');
+      }
+    });
+  }
+
+  function checkSidebarPermissions() {
+    if (typeof APP_DATA === 'undefined' || !APP_DATA.user) return;
+    // FIX: added .trim() to guard against whitespace in role cell
+    const role = (APP_DATA.user.role || '').trim().toLowerCase();
+    if (role === 'admin' || role === 'directeur') {
+      document.getElementById('navUsers')?.classList.remove('hidden');
+      document.getElementById('navSettings')?.classList.remove('hidden');
+    }
+  }
+
+  const sidebarEl = document.getElementById('mainSidebar');
+  if (localStorage.getItem('sidebarCollapsed') === 'true' && sidebarEl) {
+    sidebarEl.classList.add('collapsed');
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    highlightActivePage();
+    checkSidebarPermissions();
+  });
+</script>

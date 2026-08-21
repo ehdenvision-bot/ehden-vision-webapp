@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  
+  <!-- ExcelJS and FileSaver are lazy-loaded inside exportToExcel() — not needed here -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "corporate-blue": "#004595",
+            "primary-dark": "#0b4bc9",
+            "primary-light": "#eef4ff",
+            "background-light": "#f8f9fc",
+            "background-dark": "#101622",
+            surface: "#ffffff",
+            "text-main": "#0f172a",
+            "text-secondary": "#64748b",
+            "border-light": "#e2e8f0",
+          },
+          fontFamily: { sans: ["Inter", "sans-serif"] },
+        },
+      },
+    }
+  </script>
+
+  <style>
+    /* Scrollbars Customization */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    
+    .material-symbols-outlined { font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+    
+    /* UI Components */
+    .chip-active   { background:#ecfdf5; color:#047857; border-color:#a7f3d0; }
+    .chip-blocked  { background:#fef2f2; color:#b91c1c; border-color:#fecaca; }
+    .chip-ended    { background:#f1f5f9; color:#334155; border-color:#e2e8f0; }
+    .chip-archived { background:#f8fafc; color:#64748b; border-color:#e2e8f0; }
+    
+    .status-pill { 
+      display: inline-flex; align-items: center; gap: 0.375rem; border-radius: 9999px; 
+      padding: 0.25rem 0.75rem; font-size: 10px; font-weight: 700; border: 1px solid transparent;
+      box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); text-transform: uppercase;
+    }
+
+    /* Table Layout & Sticky Headers */
+    #dataTable thead { top: 0px !important; z-index: 80 !important; }
+
+    #dataTable thead th {
+      height: 48px; 
+      padding-top: 0; 
+      padding-bottom: 0; 
+      vertical-align: middle;
+      position: sticky; 
+      top: 0; 
+      z-index: 80; /* Same as thead */
+      background: white;
+    }
+
+    #dataTable td, #dataTable th {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding-left: 8px; padding-right: 8px; font-size: 12px; line-height: 1.25rem;
+    }
+
+    .sticky-subtitle-content {
+      position: sticky;
+      left: 10px;     /* Distance from the left edge of the visible area */
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      z-index: 70;    /* Above the TD background */
+      pointer-events: auto;
+    }
+
+    /* Fix the Editer Column (1st column) */
+    #dataTable th:nth-child(1), 
+    #dataTable td:nth-child(1) {
+      position: sticky;
+      left: 0;
+      z-index: 40;
+      background-color: white; 
+      border-right: 1px solid #e2e8f0;
+    }
+
+    /* Colonne 2 sticky (ID) SEULEMENT si la colonne Édition est présente */
+    #dataTable.has-edit-col th:nth-child(2), 
+    #dataTable.has-edit-col td:nth-child(2) {
+      position: sticky;
+      left: var(--sticky-col1-width, 70px);
+      z-index: 40;
+      background-color: white;
+      border-right: 2px solid #e2e8f0;
+    }
+
+    /* Sinon : colonne 2 normale */
+    #dataTable:not(.has-edit-col) th:nth-child(2),
+    #dataTable:not(.has-edit-col) td:nth-child(2) {
+      position: static;
+      left: auto;
+      z-index: auto;
+      background: inherit;
+      border-right: none;
+    }
+
+    /* Ensure headers stay above the fixed columns when scrolling vertically */
+    #dataTable thead th:nth-child(1) {
+      z-index: 90 !important;
+    }
+    #dataTable thead th:nth-child(2) {
+      z-index: 90 !important;
+    }
+
+    /* Add this to your <style> block [cite: 5] */
+    .sticky-group-label {
+      position: sticky;
+      left: 20px; /* Adjust this to move the text further right or left */
+      display: inline-block;
+      white-space: nowrap;
+      z-index: 60; /* Higher than the ID/Edit columns [cite: 16] */
+    }
+
+    /* Ensure the background row stays above normal rows but below headers */
+    tr.bg-indigo-50\/80 {
+      z-index: 60;
+    }
+
+    tr.bg-indigo-50\/80 td {
+      position: sticky;
+      top: 48px;      /* Stays below the header when scrolling down */
+      z-index: 60;    /* Higher than fixed columns (40) */
+      background-color: rgba(238, 242, 255, 0.98) !important;
+      backdrop-filter: blur(4px);
+      border-y: 1px solid #e0e7ff;
+      
+      /* IMPORTANT: Allow the inner div to stick horizontally */
+      overflow: visible !important; 
+    }
+
+    #dataTable {
+      table-layout: fixed !important; margin-left: auto; margin-right: auto;
+      width: 100%;
+      border-collapse: separate; overflow-y: auto;
+      scroll-padding-top: 48px; /* Removed the explicit height rule */
+    }
+
+    .overflow-x-auto { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #scrollContainer { scroll-padding-top: 150px; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Dropdown Multi-Select Styles */
+    .dropdown-menu {
+      display: none; position: absolute; top: 100%; left: 0; z-index: 120;
+      min-width: 180px; max-height: 250px; overflow-y: auto; background: white;
+      border: 1px solid #e2e8f0; border-radius: 12px;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin-top: 4px;
+    }
+    .dropdown-menu.show { display: block; }
+    .dropdown-item { display: flex; align-items: center; padding: 8px 12px; cursor: pointer; font-size: 12px; transition: background 0.2s; }
+    .dropdown-item:hover { background: #f8fafc; }
+    .dropdown-item input { margin-right: 10px; border-radius: 4px; color: #0d59f2; cursor: pointer; }
+
+    /* Scroll Area Customization */
+    #scrollArea { overflow-y: scroll; scrollbar-width: thin; scrollbar-color: #0d59f2 #f1f5f9; }
+    #scrollArea::-webkit-scrollbar { width: 8px; display: block; }
+    #scrollArea::-webkit-scrollbar-track { background: #f8fafc; border-left: 1px solid #e2e8f0; }
+    #scrollArea::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; border: 2px solid #f8fafc; }
+    #scrollArea::-webkit-scrollbar-thumb:hover { background-color: #0d59f2; }
+
+    /* The row highlight - Soft Green */
+    .row-highlight td {
+      background-color: #dcfce7 !important; 
+    }
+
+    /* Force the sticky/fixed columns to be green too 
+     (Adjust the class name if your sticky column is named differently) */
+    .row-highlight .sticky, 
+    .row-highlight .sticky-col,
+    .row-highlight th {
+      background-color: #dcfce7 !important;
+    }
+  
+    /* Optional: Border to make it pop more */
+    .row-highlight td {
+      border-top: 1px solid #22c55e !important;
+      border-bottom: 1px solid #22c55e !important;
+    }
+
+  </style>
+</head>
+
+<body class="min-w-[1300px] overflow-x-auto bg-white text-text-main font-sans antialiased flex h-screen">  
+
+  <?!= include_('ClientLib', data); ?>
+  <?!= include_('Sidebar') ?>
+  
+  <div class="flex flex-col flex-1 min-w-0 bg-white">
+    
+    <?!= include_('Header') ?>
+
+    <main class="flex-1 bg-slate-50 flex flex-col min-h-0">
+
+      <div id="stickyTop" class="sticky top-0 z-[100] bg-slate-50">
+        <div class="mx-auto max-w-[1600px] px-6 pt-3 pb-3 lg:px-8 lg:pt-3 sticky top-0 bg-white z-[100] rounded-b-2xl shadow-sm">
+          <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap gap-4 items-end">
+            
+            <div class="relative flex-1 min-w-[200px]">
+              <label class="text-[9px] font-black text-slate-400 uppercase ml-1 mb-1 block">Recherche</label>
+              <span class="material-symbols-outlined absolute left-3 bottom-2 text-slate-400">search</span>
+              <input type="text" id="globalSearch" oninput="renderTable()" placeholder="Filtrer..." 
+                     class="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl focus:ring-2 focus:ring-primary text-sm">
+            </div>
+
+            <button id="resetFiltersBtn" onclick="resetAllFilters()" class="hidden px-3 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1">
+              <span class="material-symbols-outlined !text-[14px]">filter_alt_off</span>
+              Effacer
+            </button>
+  
+            <div class="flex flex-wrap gap-3" id="filterArea">
+              <div class="flex flex-col relative" id="drop-batiment"></div>
+              <div class="flex flex-col relative" id="drop-hall"></div>
+              <div class="flex flex-col relative" id="drop-etage"></div>
+              <div class="flex flex-col relative" id="drop-empilement"></div>
+              <div class="flex flex-col relative" id="drop-typeLog"></div>
+              <div class="flex flex-col relative" id="drop-configLogement"></div>
+              <div class="flex flex-col relative" id="drop-description"></div>
+              <div class="flex flex-col relative" id="drop-orientation"></div>
+              <div class="flex flex-col relative" id="drop-trame"></div>
+              <div class="flex flex-col relative" id="drop-type"></div>
+            </div>
+
+            <div class="flex items-center gap-2 ml-auto self-center">
+              <div id="statsCount" class="px-4 py-2 bg-primary text-white rounded-lg text-[10px] font-black uppercase tracking-widest">
+                Chargement...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="scrollArea" class="flex-1 overflow-y-auto relative">
+        <table class="w-full table-fixed border-separate border-spacing-0" id="dataTable">
+          <thead id="tableHeader" class="sticky top-0 z-20 bg-white shadow-sm ring-1 ring-slate-200">
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </main>
+
+    <div id="editModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+      <div class="bg-white rounded-3xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden scale-95 transition-transform duration-200" id="modalContainer">
+        
+        <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+          <div>
+            <h3 class="text-lg font-black text-slate-900 uppercase">Fiche Occupant</h3>
+            <p id="modalSubId" class="text-[10px] text-primary font-black uppercase tracking-widest"></p>
+          </div>
+          <button onclick="closeModal()" class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-slate-200 transition-colors">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto p-6">
+          <form id="editForm" class="space-y-3" onsubmit="handleSave(event)">
+            <input type="hidden" id="field-id">
+            
+            <div id="contact-fields-section" class="space-y-3">
+              <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-1">
+                  <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Nom (Famille)</label>
+                  <input type="text" id="field-nom" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary uppercase font-bold text-slate-700">
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Prénom</label>
+                  <input type="text" id="field-prenom" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700">
+                </div>
+              </div>
+              
+              <div class="space-y-1">
+                <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Email 1</label>
+                <input type="email" id="field-email" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700">
+              </div>
+              
+              <div class="space-y-1">
+                <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Email 2</label>
+                <input type="email" id="field-email2" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700">
+              </div>
+              
+              <div class="grid grid-cols-3 gap-4">
+                <div class="space-y-1">
+                  <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Tél Fixe</label>
+                  <input type="text" id="field-fixe" oninput="formatPhoneInput(this)" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700 text-sm">
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Portable 1</label>
+                  <input type="text" id="field-port1" oninput="formatPhoneInput(this)" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700 text-sm">
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Portable 2</label>
+                  <input type="text" id="field-port2" oninput="formatPhoneInput(this)" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700 text-sm">
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-slate-200 mt-3 pt-3 space-y-3">
+              <h4 class="text-[11px] font-black text-primary uppercase flex items-center gap-1"><span class="material-symbols-outlined !text-[16px]">calendar_month</span> Suivi & Planning</h4>
+              
+              <div class="space-y-1">
+                <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Statut</label>
+                <select id="field-plan-status" onchange="updateSelectBg(this)" class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-primary font-bold text-slate-700 text-sm transition-colors bg-white">
+                  <option value="" class="bg-white text-slate-900">Aucun</option>
+                  <option value="Info" class="bg-blue-200 text-slate-900">Info</option>
+                  <option value="Attention" class="bg-orange-200 text-slate-900">Attention</option>
+                  <option value="Bloquant" class="bg-red-400 text-slate-900">Bloquant</option>
+                </select>
+              </div>
+        
+              <div class="space-y-1">
+                <label class="text-[10px] font-black text-slate-400 uppercase ml-1">Note</label>
+                <textarea id="field-plan-note" rows="2" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary font-medium text-slate-700 text-xs resize-none"></textarea>
+              </div>
+        
+              <div class="space-y-1" id="plan-private-container">
+                <label class="text-[10px] font-black text-rose-400 uppercase ml-1 flex items-center gap-1">
+                  <span class="material-symbols-outlined !text-[12px]">lock</span> Privée
+                </label>
+                <textarea id="field-plan-private" rows="2" class="w-full px-4 py-2 rounded-xl border-rose-200 focus:ring-rose-500 bg-rose-50/30 font-medium text-slate-700 text-xs resize-none"></textarea>
+              </div>
+            </div>
+          </form>
+        </div>
+        
+        <div class="p-6 border-t border-slate-100 bg-white shrink-0 flex gap-4">
+          <button type="button" onclick="closeModal()" class="flex-1 py-3 rounded-xl font-black text-slate-500 hover:bg-slate-100 transition-all uppercase text-xs tracking-widest">Annuler</button>
+          <button type="submit" form="editForm" id="saveBtn" class="flex-1 py-3 rounded-xl font-black bg-primary text-white hover:shadow-xl hover:shadow-primary/30 transition-all uppercase text-xs tracking-widest">Enregistrer</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  
+  <?!= include_('Locataires_Scripts') ?>
+  <?!= include_('GlobalNavModal') ?>
+
+</body>
+</html>

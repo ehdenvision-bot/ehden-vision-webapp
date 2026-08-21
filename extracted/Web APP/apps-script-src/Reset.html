@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Nouveau mot de passe | Ehden Vision</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700" rel="stylesheet">
+
+  <script id="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0d59f2",
+            "primary-hover": "#0b4ecf",
+            "background-light": "#f5f6f8",
+          },
+          fontFamily: { display: ["Inter", "sans-serif"] },
+        },
+      },
+    };
+  </script>
+
+  <script>
+    /**
+     * Captures the reset token passed from the server-side render_() function.
+     * This is a one-time-use token stored in CacheService — not a session token.
+     */
+    const DATA  = <?!= JSON.stringify(data) ?>;
+    const token = DATA.resetToken;
+  </script>
+</head>
+
+<body class="bg-background-light min-h-screen flex items-center justify-center p-6 font-display">
+
+  <div class="w-full max-w-md">
+
+    <div class="flex items-center justify-center gap-3 mb-8">
+      <div class="size-10 flex items-center justify-center text-primary bg-white rounded-xl shadow-sm border border-slate-100">
+        <span class="material-symbols-outlined text-2xl">lock_reset</span>
+      </div>
+      <h2 class="text-xl font-bold tracking-tight text-slate-900">
+        <span id="company-name">...</span>
+      </h2>
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-xl shadow-slate-200/50 p-8">
+
+      <div class="mb-6">
+        <h1 class="text-2xl font-bold text-slate-900 mb-2">Réinitialisation</h1>
+        <p class="text-slate-600 text-sm">
+          Définissez votre nouveau mot de passe. Le lien expire dans 1 heure.
+        </p>
+      </div>
+
+      <form id="form" class="space-y-5">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">Nouveau mot de passe</label>
+          <input id="p1" type="password" required minlength="8"
+                 class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                 placeholder="••••••••">
+          <p class="mt-1 text-xs text-slate-500">8 caractères minimum.</p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">Confirmer le mot de passe</label>
+          <input id="p2" type="password" required minlength="8"
+                 class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                 placeholder="••••••••">
+        </div>
+
+        <button id="submitBtn" type="submit"
+                class="w-full flex items-center justify-center gap-2 rounded-xl h-11 px-6 bg-primary 
+                       hover:bg-primary-hover text-white font-semibold shadow-lg shadow-blue-500/20 transition-all">
+          <span>Mettre à jour</span>
+          <span class="material-symbols-outlined text-lg">check_circle</span>
+        </button>
+      </form>
+
+      <div class="mt-6 pt-6 border-t border-slate-100 flex flex-col items-center justify-center w-full gap-3">
+        <a href="<?= getScriptUrl() ?>?page=login" target="_top"
+           class="inline-flex items-center gap-1 text-sm text-primary hover:text-primary-hover font-medium">
+          <span class="material-symbols-outlined text-base">arrow_back</span>
+          <span class="underline underline-offset-4">Retour à la connexion</span>
+        </a>
+      </div>
+    </div>
+
+    <p class="mt-8 text-center text-xs text-slate-400">
+      &copy; 2026 Ehden Vision. Tous droits réservés.
+    </p>
+  </div>
+
+  <?!= include_('ClientLib', data); ?>
+
+  <script>
+    const companyName = APP_DATA.companyName;
+    document.getElementById('company-name').innerText = companyName;
+
+    /**
+     * Updates the UI message box with custom text and styling.
+     */
+    function showMessage(txt, isError = false) {
+      const msgDiv = document.getElementById('message');
+      msgDiv.textContent = txt;
+      msgDiv.className = "mt-6 text-sm text-center " + (isError ? "text-red-500 font-medium" : "text-emerald-600 font-medium");
+    }
+
+    /**
+     * Form Submission Handler
+     * Calls gsResetPassword(token, newPassword) — token is the one-time reset token,
+     * not a session token. No authentication is required for this action by design.
+     */
+    document.getElementById('form').addEventListener('submit', function(e){
+      e.preventDefault();
+
+      const btn = document.getElementById('submitBtn');
+      const p1 = document.getElementById('p1').value;
+      const p2 = document.getElementById('p2').value;
+
+      // Local Validation using Toast
+      if (p1.length < 8) {
+        return showToast('Attention', 'warning', 'Le mot de passe doit faire au moins 8 caractères.');
+      }
+
+      if (p1 !== p2) {
+        return showToast('Attention', 'warning', 'Les mots de passe ne sont pas identiques.');
+      }
+
+      // UI Loading State using showLoading
+      showLoading('Veuillez patienter', 'Enregistrement de votre nouveau mot de passe…');
+      
+      btn.disabled = true;
+      btn.classList.add('opacity-60', 'cursor-not-allowed');
+
+      // Server-side call: gsResetPassword(token, newPassword)
+      google.script.run
+        .withSuccessHandler(function(){
+          showToast('Succès', 'success', 'Redirection en cours...');
+          
+          // Redirect after short delay
+          setTimeout(() => {
+            if (typeof navTo === "function") {
+              navTo('login');
+            } else {
+              window.top.location.href = '?page=login';
+            }
+          }, 2000);
+        })
+        .withFailureHandler(function(err){
+          // Reset UI and showModal on failure
+          showModal({ icon: 'error', title: 'Erreur', text: err.message || "Erreur lors de la réinitialisation." });
+          btn.disabled = false;
+          btn.classList.remove('opacity-60', 'cursor-not-allowed');
+          appErrorLog(err, "gsResetPassword", { tokenUsed: token });
+        })
+        .gsResetPassword(token, p1);
+    });
+  </script>
+
+</body>
+</html>

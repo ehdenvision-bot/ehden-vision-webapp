@@ -1,0 +1,4243 @@
+<script>
+
+  // =========================================================
+  // 1. DUAL SELECTION ENGINE (BULK VS GRANULAR) & ACCESSIBILITY
+  // =========================================================
+  document.addEventListener('DOMContentLoaded', () => {
+    const tbody = document.querySelector(".gantt-table tbody");
+    if (!tbody) return;
+
+    tbody.addEventListener('click', function(e) {
+      
+      // ---------------------------------------------------------
+      // 1. DROPDOWN PROTECTION LOGIC
+      // ---------------------------------------------------------
+      // Si des menus sont ouverts et qu'on clique dans le tableau, 
+      // on bloque l'action de sélection pour laisser le script global fermer le menu.
+      const openMenus = document.querySelectorAll('div[id^="list-"]:not(.hidden), #detailsMenu:not(.hidden), #settingsMenu:not(.hidden), #userMenu:not(.hidden), #navMenu:not(.hidden)');
+      
+      if (openMenus.length > 0) {
+        let isInsideMenuOrTrigger = false;
+        
+        // Vérifie si le clic provient du menu lui-même ou de son bouton d'ouverture
+        if (e.target.closest('div[id^="list-"]') || e.target.closest('button[onclick^="toggleFilterDropdown"]')) isInsideMenuOrTrigger = true;
+        if (e.target.closest('#detailsMenu') || e.target.closest('button[onclick*="detailsMenu"]')) isInsideMenuOrTrigger = true;
+        if (e.target.closest('#settingsMenu') || e.target.closest('button[onclick*="toggleSettingsMenu"]')) isInsideMenuOrTrigger = true;
+        if (e.target.closest('#userMenu') || e.target.closest('#userMenuBtn')) isInsideMenuOrTrigger = true;
+        if (e.target.closest('#navMenu') || e.target.closest('#navMenuBtn')) isInsideMenuOrTrigger = true;
+
+        if (!isInsideMenuOrTrigger) {
+          // Clic à l'extérieur : on stoppe le script pour ne pas surligner la ligne
+          return; 
+        }
+      }
+
+      if (window.isEditModeActive) {
+        // --- GRANULAR EDIT MODE (PRESERVED) ---
+        const taskPill = e.target.closest('.task-pill');
+        const dot = e.target.closest('.greedy-dot');
+        const stickyCell = e.target.closest('.sticky-col');
+
+        let clickedElement = null;
+
+        if (taskPill) {
+           clickedElement = taskPill;
+           handleGranularSelection('task', taskPill);
+        } else if (dot) {
+           clickedElement = dot;
+           handleGranularSelection('dot', dot);
+        } else if (stickyCell) {
+           const tr = stickyCell.closest('tr');
+           const idCell = tr.querySelector('.sticky-id');
+           if (idCell) {
+             clickedElement = idCell;
+             handleGranularSelection('id', idCell);
+           }
+        }
+        
+        // --- Apply Highlight ---
+        if (clickedElement) {
+           document.querySelectorAll('.active-edit-item').forEach(el => {
+               el.classList.remove('active-edit-item', 'active-edit-sticky', 'active-edit-grid');
+           });
+
+           clickedElement.classList.add('active-edit-item');
+           if (stickyCell) {
+               clickedElement.classList.add('active-edit-sticky');
+           } else {
+               clickedElement.classList.add('active-edit-grid');
+           }
+
+           if (taskPill) {
+            const dateISO = taskPill.closest('td').getAttribute('data-date');
+            window.currentSelectionId = `task|${taskPill.dataset.logid}|${taskPill.dataset.task}|${dateISO}`;
+          } else if (dot) {
+            window.currentSelectionId = `dot|${dot.getAttribute('data-inter-id')}`;
+          } else if (stickyCell) {
+            const tr = clickedElement.closest('tr');
+            window.currentSelectionId = `id|${tr.getAttribute('data-id')}`;
+          }
+        }
+        return;
+      } else {
+        // --- DEFAULT BULK MODE ---
+        const td = e.target.closest('td.cell-day');
+        const stickyCellNormal = e.target.closest('.sticky-col');
+        
+        // ---------------------------------------------------------
+        // 2. TABLE ROW HIGHLIGHT LOGIC (With Multi-Select)
+        // ---------------------------------------------------------
+        if (stickyCellNormal) {
+          const tr = stickyCellNormal.closest('tr');
+          if (tr) {
+            const isMultiSelect = e.ctrlKey || e.metaKey; // Windows(Ctrl) ou Mac(Cmd)
+            
+            if (isMultiSelect) {
+              // Mode multi-sélection : on bascule juste cette ligne
+              tr.classList.toggle('row-highlight');
+            } else {
+              // Mode standard : sélection unique
+              const allHighlighted = document.querySelectorAll('tr.row-highlight');
+              if (tr.classList.contains('row-highlight') && allHighlighted.length === 1) {
+                tr.classList.remove('row-highlight');
+              } else {
+                allHighlighted.forEach(row => row.classList.remove('row-highlight'));
+                tr.classList.add('row-highlight');
+              }
+            }
+          }
+        }
+    
+        // ---------------------------------------------------------
+        // SELECTION DES CELLULES DE DATES (MODIFIED)
+        // ---------------------------------------------------------
+        if (!td) return;
+        if (e.ctrlKey || e.metaKey) {
+          td.classList.toggle('selected-cell');
+        } else {
+          const currentlySelected = document.querySelectorAll('.selected-cell');
+          const isAlreadySelected = td.classList.contains('selected-cell');
+
+          if (isAlreadySelected && currentlySelected.length === 1) {
+            // Deselect if it's the exact same single cell being clicked again
+            td.classList.remove('selected-cell');
+          } else {
+            // Otherwise, clear the board and select the clicked cell
+            currentlySelected.forEach(c => c.classList.remove('selected-cell'));
+            td.classList.add('selected-cell');
+          }
+        }
+      }
+    });
+  });
+
+  // Fonction utilitaire pour récupérer les cellules sélectionnées (EXISTING)
+  function getSelectedCellsData() {
+    const selected = document.querySelectorAll('.selected-cell');
+    let data = [];
+    selected.forEach(td => {
+      const tr = td.closest('tr');
+      data.push({
+        logementId: tr.getAttribute('data-id'),
+        date: td.getAttribute('data-date'),
+        isWorking: td.getAttribute('data-working') === "1"
+      });
+    });
+    return data;
+  }
+
+  // ---------------------------------------------------------
+  // 3. KEYBOARD ACCESSIBILITY (ESC KEY LOGIC)
+  // ---------------------------------------------------------
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' || e.key === 'Esc') {
+      
+      // 1. Fermer tous les menus déroulants
+      const openMenus = document.querySelectorAll('div[id^="list-"]:not(.hidden), #detailsMenu:not(.hidden), #settingsMenu:not(.hidden)');
+      openMenus.forEach(menu => {
+          menu.classList.add('hidden');
+      });
+
+      // Si on a fermé des filtres, on s'assure de réinitialiser l'état verrouillé/déverrouillé
+      if (openMenus.length > 0) {
+         populateFilterOptions(true);
+      }
+
+      // 2. Retirer les surlignages de lignes (Row highlight)
+      document.querySelectorAll('.row-highlight').forEach(row => {
+        row.classList.remove('row-highlight');
+      });
+
+      // 3. Retirer les sélections des pastilles du calendrier (Cell highlight)
+      document.querySelectorAll('.selected-cell').forEach(cell => {
+        cell.classList.remove('selected-cell');
+      });
+    }
+  });
+
+
+  // =========================================================
+  // 2. APPLICATION TÂCHE / CYCLE
+  // =========================================================
+
+  function handleSelectChange(source) {
+  const selectId = source === 'top' ? 'add-component-select' : 'add-component-select-sidebar';
+  const containerId = source === 'top' ? 'ampm-container-top' : 'ampm-container-sidebar';
+  const radioName = source === 'top' ? 'ampm-top' : 'ampm-sidebar';
+  const durationInputId = source === 'top' ? 'custom-duration-top' : 'custom-duration-sidebar';
+
+  const select = document.getElementById(selectId);
+  const container = document.getElementById(containerId);
+  const durationInput = document.getElementById(durationInputId);
+
+  if (!select || !container) return;
+
+  const selectedValue = select.value;
+  const radios = container.querySelectorAll(`input[name="${radioName}"]`);
+
+  // Block menus if a cycle is selected or if nothing is selected
+  if (!selectedValue || selectedValue.startsWith('CYCLE|')) {
+    container.classList.add('opacity-50', 'pointer-events-none');
+    radios.forEach(r => r.disabled = true);
+    if (durationInput) {
+      durationInput.disabled = true;
+      durationInput.value = "";
+    }
+    return;
+  }
+
+  // It's a Task: Allow duration editing and auto-fill
+  const abbr = selectedValue.split('|')[1];
+  const task = window.currentTasksData.find(t => t.abbr === abbr);
+
+  if (task) {
+    if (durationInput) {
+      durationInput.disabled = false;
+      durationInput.value = task.duree || 1;
+    }
+    
+    // Unlock AM/PM only if the task unit is AM/PM
+    if (task.unite === 'AM/PM') {
+      container.classList.remove('opacity-50', 'pointer-events-none');
+      radios.forEach(r => r.disabled = false);
+    } else {
+      container.classList.add('opacity-50', 'pointer-events-none');
+      radios.forEach(r => r.disabled = true);
+    }
+  }
+}
+
+  function applyIntervention(source) {
+    const selectId = source === 'top' ? 'add-component-select' : 'add-component-select-sidebar';
+    const radioName = source === 'top' ? 'ampm-top' : 'ampm-sidebar';
+    const select = document.getElementById(selectId);
+    if (!select) return;
+
+    const selectedValue = select.value;
+    if (!selectedValue) {
+      showModal({
+        icon: 'warning',
+        title: 'Attention',
+        text: 'Veuillez sélectionner une Tâche ou un Cycle à ajouter.'
+      });
+    }
+
+    const selectedCells = getSelectedCellsData();
+    if (selectedCells.length === 0) {
+      return;
+    }
+
+    // --- VÉRIFICATION DES JOURS NON OUVRÉS ---
+    const hasNonWorking = selectedCells.some(cell => !cell.isWorking);
+    if (hasNonWorking) {
+      return showModal({
+        icon: 'warning',
+        title: 'Jour non ouvré sélectionné',
+        html: 'Vous avez cliqué sur un jour non ouvré (ex: week-end). Veuillez sélectionner uniquement des jours travaillés.'
+      });
+    }
+
+    const isTask = selectedValue.startsWith('TASK|');
+    let itemName = selectedValue.split('|')[1];
+    let customDuree = null;
+
+    if (isTask) {
+      const durationInput = document.getElementById(source === 'top' ? 'custom-duration-top' : 'custom-duration-sidebar');
+      if (durationInput && durationInput.value) {
+        customDuree = parseInt(durationInput.value, 10);
+      }
+
+      const task = window.currentTasksData.find(t => t.abbr === itemName);
+      if (task && task.unite === 'AM/PM') {
+        const checkedRadio = document.querySelector(`input[name="${radioName}"]:checked`);
+        if (checkedRadio) {
+          itemName += "@" + checkedRadio.value;
+        }
+      }
+    }
+
+    // Préparation du paquet de données
+    const payload = {
+      type: isTask ? 'task' : 'cycle',
+      itemName: itemName, // C'est ici que "PLOMB@AM" ou juste "PLOMB" est envoyé au serveur
+      cells: selectedCells,
+      currentView: window.currentView,
+      customDuree: customDuree
+    };
+
+    showLoading('Analyse en cours...');
+
+    google.script.run
+      .withSuccessHandler(handleInterventionAnalysis)
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur Système',
+          text: err.message
+        });
+        appErrorLog(err, "applyIntervention", {
+          source: source,
+          payloadSent: payload,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsAnalyzeIntervention(APP_DATA.token, payload);
+  }
+
+  async function handleInterventionAnalysis(response) {
+    if (!response || !response.success) {
+      showModal({
+        icon: 'error',
+        title: 'Réponse invalide',
+        text: response && response.error ? response.error : 'Erreur Backend'
+      });
+    }
+
+    let actionsToExecute = response.validActions || [];
+    // Par défaut, les actions valides sont en mode 'replace'
+    actionsToExecute.forEach(a => a.mode = 'replace');
+
+    const conflicts = response.conflicts || [];
+
+    if (conflicts.length > 0) {
+      for (const conflict of conflicts) {
+        let htmlContent = `
+          <div class="text-left text-sm mb-3">La tâche <b>${conflict.baseTask}</b> est déjà planifiée pour le logement <b>${conflict.logementId}</b>.</div>
+          <div class="bg-slate-50 p-2 rounded border border-slate-200 mb-3 text-left">
+            <div class="text-xs text-slate-500 font-bold uppercase">Dates au récap :</div>
+            <div class="text-sm text-primary font-mono">${conflict.oldValue || "Aucune"}</div>
+            <div class="text-xs text-slate-500 font-bold uppercase mt-2">Statut actuel :</div>
+            <div class="text-sm text-amber-600">${conflict.status}</div>`;
+
+        if (conflict.note) {
+          htmlContent += `
+            <div class="text-xs text-slate-500 font-bold uppercase mt-2">Note actuelle :</div>
+            <div class="text-sm text-blue-600">${conflict.note}</div>
+          </div>
+          <div class="text-left text-sm font-bold text-slate-700 mb-2">Que voulez-vous faire ?</div>
+          <div class="text-left space-y-2 text-sm">
+            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="swal-action" value="replace_clear" checked> Remplacer (Effacer la note)</label>
+            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="swal-action" value="replace_keep"> Remplacer (Garder la note)</label>
+            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="swal-action" value="keep_both"> Garder les deux planifications</label>
+          </div>`;
+        } else {
+          htmlContent += `
+          </div>
+          <div class="text-left text-sm font-bold text-slate-700 mb-2">Que voulez-vous faire ?</div>
+          <div class="text-left space-y-2 text-sm">
+            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="swal-action" value="replace_clear" checked> Remplacer</label>
+            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="swal-action" value="keep_both"> Garder les deux</label>
+          </div>`;
+        }
+
+        const result = await showModal({
+          icon: 'warning',
+          title: 'Tâche déjà présente',
+          html: htmlContent,
+          showCancelButton: true,
+          confirmButtonText: 'Valider',
+          cancelButtonText: 'Annuler',
+          preConfirm: () => {
+            const checked = document.querySelector('input[name="swal-action"]:checked');
+            return checked ? checked.value : 'replace_clear';
+          }
+        });
+
+        if (result.isConfirmed) {
+          const actionType = result.value;
+          if (actionType === 'replace_clear') {
+            conflict.mode = 'replace';
+            conflict.noteAction = 'clear';
+          } else if (actionType === 'replace_keep') {
+            conflict.mode = 'replace';
+            conflict.noteAction = 'keep';
+          } else if (actionType === 'keep_both') {
+            conflict.mode = 'keep';
+            conflict.noteAction = 'keep';
+          }
+          actionsToExecute.push(conflict);
+        }
+      }
+    }
+
+    if (actionsToExecute.length === 0) return;
+
+    const affectedLogIds = [...new Set(actionsToExecute.map(a => a.logementId))];
+
+    showLoading('Planification...');
+
+    google.script.run
+      .withSuccessHandler(() => {
+        updateLocalCacheAfterAddition(actionsToExecute);
+        
+        affectedLogIds.forEach(logId => {
+          refreshSingleRowDOM(logId);
+        });
+        
+        document.querySelectorAll('.selected-cell').forEach(c => c.classList.remove('selected-cell'));
+        showToast('Planifié');
+
+        appLog(
+          window.currentView,
+          "bulk-apply",
+          "APPLICATION_EN_MASSE",
+          "Private",
+          "Detail",
+          {
+            nombreActions: actionsToExecute.length,
+            nombreLogements: affectedLogIds.length,
+            logementsAffectes: affectedLogIds
+          }
+        );
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "gsExecuteIntervention", {
+          response: response,
+          actionsCount: actionsToExecute.length,
+          affectedLogIds: affectedLogIds,
+          currentview : window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsExecuteIntervention(APP_DATA.token, actionsToExecute, window.currentView);
+  }
+
+  function updateLocalCacheAfterAddition(actions) {
+    if (!window.lastPlanningData || !window.lastPlanningData.planning) return;
+    const dates = window.lastPlanningData.headers.dates;
+
+    actions.forEach(action => {
+      const row = window.lastPlanningData.planning.find(p => String(p.id).trim() === String(action.logementId).trim());
+      if (!row) return;
+
+      if (action.mode === 'replace') {
+        for (let i = 0; i < row.tasks.length; i++) {
+          if (row.tasks[i]) {
+            let cellTasks = String(row.tasks[i]).split('|').map(t => t.trim()).filter(t => t.length > 0);
+            cellTasks = cellTasks.filter(t => t.split('@')[0].trim() !== action.baseTask);
+            row.tasks[i] = cellTasks.join(' | ');
+          }
+        }
+      }
+
+      let validDates = (action.allDates && Array.isArray(action.allDates)) ? action.allDates : [action.newDate];
+      validDates.forEach(dateStr => {
+        // SÉCURITÉ "OUT OF BOUNDS" : On cherche l'index de la date
+        const dateIdx = dates.indexOf(dateStr);
+      
+        // Si dateIdx === -1, la date est HORS de la fenêtre de 50 jours.
+        // Le code ignore simplement l'ajout visuel. Pas de crash !
+        if (dateIdx !== -1) {
+          let cellTasks = row.tasks[dateIdx] ? String(row.tasks[dateIdx]).split('|').map(t => t.trim()).filter(t => t.length > 0) : [];
+          if (!cellTasks.some(t => t.split('@')[0].trim() === action.baseTask)) {
+            cellTasks.push(action.task);
+            row.tasks[dateIdx] = cellTasks.join(' | ');
+          }
+        }
+      });
+
+      if (action.noteAction === 'clear' && window.lastPlanningData.notes && window.lastPlanningData.notes[action.logementId]) {
+        delete window.lastPlanningData.notes[action.logementId][action.baseTask];
+      }
+    });
+  }
+
+
+  // =========================================================
+  // 3. Export to XLSX file
+  // =========================================================
+
+  async function exportToExcel() {
+    if (!window.projectStart || !window.projectEnd) {
+      showModal({
+        icon: 'error',
+        title: 'Erreur',
+        text: 'Dates du projet introuvables.'
+      });
+      return;
+    }
+
+    // Lazy-load ExcelJS only when the user triggers export
+    if (typeof ExcelJS === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('Impossible de charger ExcelJS.'));
+        document.head.appendChild(s);
+      });
+    }
+
+    showToast('Préparation du fichier Excel...', 'info', 'Export en arrière-plan, vous pouvez continuer à travailler.', 4000);
+
+    google.script.run
+      .withSuccessHandler(async (fullData) => {
+        try {
+          const workbook = new ExcelJS.Workbook();
+          const worksheet = workbook.addWorksheet('Planning');
+          const currentCols = window.viewConfigs[window.currentView] || [];
+          
+          // 1. Define Excel Columns dynamically based on view
+          let excelCols = [];
+          currentCols.forEach(col => {
+            if (window.currentView === 'communs' && col.id === 'description') {
+              excelCols.push({ header: 'Description', key: 'description_part1', width: 20 });
+              excelCols.push({ header: 'Référence', key: 'description_part2', width: 15 });
+            } 
+            else if (window.currentView === 'locataires' && col.id === 'type') {
+              excelCols.push({ header: 'Type', key: 'type1', width: 8 });
+            } 
+            else if (window.currentView === 'facades' && col.id === 'trame') {
+              excelCols.push({ header: 'Trame', key: 'trame_part1', width: 10 });
+            } 
+            else if (window.currentView === 'locataires' && col.id === 'nom') {
+              excelCols.push({ header: 'Nom', key: 'nom', width: 15 });
+              excelCols.push({ header: 'Prénom', key: 'prenom', width: 15 });
+            } 
+            else {
+              excelCols.push({ header: col.label, key: col.id, width: col.width / 7 });
+            }
+          });
+
+          const dates = fullData.headers.dates || [];
+          dates.forEach(d => excelCols.push({ header: d, key: d, width: 6 }));
+          worksheet.columns = excelCols;
+
+          // 2. Populate Rows
+          fullData.planning.forEach(rowData => {
+            const meta = fullData.logements[rowData.id] || {};
+            const rowValue = {};
+            
+            excelCols.forEach(col => {
+              if (meta[col.key] !== undefined) {
+                rowValue[col.key] = meta[col.key];
+              } else {
+                // Map tasks to dates
+                const dateIdx = dates.indexOf(col.key);
+                if (dateIdx !== -1) {
+                  let rawTasks = String(rowData.tasks[dateIdx] || "");
+                  
+                  if (rawTasks) {
+                    // --- MODIFICATION 2 : Nettoyage pour ne garder que la Tâche + AM/PM ---
+                    let cleanedTasks = rawTasks.split('|').map(taskStr => {
+                      let parts = taskStr.split('@');
+                      let baseAbbr = parts[0].trim();
+                      // Garde uniquement le modificateur s'il s'agit de "AM" ou "PM"
+                      let ampm = (parts.length >= 2 && (parts[1] === "AM" || parts[1] === "PM")) ? `@${parts[1]}` : "";
+                      return baseAbbr + ampm;
+                    }).filter(t => t !== "").join(' | ');
+                    
+                    rowValue[col.key] = cleanedTasks;
+                  } else {
+                    rowValue[col.key] = "";
+                  }
+                }
+              }
+            });
+
+            const row = worksheet.addRow(rowValue);
+            
+            // 3. Centering Logic
+            row.eachCell((cell, colNumber) => {
+              const colDef = excelCols[colNumber - 1];
+              if (colDef.key !== 'id') {
+                cell.alignment = { horizontal: 'center', vertical: 'middle' };
+              }
+            });
+          });
+
+          // 4. Header Styling (Blue background, White text, Centered)
+          const headerRow = worksheet.getRow(1);
+          headerRow.height = 25;
+          headerRow.eachCell((cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D59F2' } };
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          });
+
+          worksheet.views = [{ state: 'frozen', xSplit: excelCols.length - dates.length, ySplit: 1 }];
+
+          const buffer = await workbook.xlsx.writeBuffer();
+          const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const link = document.createElement('a');
+          const today = new Date().toISOString().split('T')[0];
+          link.href = URL.createObjectURL(blob);
+          link.download = `Planning_${window.currentView}_${today}.xlsx`;
+          link.click();
+          
+          // Toast de succès final
+          showToast('Export terminé !');
+
+        } catch (e) {
+          showModal({
+            icon: 'error',
+            title: 'Erreur',
+            text: e.message
+          });
+          appErrorLog(e, "exportToExcel_ClientBuild", { 
+            context: "Crash durant la construction du Blob ExcelJS in planning page",
+            view: window.currentView,
+            projectId: PROJECT_ID || "Inconnu"
+          });
+        }
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: 'L\'export a échoué.'
+        });
+        appErrorLog(err, "exportToExcel", {
+          context: "Exportation en fichier Excel in planning page",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetPlanningWindow(APP_DATA.token, APP_DATA.projectId, toYMD(window.projectStart), toYMD(window.projectEnd), window.currentView, window.currentFilter || "", isClient);
+  }
+
+  // =========================================================
+  // 5. IMPRESSION
+  // =========================================================
+
+  function printPlanning() {
+    const projectName =
+      (typeof APP_DATA !== 'undefined' && APP_DATA.projectName)
+        ? APP_DATA.projectName
+        : 'Planning de Chantier';
+
+    const viewName = window.currentView || 'Standard';
+    const printDate = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit', month: '2-digit', year: 'numeric'
+    });
+
+    // Put final text into CSS variables (must include quotes)
+    const headerText = `${projectName} — ${viewName.toUpperCase()} — Imprimé le : ${printDate}`;
+    document.documentElement.style.setProperty('--print-header', `"${headerText}"`);
+    document.documentElement.style.setProperty('--print-footer', `""`); // or `"Confidentiel"` etc.
+
+    window.print();
+  }
+
+  // =========================================================
+  // 6. GESTION DES EQUIPES (Frontend)
+  // =========================================================
+
+  let currentEquipes = [];
+
+  function openEquipeListModal() {
+    document.getElementById('settingsMenu').classList.add('hidden');
+    resetEquipeUI();
+    document.getElementById('equipeModal').classList.remove('hidden');
+    loadEquipes();
+  }
+
+  function resetEquipeUI() {
+    const input = document.getElementById('new-equipe-input');
+    const indexHidden = document.getElementById('edit-equipe-index');
+    const saveBtn = document.querySelector('#equipeModal button[onclick="saveEquipe()"]');
+    const cancelBtn = document.getElementById('btn-cancel-equipe');
+
+    if (input) input.value = '';
+    if (indexHidden) indexHidden.value = '';
+    if (saveBtn) saveBtn.textContent = "Ajouter";
+    if (cancelBtn) cancelBtn.classList.add('hidden');
+  }
+
+  function closeEquipeModal() {
+    document.getElementById('equipeModal').classList.add('hidden');
+    resetEquipeUI();
+  }
+
+  function loadEquipes() {
+    const list = document.getElementById('equipeList');
+    if (list) list.innerHTML = '<li class="text-center py-4 text-xs text-slate-400 font-bold">CHARGEMENT...</li>';
+    google.script.run
+      .withSuccessHandler(function(data) {
+        currentEquipes = data;
+        renderEquipeList();
+      })
+      .withFailureHandler(function(err) {
+        showModal({
+          icon: 'error',
+          title: 'Erreur chargement équipes',
+          text: err.message
+        });
+        appErrorLog(err, "loadEquipes", {
+          context: "Échec de la récupération des equipes",
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsGetEquipes(APP_DATA.token);
+  }
+
+  function renderEquipeList() {
+    const list = document.getElementById('equipeList');
+    list.innerHTML = '';
+    currentEquipes.forEach((item, index) => {
+      const li = document.createElement('li');
+      li.className = "flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 hover:border-primary/30 transition-all group";
+    
+      li.innerHTML = `
+        <span class="text-sm font-bold text-slate-700">${item.name}</span>
+        <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onclick="prepareEditEquipe(${index})" class="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors">
+            <span class="material-symbols-outlined !text-[18px]">edit</span>
+          </button>
+          <button onclick="deleteEquipe(${item.rowIdx})" class="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+            <span class="material-symbols-outlined !text-[18px]">delete</span>
+          </button>
+        </div>
+      `;
+      list.appendChild(li);
+    });
+  }
+
+  function prepareEditEquipe(index) {
+    const item = currentEquipes[index];
+    const input = document.getElementById('new-equipe-input');
+    const indexHidden = document.getElementById('edit-equipe-index');
+    const saveBtn = document.querySelector('#equipeModal button[onclick="saveEquipe()"]');
+    const cancelBtn = document.getElementById('btn-cancel-equipe');
+
+    input.value = item.name;
+    indexHidden.value = item.rowIdx;
+    saveBtn.textContent = "Modifier";
+    if (cancelBtn) cancelBtn.classList.remove('hidden');
+    input.focus();
+  }
+
+  function saveEquipe() {
+    const input = document.getElementById('new-equipe-input'); // Adaptez cet ID à votre HTML
+    const name = input.value.trim();
+    const rowIdx = document.getElementById('edit-equipe-index').value; // Adaptez cet ID
+    if (!name) return;
+
+    showLoading('Enregistrement...');
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({ icon: 'warning', title: 'Attention', text: res.message });
+          return; // On stoppe
+        }
+  
+        // 1. SUCCESS FEEDBACK
+        resetEquipeUI();
+        showToast('Enregistré !');
+        loadEquipes();
+
+        // 2. MASTER LOG
+        const isEdit = document.getElementById('edit-equipe-index').value !== "";
+        appLog(
+          'parametres',
+          "equipe-" + (isEdit ? document.getElementById('edit-equipe-index').value : "new"),
+          isEdit ? "MODIFICATION_EQUIPE" : "CREATION_EQUIPE",
+          "Private",
+          "Milestone",
+          { name: name }
+        );
+
+        // 3. DISPATCH EN ARRIÈRE-PLAN
+        if (res && res.oldName && res.oldName !== res.newName) {
+          google.script.run
+            .withFailureHandler(err => console.error("Erreur Cascade Equipes:", err))
+            .gsCascadeEquipeUpdate(APP_DATA.token, res.oldName, res.newName);
+        }
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+      })
+      .gsSaveEquipe(APP_DATA.token, name, rowIdx);
+  }
+
+  function deleteEquipe(rowIdx) {
+    const equipe = currentEquipes.find(e => e.rowIdx == rowIdx);
+    const nameToDelete = equipe ? equipe.name : "Inconnue";
+    
+    showModal({
+    title: 'Supprimer ?',
+    text: "Cette équipe sera retirée de la liste.",
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'Supprimer',
+    confirmButtonColor: '#ef4444', // This will override the default blue button color
+    cancelButtonText: 'Annuler'
+  }).then((result) => {
+      if (result.isConfirmed) {
+        showLoading('Vérification...');
+        google.script.run
+          .withSuccessHandler((res) => {
+            if (res && res.success === false && res.isUserNotice) {
+              showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+              return; // On stoppe
+            }
+
+            // 1. SUCCESS FEEDBACK
+            showModal({
+              icon: 'success',
+              title: 'Supprimé',
+              text: "L'équipe a été retirée."
+            });
+            loadEquipes();
+
+            // 2. MASTER LOG
+            appLog(
+              'parametres',
+              "equipe-" + nameToDelete,
+              "SUPPRESSION_EQUIPE",
+              "Private",
+              "Milestone",
+              { name: nameToDelete }
+            );
+          })
+          .withFailureHandler((err) => {
+            showModal({
+              icon: 'error',
+              title: 'Action impossible',
+              text: err.message
+            });
+            appErrorLog(err, "deleteEquipe", {
+              rowIdx: rowIdx,
+              projectId: PROJECT_ID || "Inconnu"
+            });
+          })
+          .gsDeleteEquipe(APP_DATA.token, rowIdx);
+      }
+    });
+  }
+
+  // =========================================================
+  // 7. Delete multiple cells tasks
+  // =========================================================
+
+  async function deleteSelectedTasks() {
+    const selectedCells = document.querySelectorAll('.selected-cell');
+    if (selectedCells.length === 0) {
+      showModal({
+        icon: 'warning',
+        title: 'Erreur',
+        text: "Veuillez sélectionner au moins une cellule."
+      });
+      return;
+    }
+  
+    // 🔍 On transforme chaque cellule en un tableau d'objets (1 objet par tâche)
+    const cellsData = Array.from(selectedCells).flatMap(cell => {
+      const id = cell.getAttribute('data-id') || cell.parentElement.getAttribute('data-id');
+      const rawContent = cell.innerText || "";
+    
+      const tasks = rawContent.split('|')
+        .map(t => t.trim())
+        .filter(t => t !== "");
+
+      return tasks.map(task => ({
+        logementId: id,
+        cellContent: task,
+        date: cell.getAttribute('data-date')
+      }));
+    });
+
+    // Filtrage de sécurité pour les IDs corrompus
+    const cleanCellsData = cellsData.filter(d => d.logementId && d.logementId !== "null");
+
+    if (cleanCellsData.length === 0) {
+      showModal({
+        icon: 'error',
+        title: 'Erreur technique',
+        text: "L'identifiant du logement est introuvable sur la cellule. Vérifiez la structure HTML."
+      });
+    }
+
+    showLoading('Analyse...','Vérification de l\'avancement...');
+
+    google.script.run
+      .withSuccessHandler(handleDeletionAnalysis)
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur serveur',
+          text: err.message
+        });
+        appErrorLog(err, "deleteSelectedTasks", {
+          view: window.currentView, 
+          totalCellsSelected: selectedCells.length, // Use .length (selectedCells is a NodeList)
+          cleanCellsDataCount: cleanCellsData.length, // Count instead of full array
+          sampleData: cleanCellsData.slice(0, 2), // Small sample for debugging
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsAnalyzeDeletion(APP_DATA.token, cleanCellsData, window.currentView);
+  }
+
+  async function handleDeletionAnalysis(response) {
+    if (!response || !response.success) {
+      showModal({
+        icon: 'error',
+        title: 'Erreur Backend',
+        text: response ? response.error : 'Réponse invalide'
+      });
+    }
+
+    let actionsToExecute = response.validActions || [];
+    actionsToExecute.forEach(a => a.mode = 'full');
+
+    const conflicts = response.conflicts || [];
+
+    if (conflicts.length > 0) {
+    
+      // CORRECTION 2 : Regrouper les conflits par Logement + Tâche
+      let conflictsByTask = {};
+      for (const conflict of conflicts) {
+        let key = conflict.logementId + '_' + conflict.baseTask;
+        if (!conflictsByTask[key]) {
+          conflictsByTask[key] = [];
+        }
+        conflictsByTask[key].push(conflict);
+      }
+
+      // On itère sur les groupes uniques plutôt que sur chaque cellule
+      for (const key in conflictsByTask) {
+        const group = conflictsByTask[key];
+        const mainConflict = group[0]; // On utilise le premier pour afficher les infos
+        const hasNote = !!mainConflict.note;
+        
+        // 1. Décodage et séparation propre des notes JSON
+        let noteHtml = '';
+        if (hasNote) {
+            let pubNote = "";
+            let privNote = "";
+
+            try {
+              const parsed = typeof mainConflict.note === 'string' && mainConflict.note.trim().startsWith('{')
+                ? JSON.parse(mainConflict.note)
+                : { pub: mainConflict.note, priv: "" };
+              pubNote = parsed.pub || "";
+              privNote = parsed.int || parsed.priv || "";
+            } catch (e) {
+              pubNote = mainConflict.note;
+            }
+
+            if (pubNote) {
+              noteHtml += `
+                <div class="text-xs text-slate-500 font-bold uppercase mt-2">Note :</div>
+                <div class="text-sm text-blue-600">${pubNote}</div>
+              `;
+            }
+            if (privNote) {
+              noteHtml += `
+                <div class="text-xs text-slate-500 font-bold uppercase mt-2">Note Privée :</div>
+                <div class="text-sm text-indigo-600">${privNote}</div>
+              `;
+            }
+        }
+
+        const confirmText = hasNote ? 'Planning + Avancement + Note' : 'Planning + Avancement';
+
+        // 2. Vérification si TOUTES les pastilles sont supprimées ou seulement une partie
+        let totalDatesInRecap = 0;
+        if (mainConflict.recapDates && mainConflict.recapDates !== "Aucune date") {
+            // Nettoie l'apostrophe ajoutée par Sheets et sépare par " | "
+            totalDatesInRecap = mainConflict.recapDates.replace(/^'/, '').split('|').filter(d => d.trim() !== '').length;
+        }
+        const isDeletingAllPills = group.length >= totalDatesInRecap;
+
+        // 3. Adapter le texte et les boutons selon si la suppression est totale ou partielle
+        const infoText = !isDeletingAllPills
+          ? `<div class="mt-3 text-xs text-orange-600 font-bold bg-orange-50 p-2 rounded border border-orange-200">
+               ⚠️ Vous ne supprimez qu'une partie de la tâche. Le statut et les notes (Avancement) seront automatiquement conservés.
+             </div>`
+          : `<div class="text-left text-sm font-bold text-slate-700 mt-3">Que souhaitez-vous supprimer ?</div>`;
+
+        const result = await showModal({
+          title: 'Données détectées',
+          icon: 'warning',
+          html: `
+            <div class="text-left text-sm mb-3">La tâche <b>${mainConflict.baseTask}</b> pour le logement <b>${mainConflict.logementId}</b> possède déjà des données associées.</div>
+            <div class="bg-slate-50 p-2 rounded border border-slate-200 mb-3 text-left">
+              <div class="text-xs text-slate-500 font-bold uppercase">Dates au récap :</div>
+              <div class="text-sm text-primary font-mono">${mainConflict.recapDates}</div>
+              <div class="text-xs text-slate-500 font-bold uppercase mt-2">Statut actuel :</div>
+              <div class="text-sm text-amber-600 font-bold">${mainConflict.status}</div>
+              ${noteHtml}
+            </div>
+            ${infoText}
+            `,
+          showConfirmButton: isDeletingAllPills,
+          showDenyButton: true,
+          showCancelButton: true,
+          confirmButtonColor: '#d33', // Overrides the default blue
+          denyButtonColor: isDeletingAllPills ? '#0d59f2' : '#d33',
+          cancelButtonColor: '#64748b',
+          confirmButtonText: confirmText,
+          denyButtonText: 'Planning uniquement',
+          cancelButtonText: 'Annuler'
+        });
+
+        // On applique la décision à TOUTES les cellules de ce groupe
+        if (result.isConfirmed) {
+          group.forEach(c => { c.mode = 'full'; actionsToExecute.push(c); });
+        } else if (result.isDenied) {
+          group.forEach(c => { c.mode = 'planningOnly'; actionsToExecute.push(c); });
+        }
+      }
+    }
+
+    // ... (début de la fonction inchangé)
+    if (actionsToExecute.length === 0) return;
+
+    // 1. Extraire les IDs uniques des logements affectés
+    const affectedLogIds = [...new Set(actionsToExecute.map(a => a.logementId))];
+
+    showLoading('Suppression...');
+
+    google.script.run
+      .withSuccessHandler(() => {
+        // 1. Mise à jour de la mémoire du navigateur sans appeler le backend
+        updateLocalCacheAfterDeletion(actionsToExecute);
+        
+        // 2. Redessin instantané uniquement des lignes modifiées
+        affectedLogIds.forEach(logId => {
+          refreshSingleRowDOM(logId);
+        });
+        
+        // 3. Nettoyage de l'interface
+        document.querySelectorAll('.selected-cell').forEach(c => c.classList.remove('selected-cell'));
+        showToast('Terminé');
+
+        appLog(
+          window.currentView,
+          "bulk-delete",
+          "SUPPRESSION_EN_MASSE",
+          "Private",
+          "Detail",
+          {
+            nombreActions: actionsToExecute.length,
+            nombreLogements: affectedLogIds.length,
+            logementsNettoyes: affectedLogIds
+          }
+        );
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "handleDeletionAnalysis", {
+          response: response,
+          actionsCount: actionsToExecute.length,
+          currentView: window.currentView
+        });
+      })
+      .gsExecuteDeletion(APP_DATA.token, actionsToExecute, window.currentView);
+  }
+
+  // Fonction utilitaire pour vider les cellules supprimées de la mémoire locale
+  function updateLocalCacheAfterDeletion(actions) {
+    if (!window.lastPlanningData || !window.lastPlanningData.planning) return;
+
+    const dates = window.lastPlanningData.headers.dates;
+
+    actions.forEach(action => {
+      // Trouver la ligne du logement
+      const row = window.lastPlanningData.planning.find(p => String(p.id).trim() === String(action.logementId).trim());
+      if (!row) return;
+
+      // Retirer la tâche de la cellule de date correspondante
+      const dateIdx = dates.indexOf(action.date);
+      if (dateIdx !== -1 && row.tasks[dateIdx]) {
+        let cellTasks = String(row.tasks[dateIdx]).split('|').map(t => t.trim()).filter(t => t.length > 0);
+        // On retire la tâche ciblée
+        cellTasks = cellTasks.filter(t => t.split('@')[0].trim() !== action.baseTask);
+        row.tasks[dateIdx] = cellTasks.join(' | ');
+      }
+
+      // Nettoyage des Notes si c'est une suppression "complète" (Planning + Avancement)
+      if (action.mode === 'full' && window.lastPlanningData.notes && window.lastPlanningData.notes[action.logementId]) {
+        // Vérifier si cette tâche n'existe vraiment plus du tout sur toute la ligne
+        const stillExists = row.tasks.some(taskStr => {
+          if (!taskStr) return false;
+          return String(taskStr).split('|').some(t => t.split('@')[0].trim() === action.baseTask);
+        });
+      
+        // Si elle n'est plus planifiée, on supprime ses notes du cache
+        if (!stillExists) {
+          delete window.lastPlanningData.notes[action.logementId][action.baseTask];
+        }
+      }
+    });
+  }
+
+
+
+  // =========================================================
+  // 8. CLIENT VIEW MODE
+  // =========================================================
+  /**
+  * Injects the Client View (Presentation Mode) toggle into the Header's extension zone.
+  * Only appears if the user isAuthorized.
+  */
+  function injectClientViewToggle() {
+    const container = document.getElementById('pageExtensionZone');
+    if (!container || !isAuthorized) return;
+
+    // READ GLOBAL STATE
+    const isChecked = window.isClientViewActive ? 'checked' : '';
+
+    container.innerHTML = `
+      <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between mb-1">
+        <div class="flex flex-col">
+          <span class="text-[10px] font-black text-slate-700 uppercase tracking-widest flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px] text-slate-400">visibility_off</span>
+            Vue Client
+          </span>
+          <p class="text-[9px] text-slate-400 font-medium">Masquer les notes privées</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="clientViewToggle" class="sr-only peer" onchange="toggleClientView(this.checked)" ${isChecked}>
+          <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+        </label>
+      </div>
+    `;
+  }
+
+  /**
+  * Handles the logic when the switch is flipped
+  */
+  function toggleClientView(isActive) {
+    window.isClientViewActive = isActive;
+    localStorage.setItem('isClientViewActive', isActive);
+  
+    // 1. Refresh the planning grid to hide/show Autocontroles & Markers
+    if (window.lastPlanningData) {
+      renderPlanningRows(window.lastPlanningData);
+    }
+  
+    // 2. If the Edit Sidebar is open, refresh its content to hide/show private notes
+    if (window.isEditModeActive && window.selectedEditItem) {
+      handleGranularSelection(window.selectedEditItem.type, window.selectedEditItem.element);
+    }
+
+    // Toast feedback
+    const msg = isActive ? "Mode Présentation : Données privées masquées" : "Vue complète : Données privées affichées";
+    showToast(msg, 'info', '', 2000);
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // =========================================================
+  // 9. EDIT MODE
+  // =========================================================
+
+  function toggleEditMode() {
+    window.isEditModeActive = !window.isEditModeActive;
+    const btn = document.getElementById('btnToggleEditMode');
+    
+    if (window.isEditModeActive) {
+      document.body.classList.add('edit-mode-active');
+      btn.classList.replace('bg-white', 'bg-primary');
+      btn.classList.replace('text-primary', 'text-white');
+      btn.innerHTML = `<span class="material-symbols-outlined !text-[16px]">close</span> Fermer Éditeur`;
+      
+      // Hide bulk action menus safely
+      document.getElementById('ajouter-text')?.classList.add('hidden');
+      document.getElementById('ajouter-menu')?.classList.add('hidden');
+      document.getElementById('deleteTasksBtn')?.classList.add('hidden');
+      document.getElementById('excelBtn')?.classList.add('hidden');
+      
+      document.querySelectorAll('.selected-cell').forEach(c => c.classList.remove('selected-cell'));
+
+      openEditSidebar();
+      renderEmptySidebarState();
+      initCalendarBackground();
+    } else {
+      document.body.classList.remove('edit-mode-active');
+      btn.classList.replace('bg-primary', 'bg-white');
+      btn.classList.replace('text-white', 'text-primary');
+      btn.innerHTML = `<span class="material-symbols-outlined !text-[16px]">draw</span> Vision/Édition`;
+      
+      // Restore bulk action menus
+      document.getElementById('ajouter-text')?.classList.remove('hidden');
+      document.getElementById('ajouter-menu')?.classList.remove('hidden');
+      
+      // Only restore Delete/Excel if user has edit rights
+      if (typeof APP_DATA !== 'undefined' && APP_DATA.canEdit) {
+        document.getElementById('deleteTasksBtn')?.classList.remove('hidden');
+        document.getElementById('excelBtn')?.classList.remove('hidden');
+      }
+      
+      closeEditSidebar();
+      // Clear stale edit references so no function can act on a previous selection
+      window.selectedEditItem  = null;
+      window.currentSelectionId = null;
+    }
+  }
+
+  function openEditSidebar() {
+    const sidebar = document.getElementById('edit-sidebar');
+    if (sidebar) {
+      // Use inline style to guarantee Tailwind CDN applies the width correctly
+      sidebar.classList.remove('w-0');
+      sidebar.style.width = '400px'; 
+    }
+  }
+
+  function closeEditSidebar() {
+    // If we are turning off via the sidebar's X button, sync the main state
+    if (window.isEditModeActive) toggleEditMode(); 
+    
+    const sidebar = document.getElementById('edit-sidebar');
+    if (sidebar) {
+      sidebar.style.width = '0px';
+    }
+
+    // --- Remove any active edit highlights ---
+    document.querySelectorAll('.active-edit-item').forEach(el => el.classList.remove('active-edit-item'));
+    window.selectedEditItem = null; // Clear the memory
+  }
+
+  function renderEmptySidebarState() {
+    const content = document.getElementById('sidebar-content');
+    content.innerHTML = `
+      <div class="h-full flex flex-col items-center justify-center opacity-40 text-center">
+        <span class="material-symbols-outlined text-[48px] mb-4 text-slate-400">ads_click</span>
+        <p class="text-sm font-black text-slate-500 uppercase tracking-widest">Mode Édition Actif</p>
+        <p class="text-[10px] text-slate-400 mt-2 max-w-[200px]">Cliquez sur un ID, une Tâche ou un Point d'intervention pour modifier ses propriétés.</p>
+      </div>
+    `;
+  }
+
+  // =========================================================
+  // ROUTER: GRANULAR SELECTION
+  // =========================================================
+  function handleGranularSelection(type, element) {
+    window.selectedEditItem = { type, element };
+    const tr = element.closest('tr');
+    const logId = tr.getAttribute('data-id');
+    const content = document.getElementById('sidebar-content');
+
+    if (type === 'id') {
+      renderIdEditor(logId, element);
+    } else if (type === 'task') {
+      renderTaskEditor(logId, element);
+    } else if (type === 'dot') {
+      renderInterventionEditor(logId, element);
+    }
+  }
+
+  // =========================================================
+  // PART 1: ID EDITOR (GLOBAL STATUS & NOTES)
+  // =========================================================
+  /**
+   * Shared sidebar shell — title bar + content area.
+   * All three editor functions (ID / Task / Intervention) call this
+   * so the header chrome is defined in exactly one place.
+   */
+  function renderSidebarShell(title, contentHtml) {
+    return `
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="text-[11px] font-black uppercase tracking-widest text-slate-500">${title}</h3>
+        <button onclick="closeEditSidebar()" class="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+          <span class="material-symbols-outlined !text-[18px]">close</span>
+        </button>
+      </div>
+      ${contentHtml}
+    `;
+  }
+
+  function renderIdEditor(logId, element) {
+    const content = document.getElementById('sidebar-content');
+    const rowData = window.lastPlanningData.planning.find(p => p.id === logId) || {};
+    
+    // Parse JSON notes
+    let notesObj = { pub: "", priv: "" };
+    try { if (rowData.comment) notesObj = JSON.parse(rowData.comment); } catch(e) {}
+
+    // OBJECTIF 5 : Récupérer le nom de l'occupant
+    const meta = window.lastPlanningData.logements[logId] || {};
+    const occupantName = `${meta.nom || ""} ${meta.prenom || ""}`.trim();
+    const occupantDisplay = occupantName ? `<span class="text-xs text-slate-500 font-bold ml-1">(${occupantName})</span>` : "";
+
+    const canEditValues = canEdit && projectStatus.toLowerCase() === 'active';
+    const showPrivate = !isClient && !window.isClientViewActive;
+
+    // OBJECTIF 1 & 2 : Retrait des verrous (champs ouverts par défaut)
+    let html = `
+      <div class="mb-6">
+        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Logement / Zone</h4>
+        <div class="text-xl font-black text-slate-800 flex items-center gap-2">
+          ${logId} ${occupantDisplay}
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Statut Global</h4>
+
+        <select id="input-id-status" 
+        onchange="updateSelectColor(this); autoSaveGlobalStatus('${logId}', this.value);"
+        ${!canEditValues ? 'disabled' : ''} 
+        class="w-full text-sm font-bold border border-slate-200 rounded-lg p-2 focus:ring-primary focus:border-primary text-slate-700 transition-colors">
+          <option value="" class="bg-white text-slate-900" ${!rowData.status || rowData.status === '' ? 'selected' : ''}>Aucun</option>
+          <option value="Info" class="bg-blue-200 text-slate-900" ${rowData.status === 'Info' ? 'selected' : ''}>Info</option>
+          <option value="Attention" class="bg-orange-200 text-slate-900" ${rowData.status === 'Attention' ? 'selected' : ''}>Attention</option>
+          <option value="Bloquant" class="bg-red-400 text-slate-900" ${rowData.status === 'Bloquant' ? 'selected' : ''}>Bloquant</option>
+        </select>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-1"><span class="material-symbols-outlined !text-[14px]">public</span> Note</h4>
+        <textarea id="input-id-pub-note" ${!canEditValues ? 'disabled' : ''} rows="3" class="w-full text-sm font-medium border border-slate-200 rounded-lg p-2 focus:ring-primary focus:border-primary resize-none text-slate-700" placeholder="Ajouter une note...">${notesObj.pub}</textarea>
+      </div>
+    `;
+
+    if (showPrivate) {
+      html += `
+        <div class="bg-indigo-50/50 rounded-xl border border-indigo-200 p-4 mb-4 shadow-sm">
+          <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-widest mb-2 flex items-center gap-1"><span class="material-symbols-outlined !text-[14px]">visibility_off</span> Note Privée</h4>
+          <textarea id="input-id-priv-note" ${!canEditValues ? 'disabled' : ''} rows="3" class="w-full text-sm font-medium border border-indigo-200 rounded-lg p-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none text-indigo-900" placeholder="Ajouter une note interne...">${notesObj.priv}</textarea>
+        </div>
+      `;
+    }
+
+    if (canEditValues) {
+       // GRAND BOUTON DE SAUVEGARDE
+       html += `
+        <button onclick="saveIdNotes('${logId}', this)" class="w-full py-4 mt-2 bg-primary text-white rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/30 hover:bg-primary-dark transition-all flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined !text-[20px]">save</span> ENREGISTRER NOTE
+        </button>
+       `;
+    }
+
+    content.innerHTML = renderSidebarShell(`Logement — ${logId}`, html);
+    const selectStatus = document.getElementById('input-id-status');
+    if (selectStatus) updateSelectColor(selectStatus);
+  }
+
+  function saveIdNotes(logId, btnElement) {
+    // 1. Récupération des valeurs depuis les bons éléments HTML
+    const pubNote = document.getElementById('input-id-pub-note')?.value || "";
+    const privNote = document.getElementById('input-id-priv-note')?.value || "";
+
+    // 2. Formatage en JSON pour correspondre au système de lecture
+    const notesJSON = JSON.stringify({ pub: pubNote, priv: privNote });
+
+    // FIX E5: Resolve sheet row index from local cache to skip server-side column-A scan.
+    const planRow = window.lastPlanningData?.planning?.find(p => String(p.id).trim() === String(logId).trim());
+    const rowHint = planRow?.sheetRowIdx || null;
+
+    // --- NOUVELLE LOGIQUE : Mise à jour conditionnelle du Statut Global ---
+    const statusSelect = document.getElementById('input-id-status');
+    const currentStatus = statusSelect ? statusSelect.value : "";
+    
+    // Condition A : Au moins l'une des deux notes n'est pas vide
+    const hasNotes = (pubNote.trim() !== "" || privNote.trim() !== "");
+
+    if (hasNotes && (!currentStatus || currentStatus === "")) {
+      // S'il y a une note et aucun statut -> Basculer sur "Info"
+      if (statusSelect) {
+        statusSelect.value = "Info";
+        updateSelectColor(statusSelect);
+      }
+      autoSaveGlobalStatus(logId, "Info");
+      
+    } else if (!hasNotes && currentStatus === "Info") {
+      // Si les deux notes sont vides et que le statut est "Info" -> Effacer le statut
+      if (statusSelect) {
+        statusSelect.value = "";
+        updateSelectColor(statusSelect);
+      }
+      autoSaveGlobalStatus(logId, "");
+    }
+
+    showLoading('Sauvegarde de la note...', '', true);
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        showToast('Note du logement enregistrée');
+
+        refreshSingleRowDOM(logId);
+
+        appLog(
+          window.currentView,
+          logId,
+          "MODIFICATION_NOTES_LOGEMENT",
+          "Public",
+          "Detail",
+          { notes: notesJSON }
+        );
+
+        // 3. Mise à jour du cache local pour la réouverture de la sidebar
+        if (window.lastPlanningData && window.lastPlanningData.planning) {
+          const rowIndex = window.lastPlanningData.planning.findIndex(p => String(p.id).trim() === String(logId).trim());
+          if (rowIndex !== -1) {
+            window.lastPlanningData.planning[rowIndex].comment = notesJSON;
+          }
+        }
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "saveIdNotes", {
+          logId: logId,
+          notesJSON: notesJSON,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsUpdateIdNotes(APP_DATA.token, logId, notesJSON, window.currentView, rowHint);
+  }
+
+  /**
+  * Sauvegarde automatiquement le statut global lors du changement
+  */
+  function autoSaveGlobalStatus(logId, newStatus) {
+    const selectEl = document.getElementById('input-id-status');
+    if (selectEl) {
+      selectEl.disabled = true;
+      selectEl.classList.add('opacity-50'); 
+    }
+
+    const planRow = window.lastPlanningData?.planning?.find(p => String(p.id).trim() === String(logId).trim());
+    const rowHint = planRow?.sheetRowIdx || null;
+  
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          if (selectEl) {
+            selectEl.disabled = false;
+            selectEl.classList.remove('opacity-50');
+          }
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        if (selectEl) {
+          selectEl.disabled = false;
+          selectEl.classList.remove('opacity-50');
+        }
+      
+        showToast('Statut mis à jour');
+
+        appLog(
+          window.currentView,
+          logId,
+          "MODIFICATION_STATUT_GLOBAL",
+          "Private",
+          "Detail",
+          { nouveauStatut: newStatus }
+        );
+      
+        if (window.lastPlanningData && window.lastPlanningData.planning) {
+          const rowIndex = window.lastPlanningData.planning.findIndex(p => String(p.id).trim() === String(logId).trim());
+          if (rowIndex !== -1) {
+            window.lastPlanningData.planning[rowIndex].status = newStatus;
+            refreshSingleRowDOM(logId);
+          }
+        }
+      })
+      .withFailureHandler((err) => {
+        if (selectEl) {
+          selectEl.disabled = false;
+          selectEl.classList.remove('opacity-50');
+        }
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: 'Impossible de sauvegarder le statut'
+        });
+
+        appErrorLog(err, "autoSaveGlobalStatus", {
+          logId: logId,
+          newStatus: newStatus,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsUpdateGlobalStatus(APP_DATA.token, logId, newStatus, window.currentView, rowHint);
+  }
+
+  // =========================================================
+  // PART 2: TASK EDITOR & DOMINO EFFECT
+  // =========================================================
+  function renderTaskEditor(logId, element) {
+    const content = document.getElementById('sidebar-content');
+    const td = element.closest('td.cell-day');
+    const taskDate = td.getAttribute('data-date'); // YYYY-MM-DD
+    const taskAbbr = element.textContent.trim();
+    
+    const meta = window.lastPlanningData.logements[logId] || {};
+    const occupantName = `${meta.nom || ""} ${meta.prenom || ""}`.trim();
+    const occupantDisplay = occupantName ? `<span class="text-xs text-slate-500 font-bold ml-1">(${occupantName})</span>` : "";
+
+    let bgColor = "#0d59f2";
+    let isAmPmTask = false;
+    if (window.currentTasksData) {
+      const tDef = window.currentTasksData.find(t => t.abbr.toUpperCase() === taskAbbr.toUpperCase());
+      if (tDef) {
+        bgColor = tDef.bgColor || tDef.color || bgColor;
+        if (tDef.unite === 'AM/PM') isAmPmTask = true;
+      }
+    }
+
+    // --- EXTRACTION FIABLE DEPUIS LE CACHE ---
+    let currentAmPm = element.classList.contains('task-am') ? "AM" : (element.classList.contains('task-pm') ? "PM" : (isAmPmTask ? "AM" : ""));
+    let currentStatus = "";
+    let rawNote = "";
+    let notesObj = { pub: "", priv: "" };
+
+    if (window.lastPlanningData && window.lastPlanningData.planning) {
+      const rowData = window.lastPlanningData.planning.find(p => String(p.id).trim() === String(logId).trim());
+      if (rowData) {
+        const dateIdx = window.lastPlanningData.headers.dates.indexOf(taskDate);
+        if (dateIdx !== -1 && rowData.tasks[dateIdx]) {
+          const actualTaskStr = String(rowData.tasks[dateIdx]).split('|').find(t => t.split('@')[0].trim() === taskAbbr);
+          if (actualTaskStr) {
+            const parts = actualTaskStr.split('@');
+            let idx = 1;
+            
+            // 1. Vérifie si le 2ème élément est un modificateur de temps (AM/PM)
+            if (parts.length > idx && (parts[idx] === 'AM' || parts[idx] === 'PM')) {
+              idx++;
+            }
+            // 2. L'élément suivant est forcément le statut
+            if (parts.length > idx) {
+              currentStatus = parts[idx];
+              idx++;
+            }
+            // 3. Tout ce qui reste est la note JSON
+            if (parts.length > idx) {
+              rawNote = parts.slice(idx).join('@');
+            }
+          }
+        }
+      }
+    }
+    // Mémoriser la note globale pour ne pas l'écraser si on auto-save juste le statut
+    window.currentTaskHiddenNotes = rawNote || "";
+    try { 
+      if (rawNote) {
+        let parsed = JSON.parse(rawNote);
+        notesObj.pub = parsed.pub || "";
+        notesObj.priv = parsed.priv || parsed.int || ""; // safely fallback to empty string
+      } 
+    } catch(e) {}
+    // -----------------------------------------
+
+    const isProjectActive = projectStatus === 'active';
+    const canEditCore = !isClient && canEdit && isProjectActive;
+    const canEditAvancement = (canEdit || isClient) && isProjectActive;
+    const showPrivate = !isClient && !window.isClientViewActive;
+
+    let html = `
+      <div class="mb-6">
+        <div class="flex items-center gap-1 mb-1">
+           <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${logId}</span>
+           ${occupantDisplay}
+        </div>
+        <div class="text-xl font-black text-slate-800 flex items-center gap-3">
+           <div class="px-3 py-1 rounded-md text-xs font-black text-white shadow-sm" style="background-color: ${bgColor};">
+               ${taskAbbr}
+           </div>
+        </div>
+      </div>
+    `;
+
+    // AUTO-SAVE SUR LE STATUT
+    html += `
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">État d'avancement</h4>
+
+        <select id="input-task-status" 
+                onchange="updateSelectColor(this); autoSaveTaskStatus('${logId}', '${taskDate}', '${taskAbbr}', this.value);" 
+                ${!canEditAvancement ? 'disabled' : ''} 
+                class="w-full text-sm font-bold border border-slate-200 rounded-lg p-2 focus:ring-primary focus:border-primary text-slate-700 transition-colors">
+          <option value="Planifié" class="bg-white text-slate-900" ${currentStatus === 'Planifié' ? 'selected' : ''}>Planifié</option>
+          <option value="En cours" class="bg-blue-200 text-slate-900" ${currentStatus === 'En cours' ? 'selected' : ''}>En cours</option>
+          <option value="Bloqué" class="bg-red-200 text-slate-900" ${currentStatus === 'Bloqué' ? 'selected' : ''}>Bloqué</option>
+          <option value="Bloquant" class="bg-red-400 text-slate-900" ${currentStatus === 'Bloquant' ? 'selected' : ''}>Bloquant</option>
+          <option value="Réserves" class="bg-orange-200 text-slate-900" ${currentStatus === 'Réserves' ? 'selected' : ''}>Réserves</option>
+          <option value="Fini" class="bg-green-400 text-slate-900" ${currentStatus === 'Fini' ? 'selected' : ''}>Fini</option>
+        </select>
+      </div>
+    `;
+
+    // AUTO-SAVE SUR AM/PM
+    if (isAmPmTask) {
+       html += `
+        <div id="ampm-task-container" class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+          <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Période (AM/PM)</h4>
+          <div class="flex items-center gap-4">
+            <label class="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700">
+              <input type="radio" name="input-task-ampm" value="AM" 
+                     onchange="autoSaveTaskAMPM('${logId}', '${taskDate}', '${taskAbbr}', this.value)" 
+                     ${currentAmPm === 'AM' ? 'checked' : ''} ${!canEditCore ? 'disabled' : ''} 
+                     class="text-primary focus:ring-primary h-4 w-4"> Matin (AM)
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700">
+              <input type="radio" name="input-task-ampm" value="PM" 
+                     onchange="autoSaveTaskAMPM('${logId}', '${taskDate}', '${taskAbbr}', this.value)" 
+                     ${currentAmPm === 'PM' ? 'checked' : ''} ${!canEditCore ? 'disabled' : ''} 
+                     class="text-orange-500 focus:ring-orange-500 h-4 w-4"> Après-midi (PM)
+            </label>
+          </div>
+        </div>
+       `;
+    }
+
+    // LE CALENDRIER DE DÉPLACEMENT EST DÉJÀ AUTO-SAUVEGARDÉ PAR DÉFAUT
+    if (canEditCore) {
+      html += `
+        <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+          <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-1"><span class="material-symbols-outlined !text-[16px]">calendar_month</span> Déplacer la tâche</h4>
+          <div id="task-date-picker-trigger" 
+               onclick="openCustomCalendarPicker('task', '${logId}', '${taskAbbr}', '${taskDate}')"
+               class="w-full text-sm font-bold border border-slate-200 rounded-lg p-2.5 bg-white cursor-pointer hover:bg-slate-50 hover:border-primary/50 flex justify-between items-center text-slate-700 transition-all">
+            <span>${taskDate.split('-').reverse().join('/')}</span>
+            <span class="material-symbols-outlined text-slate-400 text-lg">calendar_month</span>
+          </div>
+          <input type="hidden" id="input-task-date" value="${taskDate}" />
+        </div>
+      `;
+    }
+
+    // NOTES (SAUVEGARDÉES PAR LE BOUTON)
+    html += `
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Note</h4>
+        <textarea id="input-task-pub" ${!canEditAvancement ? 'disabled' : ''} rows="2" class="w-full text-sm font-medium border border-slate-200 rounded-lg p-2 focus:ring-primary focus:border-primary resize-none text-slate-700" placeholder="Note pour tous...">${notesObj.pub}</textarea>
+      </div>
+    `;
+
+    if (showPrivate) {
+      html += `
+        <div class="bg-indigo-50 rounded-xl border border-indigo-200 p-4 mb-4 shadow-sm">
+          <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-widest mb-2">Note Privée</h4>
+          <textarea id="input-task-priv" ${!canEditAvancement ? 'disabled' : ''} rows="2" class="w-full text-sm font-medium border border-indigo-200 rounded-lg p-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none text-indigo-900" placeholder="Note interne...">${notesObj.priv}</textarea>
+        </div>
+      `;
+    }
+
+    // BOUTON RESTREINT À LA SAUVEGARDE DES NOTES
+    if (canEditAvancement || canEditCore) {
+      html += `
+        <button onclick="saveTaskNotes('${logId}', '${taskDate}', '${taskAbbr}', this)" class="w-full py-4 mt-2 bg-primary text-white rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/30 hover:bg-primary-dark transition-all flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined !text-[20px]">save</span> ENREGISTRER NOTES
+        </button>
+      `;
+    }
+
+    if (canEditCore) {
+      html += `
+        <button onclick="deleteTaskPill('${logId}', '${taskDate}', '${taskAbbr}')" class="w-full py-3 mt-3 text-xs font-black text-red-500 bg-red-50 hover:bg-red-100 rounded-xl transition-colors uppercase tracking-widest flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined !text-[18px]">delete</span> Supprimer
+        </button>
+      `;
+    }
+
+    content.innerHTML = renderSidebarShell(`Tâche — ${taskAbbr}`, html);
+    const selectTaskStatus = document.getElementById('input-task-status');
+    if (selectTaskStatus) updateSelectColor(selectTaskStatus);
+  }
+
+  // --- AIDE : Met à jour uniquement la ligne modifiée dans le DOM pour éviter le scroll jump ---
+  function refreshSingleRowDOM(logId) {
+    if (!window.lastPlanningData || !window.lastPlanningData.planning) return;
+    const rowData = window.lastPlanningData.planning.find(p => String(p.id).trim() === String(logId).trim());
+    if (!rowData) return;
+
+    const oldTr = document.querySelector(`tr.planning-row[data-id="${logId}"]`);
+    if (!oldTr) return;
+
+    // Récupération des paramètres pour la reconstruction de la ligne
+    const dates = window.lastPlanningData.headers.dates;
+    const repairs = window.lastPlanningData.repairs || {};
+    const notes = window.lastPlanningData.notes || {};
+    const workingDays = window.lastPlanningData.headers.workingDays;
+    const config = window.viewConfigs[window.currentView];
+    // FIX E6: Compute todayIndex with a simple string comparison instead of
+    // allocating two Date objects + toLocaleDateString per call.
+    const todayStr   = new Date().toLocaleDateString('fr-CA');
+    const todayIndex = dates.findIndex(d => d === todayStr);
+
+    // Ajout des métadonnées comme le fait renderPlanningRows
+    const rowWithMeta = { ...rowData, meta: window.lastPlanningData.logements[logId] || {} };
+
+    // Reconstruction de la ligne avec votre fonction existante
+    const newTr = buildRowElement(rowWithMeta, dates, repairs, notes, todayIndex, workingDays, config);
+
+    // Préservation du surlignage de la ligne (Mode Normal)
+    if (oldTr.classList.contains('row-highlight')) {
+      newTr.classList.add('row-highlight');
+    }
+
+    // Remplacement de la ligne dans le DOM
+    oldTr.parentNode.replaceChild(newTr, oldTr);
+
+    // Réapplication des styles de sélection (Mode Édition)
+    if (window.isEditModeActive && window.currentSelectionId) {
+      const parts = window.currentSelectionId.split('|');
+      let target = null;
+      
+      // CORRECTION : Traitement séparé pour les points d'intervention
+      // parts[1] correspond à l'ID de l'intervention (ex: R-1234), et non au logId
+      if (parts[0] === 'dot') {
+        target = newTr.querySelector(`.greedy-dot[data-inter-id="${parts[1]}"]`);
+      } 
+      // Pour les tâches et le logement, parts[1] correspond bien au logId
+      else if (parts[1] === String(logId)) {
+        if (parts[0] === 'task' && parts[3]) {
+          target = newTr.querySelector(`td[data-date="${parts[3]}"] .task-pill[data-task="${parts[2]}"]`);
+        } else if (parts[0] === 'id') {
+          target = newTr.querySelector('.sticky-id');
+        }
+      }
+      
+      if (target) {
+        target.classList.add('active-edit-item');
+        if (parts[0] === 'id') target.classList.add('active-edit-sticky');
+        else target.classList.add('active-edit-grid');
+      }
+    }
+  }
+
+  // --- AIDE : Met à jour la tâche en cache local pour éviter les rechargements serveurs complets ---
+  function updateTaskCacheLocally(logId, dateStr, taskAbbr, ampmMod, status, notesJSON) {
+    if (!window.lastPlanningData || !window.lastPlanningData.planning) return;
+
+    // 1. Mise à jour de la tâche dans la chaîne du planning (Format : ABBR@AMPM@STATUS@NOTE)
+    let row = window.lastPlanningData.planning.find(r => String(r.id).trim() === String(logId).trim());
+    if (row && row.tasks) {
+      // CORRECTION : On boucle sur TOUTES les dates de la ligne pour synchroniser toutes les pastilles identiques
+      for (let i = 0; i < row.tasks.length; i++) {
+        if (row.tasks[i]) {
+          let cellTasks = String(row.tasks[i]).split('|').map(t => t.trim()).filter(t => t.length > 0);
+          
+          let hasChanged = false;
+          let updatedTasks = cellTasks.map(t => {
+            let parts = t.split('@');
+            if (parts[0].trim() === taskAbbr) {
+              hasChanged = true;
+              let res = taskAbbr;
+              if (ampmMod) res += `@${ampmMod}`;
+              if (status || notesJSON) res += `@${status || ""}`; // Inclut le statut même vide si une note suit
+              if (notesJSON) res += `@${notesJSON}`;
+              return res;
+            }
+            return t;
+          });
+
+          // N'appliquer la mise à jour que si on a trouvé la tâche dans cette cellule
+          if (hasChanged) {
+            row.tasks[i] = updatedTasks.join('|');
+          }
+        }
+      }
+    }
+
+    // 2. Mise à jour du dictionnaire des notes (Gère l'apparition/disparition du point vert)
+    if (!window.lastPlanningData.notes) window.lastPlanningData.notes = {};
+    if (!window.lastPlanningData.notes[logId]) window.lastPlanningData.notes[logId] = {};
+    
+    // Si la note est vide (ou qu'elle contient un JSON vide)
+    const isNoteEmpty = !notesJSON || notesJSON === '{"pub":"","int":""}' || notesJSON === '{"pub":"","priv":""}';
+    
+    if (!isNoteEmpty) {
+      window.lastPlanningData.notes[logId][taskAbbr] = notesJSON;
+    } else {
+      delete window.lastPlanningData.notes[logId][taskAbbr];
+    }
+  }
+
+  // --- AUTO-SAVE : Statut ---
+  function autoSaveTaskStatus(logId, dateStr, taskAbbr, newStatus) {
+    const selectEl = document.getElementById('input-task-status');
+    if (selectEl) { selectEl.disabled = true; selectEl.classList.add('opacity-50'); }
+    
+    // Valeurs locales pour maintenir le cache visuel à jour
+    const ampmRadio = document.querySelector('input[name="input-task-ampm"]:checked');
+    const ampmMod = ampmRadio ? ampmRadio.value : "";
+    const notesJSON = window.currentTaskHiddenNotes; 
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          if (selectEl) { selectEl.disabled = false; selectEl.classList.remove('opacity-50'); }
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        if (selectEl) { selectEl.disabled = false; selectEl.classList.remove('opacity-50'); }
+        showToast('Statut mis à jour');
+
+        appLog(
+          window.currentView,
+          logId,
+          "MODIFICATION_STATUT_TACHE",
+          "Public",
+          "Detail",
+          { tache: taskAbbr, date: dateStr, nouveauStatut: newStatus }
+        );
+        
+        // Mise à jour du cache local
+        updateTaskCacheLocally(logId, dateStr, taskAbbr, ampmMod, newStatus, notesJSON);
+        refreshSingleRowDOM(logId);
+      })
+      .withFailureHandler((err) => {
+        if (selectEl) { selectEl.disabled = false; selectEl.classList.remove('opacity-50'); }
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: 'Impossible de sauvegarder le statut : ' + err.message
+        });
+        appErrorLog(err, "autoSaveTaskStatus", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          dateStr: dateStr,
+          newStatus: newStatus,
+          currentview: window.currentView,
+          projectId: PROJECT_ID || "Inconnu" 
+        });
+      })
+      .gsUpdateTaskStatus(APP_DATA.token, logId, dateStr, taskAbbr, newStatus, window.currentView); // APPEL SPÉCIFIQUE
+  }
+
+  // --- AUTO-SAVE : AM / PM ---
+  function autoSaveTaskAMPM(logId, dateStr, taskAbbr, newAMPM) {
+    const status = document.getElementById('input-task-status')?.value || "";
+    const notesJSON = window.currentTaskHiddenNotes;
+    
+    const container = document.getElementById('ampm-task-container');
+    if (container) container.classList.add('opacity-50', 'pointer-events-none');
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          if (container) container.classList.remove('opacity-50', 'pointer-events-none');
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        if (container) container.classList.remove('opacity-50', 'pointer-events-none');
+        showToast('Période mise à jour');
+
+        appLog(
+          window.currentView,
+          logId,
+          "MODIFICATION_PERIODE_TACHE",
+          "Private",
+          "Detail",
+          { tache: taskAbbr, date: dateStr, periode: newAMPM }
+        );
+        
+        updateTaskCacheLocally(logId, dateStr, taskAbbr, newAMPM, status, notesJSON);
+        refreshSingleRowDOM(logId);
+      })
+      .withFailureHandler((err) => {
+        if (container) container.classList.remove('opacity-50', 'pointer-events-none');
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: 'Impossible de sauvegarder la période : ' + err.message
+        });
+          appErrorLog(err, "autoSaveTaskAMPM", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          dateStr: dateStr,
+          newAMPM: newAMPM,
+          currentview: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsUpdateTaskAMPM(APP_DATA.token, logId, dateStr, taskAbbr, newAMPM, window.currentView); // APPEL SPÉCIFIQUE
+  }
+
+  // --- SAUVEGARDE MANUELLE : Notes Uniquement ---
+  function saveTaskNotes(logId, dateStr, taskAbbr, btnElement) {
+    const status = document.getElementById('input-task-status')?.value || "";
+    const ampmRadio = document.querySelector('input[name="input-task-ampm"]:checked');
+    const ampmMod = ampmRadio ? ampmRadio.value : "";
+    
+    const pubNote = document.getElementById('input-task-pub')?.value || "";
+    const privNote = document.getElementById('input-task-priv')?.value || "";
+    const notesJSON = JSON.stringify({ pub: pubNote, int: privNote });
+
+    showLoading('Sauvegarde des notes...', '', true);
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({ icon: 'warning', title: 'Action impossible', text: res.message });
+          return;
+        }
+
+        window.currentTaskHiddenNotes = notesJSON; 
+        updateTaskCacheLocally(logId, dateStr, taskAbbr, ampmMod, status, notesJSON);
+        refreshSingleRowDOM(logId);
+        showToast('Notes sauvegardées');
+
+        // --- MASTER LOG: NOTES TÂCHE ---
+        appLog(
+          window.currentView,
+          logId,
+          "MODIFICATION_NOTES_TACHE",
+          "Public",
+          "Detail",
+          { tache: taskAbbr, date: dateStr, notes: notesJSON }
+        );
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "saveTaskNotes", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          dateStr: dateStr,
+          notesJSON: notesJSON,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsUpdateTaskNotes(APP_DATA.token, logId, dateStr, taskAbbr, notesJSON, window.currentView);
+  }
+
+  // =========================================================
+  // TASK EDITOR LOGIC (SAVE & DOMINO MODAL)
+  // =========================================================
+  
+  function triggerDominoEffect(logId, taskAbbr, oldDateStr, newDateStr) {
+    if (!newDateStr || oldDateStr === newDateStr) return;
+    
+    // --- DEMANDE 1 : VÉRIFICATION JOURS NON OUVRÉS ---
+    if (window.lastPlanningData && window.lastPlanningData.headers) {
+      const dates = window.lastPlanningData.headers.dates;
+      const workingDays = window.lastPlanningData.headers.workingDays;
+      const targetDateIdx = dates.indexOf(newDateStr);
+
+      if (targetDateIdx !== -1 && workingDays[targetDateIdx] == 0) {
+        // Alerte si l'utilisateur choisit un jour non ouvré
+        showModal({
+          icon: 'warning',
+          title: 'Date non valide',
+          text: "Vous avez sélectionné un jour non ouvré. Veuillez choisir une autre date."
+        });
+        // Réinitialisation de la valeur du calendrier à la date initiale
+        const inputTaskDate = document.getElementById('input-task-date');
+        if (inputTaskDate) inputTaskDate.value = oldDateStr;
+        return;
+      }
+    }
+
+    // --- DEMANDE 2 : VÉRIFICATION DE L'AVANCEMENT (Comme pour la suppression) ---
+    // Préparation des données au format attendu par le moteur d'analyse backend
+    const cleanCellsData = [{
+      logementId: String(logId),
+      cellContent: String(taskAbbr),
+      date: String(oldDateStr)
+    }];
+
+    showLoading('Analyse...', "Vérification de l'avancement avant déplacement...");
+
+    // Appel du moteur d'analyse existant côté serveur
+    google.script.run
+      .withSuccessHandler(async (response) => {
+        if (!response || !response.success) {
+          showModal({
+            icon: 'error',
+            title: 'Erreur Backend',
+            text: response ? response.error : 'Réponse invalide'
+          });
+          resetCalendarInput(oldDateStr);
+          return;
+        }
+
+        // NOUVEAU : On filtre les conflits pour ignorer "Planifié" (s'il n'y a pas de note)
+        const conflicts = (response.conflicts || []).filter(c => {
+          const hasNote = c.note && c.note.trim() !== "";
+          const isJustPlanned = c.status === "Planifié";
+          return hasNote || !isJustPlanned;
+        });
+        
+        // S'il y a un avancement saisi (conflit détecté)
+        if (conflicts.length > 0) {
+          const mainConflict = conflicts[0];
+          const hasNote = !!mainConflict.note;
+
+          let statutActuel = (mainConflict.status && mainConflict.status !== "Vide") 
+                              ? mainConflict.status 
+                              : "Non spécifié";
+          
+          let noteHtml = '';
+          if (hasNote) {
+            let pubNote = "";
+            let privNote = "";
+            
+            try {
+              // Parse le JSON de la note en toute sécurité
+              const parsed = typeof mainConflict.note === 'string' && mainConflict.note.trim().startsWith('{')
+                ? JSON.parse(mainConflict.note)
+                : { pub: mainConflict.note, priv: "" };
+                
+              pubNote = parsed.pub || "";
+              privNote = parsed.int || parsed.priv || ""; // Gère les deux clés d'anciennes/nouvelles notes
+            } catch (e) {
+              pubNote = mainConflict.note; // Fallback texte brut
+            }
+
+            // Génération de l'affichage HTML séparé
+            if (pubNote) {
+              noteHtml += `
+                <div class="text-xs text-slate-500 font-bold uppercase mt-2">Note :</div>
+                <div class="text-sm text-blue-600">${pubNote}</div>
+              `;
+            }
+            if (privNote) {
+              noteHtml += `
+                <div class="text-xs text-slate-500 font-bold uppercase mt-2">Note Privée :</div>
+                <div class="text-sm text-indigo-600">${privNote}</div>
+              `;
+            }
+          }
+
+          // Demander la confirmation à l'utilisateur
+          const resultConfirm = await showModal({
+            title: "Données détectées",
+            icon: "warning",
+            html: `
+              <div class="text-left text-sm mb-3">La tâche <b>${taskAbbr}</b> pour le logement <b>${logId}</b> possède déjà des données associées.</div>
+              <div class="bg-slate-50 p-2 rounded border border-slate-200 mb-3 text-left">
+                <div class="text-xs text-slate-500 font-bold uppercase">Dates au récap :</div>
+                <div class="text-sm text-primary font-mono">${mainConflict.recapDates || "Aucune"}</div>
+                <div class="text-xs text-slate-500 font-bold uppercase mt-2">Statut actuel :</div>
+                <div class="text-sm text-amber-600 font-bold">${statutActuel}</div>
+                ${noteHtml}
+              </div>
+              <div class="text-left text-sm font-bold text-slate-700">Voulez-vous tout de même déplacer cette tâche ?</div>
+            `,
+            showCancelButton: true,
+            confirmButtonText: "Oui, déplacer",
+            cancelButtonText: "Annuler",
+            confirmButtonColor: "#d33",
+            cancelButtonColor: "#3085d6"
+          });
+
+          if (!resultConfirm.isConfirmed) {
+            resetCalendarInput(oldDateStr);
+            return; // Annulation complète par l'utilisateur
+          }
+        }
+
+        // Si aucun conflit ou si l'utilisateur a validé le forçage, on passe à l'analyse de contiguïté
+        proceedWithContiguityRadar(logId, taskAbbr, oldDateStr, newDateStr);
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur serveur',
+          text: err.message
+        });
+        resetCalendarInput(oldDateStr);
+        appErrorLog(err, "triggerDominoEffect_analyze", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          oldDateStr: oldDateStr,
+          newDateStr: newDateStr,
+          cleanCellsData: cleanCellsData,
+          currentview: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsAnalyzeDeletion(APP_DATA.token, cleanCellsData, window.currentView);
+  }
+
+  // Fonction utilitaire pour réinitialiser le calendrier visuel
+  function resetCalendarInput(oldDateStr) {
+    const inputTaskDate = document.getElementById('input-task-date');
+    if (inputTaskDate) inputTaskDate.value = oldDateStr;
+  }
+
+  // Extraction de la suite logique : Phase 1, 2 et 3 de l'architecture initiale
+  function proceedWithContiguityRadar(logId, taskAbbr, oldDateStr, newDateStr) {
+    // --- PHASE 1 : LE RADAR (Analyse des conditions A, B, C, D) ---
+    // Condition A : La tâche a une pastille avant
+    let hasSameTaskLeft = false;
+    // Condition B : La tâche a une pastille après
+    let hasSameTaskRight = false;
+    // Condition C : Il y a une AUTRE tâche collée avant
+    let hasDifferentTaskLeftContiguous = false;
+    // Condition D : Il y a une AUTRE tâche collée après
+    let hasDifferentTaskRightContiguous = false;
+
+    if (window.lastPlanningData && window.lastPlanningData.planning) {
+      const rowData = window.lastPlanningData.planning.find(p => p.id === logId);
+      if (rowData && rowData.tasks) {
+        const workingDays = window.lastPlanningData.headers.workingDays;
+        const tasksArr = rowData.tasks;
+        const targetIdx = window.lastPlanningData.headers.dates.indexOf(oldDateStr);
+
+        if (targetIdx !== -1) {
+          const getBaseTasks = (cellContent) => {
+            if (!cellContent) return [];
+            return String(cellContent).split('|').map(t => t.split('@')[0].trim()).filter(t => t.length > 0);
+          };
+          const baseTaskAbbr = taskAbbr.split('@')[0].trim();
+
+          // Scan Gauche (Passé)
+          for (let i = targetIdx - 1; i >= 0; i--) {
+            if (workingDays[i] == 0) continue; // Sauter les week-ends
+
+            const cellTasks = getBaseTasks(tasksArr[i]);
+            if (cellTasks.length === 0) break; // Cellule vide = bloc rompu
+
+            if (cellTasks.includes(baseTaskAbbr)) {
+              hasSameTaskLeft = true; // Condition A
+            }
+            if (cellTasks.some(t => t !== baseTaskAbbr)) {
+              hasDifferentTaskLeftContiguous = true; // Condition C
+            }
+            if (!cellTasks.includes(baseTaskAbbr)) {
+              break; // On a touché une autre tâche pure, on arrête le scan
+            }
+          }
+
+          // Scan Droite (Futur)
+          for (let i = targetIdx + 1; i < tasksArr.length; i++) {
+            if (workingDays[i] == 0) continue; // Sauter les week-ends
+
+            const cellTasks = getBaseTasks(tasksArr[i]);
+            if (cellTasks.length === 0) break; // Cellule vide = bloc rompu
+
+            if (cellTasks.includes(baseTaskAbbr)) {
+              hasSameTaskRight = true; // Condition B
+            }
+            if (cellTasks.some(t => t !== baseTaskAbbr)) {
+              hasDifferentTaskRightContiguous = true; // Condition D
+            }
+            if (!cellTasks.includes(baseTaskAbbr)) {
+              break; // On a touché une autre tâche pure, on arrête le scan
+            }
+          }
+        }
+      }
+    }
+
+    // --- PHASE 2 : GÉNÉRATION DES 5 OPTIONS ---
+    let choicesHtml = '';
+
+    // 1 - TOUJOURS : Déplacer seulement cette pastille
+    choicesHtml += `
+      <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer transition-all">
+        <input type="radio" name="domino-strategy" value="only-this" checked class="mt-1 text-primary focus:ring-primary">
+        <div>
+          <span class="font-bold text-slate-800 block text-sm">Cette pastille uniquement</span>
+          <span class="text-xs text-slate-400 block">Seule cette journée bouge. Aucun impact sur le reste.</span>
+        </div>
+      </label>
+    `;
+
+    // 2 - Si Condition A ou B : Déplacer toute la tâche
+    if (hasSameTaskLeft || hasSameTaskRight) {
+      choicesHtml += `
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer transition-all">
+          <input type="radio" name="domino-strategy" value="entire-task" class="mt-1 text-primary focus:ring-primary">
+          <div>
+            <span class="font-bold text-slate-800 block text-sm">Toutes les pastilles de cette tâche</span>
+            <span class="text-xs text-slate-400 block">Déplace l'intégralité de la tâche de manière groupée.</span>
+          </div>
+        </label>
+      `;
+    }
+
+    // 3 - Si Condition A : Déplacer cette pastille et les suivantes de la même tâche
+    if (hasSameTaskLeft && hasSameTaskRight) {
+      choicesHtml += `
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer transition-all">
+          <input type="radio" name="domino-strategy" value="task-from-here" class="mt-1 text-primary focus:ring-primary">
+          <div>
+            <span class="font-bold text-slate-800 block text-sm">Cette pastille et les suivantes (même tâche)</span>
+            <span class="text-xs text-slate-400 block">Déplace à partir de ce jour, sans toucher au travail déjà fait.</span>
+          </div>
+        </label>
+      `;
+    }
+
+    // 4 - Si Condition C ou D : Déplacer toute la tâche + les autres tâches autour
+    if (hasDifferentTaskLeftContiguous || hasDifferentTaskRightContiguous) {
+      choicesHtml += `
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer transition-all">
+          <input type="radio" name="domino-strategy" value="entire-block" class="mt-1 text-primary focus:ring-primary">
+          <div>
+            <span class="font-bold text-slate-800 block text-sm">Tout le bloc d'intervention (avant et après)</span>
+            <span class="text-xs text-slate-400 block">Déplace toute la chaîne d'interventions collées, tous corps d'état confondus.</span>
+          </div>
+        </label>
+      `;
+    }
+
+    // 5 - Si Condition D : Déplacer cette pastille + toutes les suivantes (même et autres tâches)
+    if (hasDifferentTaskRightContiguous) {
+      choicesHtml += `
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer transition-all">
+          <input type="radio" name="domino-strategy" value="this-and-all-successors" class="mt-1 text-primary focus:ring-primary">
+          <div>
+            <span class="font-bold text-slate-800 block text-sm">Cette pastille et TOUTES les interventions suivantes</span>
+            <span class="text-xs text-slate-400 block">Déplace tout ce qui s'enchaîne à partir de ce jour.</span>
+          </div>
+        </label>
+      `;
+    }
+
+    const pNew = newDateStr.split('-');
+    const displayNewDate = `${pNew[2]}/${pNew[1]}/${pNew[0]}`;
+
+    showModal({
+      icon: 'question',
+      title: 'Stratégie de déplacement',
+      width: '600px', // showModal handles this perfectly
+      html: `
+        <div class="text-left mb-4 text-xs text-slate-500 font-semibold bg-slate-50 p-3 rounded-xl border border-slate-200">
+          Déplacement de <b>${taskAbbr}</b> au <span class="text-primary font-bold">${displayNewDate}</span>.
+        </div>
+        <div class="flex flex-col gap-2.5 text-left max-h-[50vh] overflow-y-auto">
+          ${choicesHtml}
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Appliquer',
+      cancelButtonText: 'Annuler',
+      preConfirm: () => {
+        const selected = document.querySelector('input[name="domino-strategy"]:checked');
+        if (!selected) {
+          Swal.showValidationMessage("Veuillez sélectionner une option.");
+          return false;
+        }
+        return selected.value;
+      }
+    }).then((result) => {
+      if (result.isConfirmed) {
+        executeShift(logId, taskAbbr, oldDateStr, newDateStr, result.value);
+      } else {
+        resetCalendarInput(oldDateStr);
+      }
+    });
+  }
+
+  function executeShift(logId, taskAbbr, oldDate, newDate, mode) {
+    window.currentSelectionId = `task|${logId}|${taskAbbr}|${newDate}`;
+    showLoading('Déplacement en cours...', '', true);
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          resetCalendarInput(oldDate);
+          showModal({
+            icon: 'warning',
+            title: 'Déplacement annulé',
+            text: res.message
+          });
+          return;
+        }
+
+        showToast('Terminé');
+
+        appLog(
+          window.currentView,
+          logId,
+          "DEPLACEMENT_TACHE_DOMINO",
+          "Private",
+          "Detail",
+          { 
+            tache: taskAbbr, 
+            ancienneDate: oldDate, 
+            nouvelleDate: newDate, 
+            strategie: mode 
+          }
+        );
+        
+        updateLocalCacheAfterDomino(logId, taskAbbr, oldDate, newDate, mode);
+        refreshSingleRowDOM(logId);
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        resetCalendarInput(oldDate);
+        appErrorLog(err, "gsShiftTaskWithDomino", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          oldDate: oldDate,
+          newDate: newDate,
+          mode: mode,
+          currentview: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsShiftTaskWithDomino(APP_DATA.token, logId, taskAbbr, oldDate, newDate, window.currentView, mode);
+  }
+
+  function updateLocalCacheAfterDomino(logId, taskAbbr, oldDateStr, newDateStr, mode) {
+    if (!window.lastPlanningData || !window.lastPlanningData.planning) return;
+
+    const row = window.lastPlanningData.planning.find(p => String(p.id).trim() === String(logId).trim());
+    if (!row || !row.tasks) return;
+
+    const dates = window.lastPlanningData.headers.dates;
+    const workingDays = window.lastPlanningData.headers.workingDays;
+
+    const oldTimelineIdx = dates.indexOf(oldDateStr);
+    const newTimelineIdx = dates.indexOf(newDateStr);
+
+    // Si le départ ou l'arrivée est hors écran, on laisse la synchronisation globale s'en charger au prochain scroll
+    if (oldTimelineIdx === -1 || newTimelineIdx === -1) return; 
+
+    // Calcul du delta de déplacement en jours ouvrés
+    let workingDaysDelta = 0;
+    const step = oldTimelineIdx <= newTimelineIdx ? 1 : -1;
+    let curr = oldTimelineIdx;
+    while (curr !== newTimelineIdx) {
+        curr += step;
+        if (workingDays[curr] != 0) workingDaysDelta += step;
+    }
+
+    const targetBaseTaskUpper = taskAbbr.toUpperCase().split('@')[0].trim();
+
+    const getBaseTasks = (idx) => {
+        if (!row.tasks[idx]) return [];
+        return String(row.tasks[idx]).split('|').map(t => t.trim()).filter(t => t.length > 0);
+    };
+    const hasBaseTask = (idx, base) => getBaseTasks(idx).some(t => t.toUpperCase().split('@')[0] === base);
+    const hasAnyTask = (idx) => getBaseTasks(idx).length > 0;
+    const isWorking = (idx) => workingDays[idx] != 0;
+
+    let indices = [];
+
+    // Identification des blocs à déplacer (identique au Backend)
+    if (mode === 'only-this') {
+        indices.push(oldTimelineIdx);
+    } else if (mode === 'entire-task') {
+        for (let i = oldTimelineIdx; i >= 0; i--) {
+            if (!isWorking(i)) continue;
+            if (hasBaseTask(i, targetBaseTaskUpper)) indices.push(i); else break;
+        }
+        for (let i = oldTimelineIdx + 1; i < dates.length; i++) {
+            if (!isWorking(i)) continue;
+            if (hasBaseTask(i, targetBaseTaskUpper)) indices.push(i); else break;
+        }
+    } else if (mode === 'task-from-here') {
+        for (let i = oldTimelineIdx; i < dates.length; i++) {
+            if (!isWorking(i)) continue;
+            if (hasBaseTask(i, targetBaseTaskUpper)) indices.push(i); else break;
+        }
+    } else if (mode === 'entire-block') {
+        for (let i = oldTimelineIdx; i >= 0; i--) {
+            if (!isWorking(i)) continue;
+            if (hasAnyTask(i)) indices.push(i); else break;
+        }
+        for (let i = oldTimelineIdx + 1; i < dates.length; i++) {
+            if (!isWorking(i)) continue;
+            if (hasAnyTask(i)) indices.push(i); else break;
+        }
+    } else if (mode === 'this-and-all-successors') {
+        for (let i = oldTimelineIdx; i < dates.length; i++) {
+            if (!isWorking(i)) continue;
+            if (hasAnyTask(i)) indices.push(i); else break;
+        }
+    }
+
+    indices = [...new Set(indices)].sort((a, b) => a - b);
+    let tasksToRemove = [];
+    let tasksToAdd = [];
+
+    indices.forEach(idx => {
+        const cellTasks = getBaseTasks(idx);
+        cellTasks.forEach(t => {
+            const tBase = t.toUpperCase().split('@')[0];
+            let shouldMove = false;
+
+            if (mode === 'only-this' || mode === 'entire-task' || mode === 'task-from-here') {
+                if (tBase === targetBaseTaskUpper) shouldMove = true;
+            } else {
+                shouldMove = true; // Tous les corps d'état
+            }
+
+            if (shouldMove) {
+                tasksToRemove.push({ originalIdx: idx, task: t });
+
+                let targetIdx = idx;
+                if (workingDaysDelta !== 0) {
+                    let remaining = Math.abs(workingDaysDelta);
+                    const stepMove = workingDaysDelta > 0 ? 1 : -1;
+                    while (remaining > 0) {
+                        targetIdx += stepMove;
+                        if (targetIdx < 0 || targetIdx >= dates.length) break;
+                        if (workingDays[targetIdx] != 0) remaining--;
+                    }
+                }
+
+                // SÉCURITÉ : Si la tâche atterrit en dehors de notre fenêtre de 50 jours, on l'ignore (le backend s'en chargera pour la base de données).
+                if (targetIdx >= 0 && targetIdx < dates.length) {
+                    tasksToAdd.push({ targetIdx: targetIdx, task: t });
+                }
+            }
+        });
+    });
+
+    // Application stricte au tableau local (row.tasks)
+    let updatedRowTasks = [...row.tasks];
+
+    tasksToRemove.forEach(item => {
+        let arr = String(updatedRowTasks[item.originalIdx] || "").split('|').map(t => t.trim()).filter(t => t.length > 0);
+        const idx = arr.findIndex(t => t.toUpperCase() === item.task.toUpperCase());
+        if (idx !== -1) {
+            arr.splice(idx, 1);
+            updatedRowTasks[item.originalIdx] = arr.join(' | ');
+        }
+    });
+
+    tasksToAdd.forEach(item => {
+        let arr = String(updatedRowTasks[item.targetIdx] || "").split('|').map(t => t.trim()).filter(t => t.length > 0);
+        if (arr.indexOf(item.task) === -1) {
+            arr.push(item.task);
+            updatedRowTasks[item.targetIdx] = arr.join(' | ');
+        }
+    });
+
+    row.tasks = updatedRowTasks;
+}
+
+  // =========================================================
+  // PART 3: RESERVES & AUTOCONTROLES EDITOR
+  // =========================================================
+  
+  async function renderInterventionEditor(logId, dotElement) {
+    const content = document.getElementById('sidebar-content');
+    const td = dotElement.closest('td');
+    const dateISO = td.getAttribute('data-date');
+    
+    // On récupère TOUS les items (A-xxx, R-xxx) pour cette cellule depuis le cache
+    let items = window.lastPlanningData.repairs[logId]?.[dateISO] || [];
+    
+    if (isClient || window.isClientViewActive) {
+       items = items.filter(i => !i.startsWith('A-'));
+    }
+
+    if (items.length === 0) return;
+
+    let selectedInterId = dotElement.getAttribute('data-inter-id') || items[0];
+
+    // On stocke ces variables globalement pour la fonction de redessin
+    window.currentInterventionsList = items;
+    window.currentInterventionLogId = logId;
+    window.currentInterventionDateISO = dateISO; // <-- FIX: Store the cell's date globally
+
+    content.innerHTML = `<div class="py-20 text-center"><span class="material-symbols-outlined animate-spin text-3xl text-primary">sync</span><p class="text-xs font-bold mt-2">Chargement...</p></div>`;
+    
+    fetchAndDrawIntervention(selectedInterId, dateISO);
+  }
+
+  // =========================================================
+  // BOUTONS D'ACTION DE LA FICHE — Historique / Valider / Corriger
+  // =========================================================
+  // Même "cerveau" que EDL_Script_2.txt : showHistoryModal() vient de
+  // ClientLib.txt (partagé), validateReservesIntervention() et
+  // gsCorrectInterventionReference() viennent de EDL_gs.txt mais sont
+  // globales à tout le projet Apps Script — aucune modification serveur
+  // n'était nécessaire pour ces deux-là. Adapté ici pour fonctionner sur
+  // l'intervention actuellement affichée dans #sidebar-content (fetch à la
+  // demande via gsGetInterventionDetails) plutôt que sur un tableau
+  // interventionsCache en mémoire comme côté EDL, puisque Planning n'affiche
+  // qu'une intervention à la fois.
+  //
+  // NOTE : le bouton "Corriger" ne propose ici QUE "La référence" (la
+  // correction de statut existe déjà par ailleurs sur cette page, via la
+  // section "Informations Techniques" de la fiche) — pas de dispatcher
+  // "Le statut" / "La référence" comme côté EDL.
+
+  // "15/06/2026" -> vrai si strictement postérieure à aujourd'hui. Même
+  // logique que isFutureDateFr() côté EDL, adaptée au format "dd/MM/yyyy"
+  // (avec slashs) que renvoie gsGetInterventionDetails() ici, au lieu de
+  // l'affichage "MAR. 09 JUIN 2026" utilisé côté EDL.
+  function isFutureDateSlash(dateStr) {
+    if (!dateStr || !dateStr.includes('/')) return false;
+    const parts = dateStr.split('/');
+    if (parts.length !== 3) return false;
+    const d = new Date(parts[2], parts[1] - 1, parts[0]);
+    if (isNaN(d.valueOf())) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return d > today;
+  }
+
+  // Compression identique à celle utilisée côté EDL pour les photos jointes
+  // à la validation — Planning n'en avait pas encore de copie.
+  function compressImageToWebP(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/webp', 0.8).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = event.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  window.onHistoryClicked = function(interventionId) {
+    const currentViewModule = window.currentView || "locataires";
+    showHistoryModal(currentViewModule, interventionId, { title: 'Historique — ' + interventionId });
+  };
+
+  window.onValidateInterventionClicked = async function(interventionId) {
+    const isReserve = String(interventionId).startsWith('R-');
+    const currentViewModule = window.currentView || "locataires";
+
+    let details;
+    try {
+      details = await new Promise((resolve, reject) =>
+        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+          .gsGetInterventionDetails(APP_DATA.token, interventionId, currentViewModule, isClient));
+    } catch (e) {
+      showModal({ icon: 'error', title: 'Erreur', text: "Impossible de charger l'intervention." });
+      appErrorLog(e, "onValidateInterventionClicked:gsGetInterventionDetails", { interventionId });
+      return;
+    }
+    if (!details) return;
+
+    let clearFutureDate = false;
+    const dateStr = details.dateStr || '';
+
+    if (isFutureDateSlash(dateStr)) {
+      const { isConfirmed: confirmFuture } = await Swal.fire({
+        title: 'Intervention Future',
+        html: `<p class="text-xs text-slate-600">Cette intervention est planifiée pour le <b>${dateStr}</b>.</p>
+               <p class="text-xs text-slate-600 mt-2">Voulez-vous forcer la validation maintenant et <b>supprimer sa date de planification</b> sur le planning ?</p>`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Oui, continuer et supprimer',
+        cancelButtonText: 'Annuler la validation',
+        confirmButtonColor: '#10b981',
+        customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' }
+      });
+      if (!confirmFuture) return;
+      clearFutureDate = true;
+    }
+
+    let modalHtml = `<div class="text-left mt-2 flex flex-col gap-4">`;
+    if (isReserve) {
+      modalHtml += `
+        <div>
+          <label class="text-[10px] font-black text-slate-400 uppercase">Note Publique</label>
+          <textarea id="val-pub-note" class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-primary outline-none" rows="2" placeholder="Note publique visible par tous..."></textarea>
+        </div>
+        <div>
+          <label class="text-[10px] font-black text-rose-400 uppercase flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">lock</span> Note Privée</label>
+          <textarea id="val-priv-note" class="w-full px-3 py-2 border border-rose-200 rounded-lg text-xs bg-rose-50/50 focus:ring-rose-400 outline-none" rows="2" placeholder="Note interne de suivi..."></textarea>
+        </div>
+      `;
+    } else {
+      modalHtml += `
+        <div>
+          <label class="text-[10px] font-black text-rose-400 uppercase flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">lock</span> Note Interne (Autocontrôle)</label>
+          <textarea id="val-priv-note" class="w-full px-3 py-2 border border-rose-200 rounded-lg text-xs bg-rose-50/50 focus:ring-rose-400 outline-none" rows="3" placeholder="Ajouter une note de suivi d'autocontrôle..."></textarea>
+        </div>
+      `;
+    }
+
+    modalHtml += `
+       <div>
+          <label class="text-[10px] font-black text-slate-400 uppercase">Photos (Cadrées max 800px)</label>
+          <input type="file" id="val-photos" multiple accept="image/png, image/jpeg, image/webp" class="w-full text-xs mt-1 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-[10px] file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer" />
+          <div id="val-photo-preview" class="flex gap-2 mt-3 flex-wrap"></div>
+       </div>
+      </div>
+    `;
+
+    let photosPayload = [];
+    const { isConfirmed, value } = await Swal.fire({
+      title: 'Valider l\'intervention',
+      html: modalHtml,
+      showCancelButton: true,
+      confirmButtonText: 'Confirmer la clôture',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#10b981',
+      customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' },
+      didOpen: () => {
+        const fileInput = document.getElementById('val-photos');
+        const previewDiv = document.getElementById('val-photo-preview');
+        fileInput.addEventListener('change', async (e) => {
+          previewDiv.innerHTML = '<span class="text-xs text-slate-400 animate-pulse">Traitement & compression...</span>';
+          photosPayload = [];
+          let previewHtml = '';
+          for (let file of e.target.files) {
+            const base64Data = await compressImageToWebP(file);
+            const fileName = file.name.replace(/\.[^/.]+$/, "") + ".webp";
+            photosPayload.push({ name: fileName, base64: base64Data });
+            previewHtml += `<div class="bg-slate-100 border border-slate-200 text-[9px] font-bold px-2 py-1 rounded text-slate-500 flex items-center gap-1"><span class="material-symbols-outlined !text-[12px]">image</span> ${fileName.substring(0,10)}...</div>`;
+          }
+          previewDiv.innerHTML = previewHtml;
+        });
+      },
+      preConfirm: () => {
+        return {
+          pubNote: document.getElementById('val-pub-note')?.value.trim() || '',
+          privNote: document.getElementById('val-priv-note')?.value.trim() || '',
+          photos: photosPayload
+        };
+      }
+    });
+
+    if (!isConfirmed) return;
+
+    showToast('Validation lancée en arrière-plan...', 'info', '', 2000);
+
+    const payload = {
+      interventionId: interventionId,
+      isReserve: isReserve,
+      moduleView: currentViewModule,
+      clearDate: clearFutureDate,
+      pubNote: value.pubNote,
+      privNote: value.privNote,
+      photos: value.photos
+    };
+
+    google.script.run
+      .withSuccessHandler((response) => {
+        const structuredDetails = {
+          "1. Paramètres de l'Intervention": {
+            "ID": interventionId,
+            "Type": isReserve ? "Réserve" : "Autocontrôle",
+            "Statut Final": "Validée",
+            "Modification du Planning": clearFutureDate ? "OUI - La date de planification future a été supprimée" : "NON - Pas de date future détectée"
+          },
+          "2. Notes Renseignées": {
+            "Note Publique": isReserve ? (value.pubNote || "Aucune note publique.") : "N/A (Autocontrôle)",
+            "Note Privée (Interne)": value.privNote || "Aucune note privée."
+          },
+          "3. Pièces Jointes (Photos)": {
+            "Quantité": response.uploadedPhotoUrls ? response.uploadedPhotoUrls.length : 0,
+            "Fichiers": response.uploadedPhotoUrls || []
+          }
+        };
+
+        const userEmail = (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu";
+        appLog(currentViewModule, interventionId, "Validation de l'intervention", isReserve ? "Public" : "Private", "Milestone", structuredDetails, userEmail);
+        showToast('Intervention enregistrée avec succès.', 'success', '', 2500);
+
+        // Rafraîchit la fiche affichée + la ligne de la grille concernée
+        // (même mécanisme que autoSaveInterventionField plus bas).
+        if (window.currentInterventionLogId) refreshSingleRowDOM(window.currentInterventionLogId);
+        fetchAndDrawIntervention(interventionId);
+      })
+      .withFailureHandler((err) => {
+        appErrorLog(err, "validateReservesIntervention", { interventionId });
+        showModal({ icon: 'error', title: 'Erreur', text: "Mise à jour distante échouée. Erreur : " + err.message });
+      })
+      .validateReservesIntervention(APP_DATA.token, APP_DATA.projectId, payload);
+  };
+
+  // ---------------------------------------------------------
+  // CORRIGER — "La référence" (réassignation à un autre logement)
+  // ---------------------------------------------------------
+  // Réutilise gsCorrectInterventionReference() (EDL_gs.txt, générique à tout
+  // le projet — retrouve l'intervention par ID dans tout le classeur
+  // Réserves, quel que soit l'onglet). Le sélecteur en cascade est
+  // reconstruit avec les données propres à Planning : window.viewConfigs
+  // pour les libellés de champs, et le nouveau gsGetLogementsStructure()
+  // (Planning_gs.txt) pour une structure Bâtiment/Hall/Étage-Orientation/
+  // Porte-Description-Trame/ID complète et jamais filtrée par un éventuel
+  // filtre Bâtiment actif sur la grille.
+  //
+  // Cascade à 4 niveaux, uniforme sur les 3 vues (demande explicite —
+  // volontairement différent des 3-4 niveaux asymétriques d'EDL) :
+  //   1. Vue courante (contexte, non interactif — celle déjà ouverte)
+  //   2. Bâtiment - Hall (locataires/communs) OU Orientation (façades)
+  //   3. Étage (locataires/communs) OU Trame (façades)
+  //   4. ID — toujours une sélection finale à part entière : Porte
+  //      (locataires), Description (communs), ou Partie (façades).
+  // Pour les façades, le niveau 2 est l'Orientation seule (pas de Bâtiment/
+  // Hall) : c'est une lecture littérale de la demande — si un projet a
+  // plusieurs bâtiments, le libellé de chaque option du niveau 4 inclut son
+  // Bâtiment/Hall pour lever toute ambiguïté malgré ce raccourci.
+
+  window._planRefCorrStructureCache = window._planRefCorrStructureCache || {};
+
+  function planRefCorrFetchStructure(view) {
+    if (window._planRefCorrStructureCache[view]) {
+      return Promise.resolve(window._planRefCorrStructureCache[view]);
+    }
+    return new Promise((resolve, reject) =>
+      google.script.run.withSuccessHandler((list) => {
+        window._planRefCorrStructureCache[view] = list || [];
+        resolve(window._planRefCorrStructureCache[view]);
+      }).withFailureHandler(reject)
+        .gsGetLogementsStructure(APP_DATA.token, APP_DATA.projectId, view));
+  }
+
+  function planRefCorrFieldLabel(view, fieldId, fallback) {
+    const cfg = (window.viewConfigs && window.viewConfigs[view]) || [];
+    const found = cfg.find(c => c.id === fieldId);
+    return (found && found.label) ? found.label : fallback;
+  }
+
+  function planRefCorrViewLabel(view) {
+    return view === 'communs' ? 'Communs' : (view === 'facades' ? 'Façades' : 'Locataires');
+  }
+
+  function planRefCorrPopulateL2(view, list, preselectKey) {
+    const sel = document.getElementById('planrefcorr-l2');
+    if (view === 'facades') {
+      sel.innerHTML = `<option value="" disabled selected>Orientation</option>`;
+      const orientations = [...new Set(list.map(i => String(i.orientation || '').trim()).filter(v => v !== ''))];
+      orientations.sort().forEach(o => {
+        sel.innerHTML += `<option value="${o}" ${o === preselectKey ? 'selected' : ''}>${o}</option>`;
+      });
+    } else {
+      sel.innerHTML = `<option value="" disabled selected>Bâtiment - Hall</option>`;
+      const map = new Map();
+      list.forEach(item => {
+        if (!item.batiment) return;
+        const bat = String(item.batiment).trim();
+        const hall = item.hall ? String(item.hall).trim() : "";
+        const key = `${bat}||${hall}`;
+        if (!map.has(key)) map.set(key, { bat, hall });
+      });
+      const sorted = Array.from(map.entries()).sort((a, b) => {
+        if (a[1].bat !== b[1].bat) return a[1].bat.localeCompare(b[1].bat, undefined, { numeric: true });
+        return a[1].hall.localeCompare(b[1].hall, undefined, { numeric: true });
+      });
+      sorted.forEach(([key, val]) => {
+        const label = val.hall ? `Bât. ${val.bat} - Hall ${val.hall}` : `Bât. ${val.bat}`;
+        sel.innerHTML += `<option value="${key}" ${key === preselectKey ? 'selected' : ''}>${label}</option>`;
+      });
+    }
+  }
+
+  function planRefCorrFilterByL2(view, list, l2Value) {
+    if (view === 'facades') {
+      return list.filter(i => String(i.orientation || '').trim() === l2Value);
+    }
+    const [bat, hall] = String(l2Value || '').split('||');
+    return list.filter(i => String(i.batiment || '').trim() === bat && String(i.hall || '').trim() === (hall || ''));
+  }
+
+  function planRefCorrPopulateL3(view, list, l2Value, preselectVal) {
+    const sel = document.getElementById('planrefcorr-l3');
+    const label = view === 'facades' ? 'Trame' : planRefCorrFieldLabel(view, 'etage', 'Étage');
+    sel.innerHTML = `<option value="" disabled selected>${label}</option>`;
+    const filtered = planRefCorrFilterByL2(view, list, l2Value);
+
+    if (view === 'facades') {
+      const trames = [...new Set(filtered.map(f => String(f.trame_filter_val || f.trame || '').trim()).filter(Boolean))];
+      trames.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      trames.forEach(t => {
+        sel.innerHTML += `<option value="${t}" ${t === preselectVal ? 'selected' : ''}>${t}</option>`;
+      });
+    } else {
+      const etages = [...new Set(filtered.map(i => String(i.etage ?? '').trim()).filter(v => v !== ''))];
+      etages.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(e => {
+        sel.innerHTML += `<option value="${e}" ${e === preselectVal ? 'selected' : ''}>${label} ${e}</option>`;
+      });
+    }
+    sel.disabled = false;
+  }
+
+  function planRefCorrPopulateL4(view, list, l2Value, l3Value) {
+    const sel = document.getElementById('planrefcorr-l4');
+    sel.innerHTML = `<option value="" disabled selected>ID</option>`;
+    const filtered = planRefCorrFilterByL2(view, list, l2Value).filter(i => {
+      return view === 'facades'
+        ? String(i.trame_filter_val || i.trame || '').trim() === l3Value
+        : String(i.etage ?? '').trim() === l3Value;
+    });
+
+    if (view === 'locataires') {
+      filtered.sort((a, b) => String(a.porte || '').localeCompare(String(b.porte || ''), undefined, { numeric: true }));
+      filtered.forEach(loc => {
+        const occupant = (loc.nom || loc.prenom) ? ` — ${(loc.nom || '')} ${(loc.prenom || '')}`.trim() : '';
+        sel.innerHTML += `<option value="${loc.id}">Porte ${loc.porte || loc.id}${occupant} (${loc.id})</option>`;
+      });
+    } else if (view === 'communs') {
+      filtered.sort((a, b) => String(a.description || '').localeCompare(String(b.description || '')));
+      filtered.forEach(com => {
+        sel.innerHTML += `<option value="${com.id}">${com.description || com.id} (${com.id})</option>`;
+      });
+    } else if (view === 'facades') {
+      filtered.sort((a, b) => String(a.partie || '').localeCompare(String(b.partie || ''), undefined, { numeric: true }));
+      filtered.forEach(f => {
+        const partieName = (f.partie && String(f.partie).trim() !== '') ? `Partie ${String(f.partie).trim()}` : 'Trame complète';
+        const batHall = f.hall ? `Bât. ${f.batiment} - Hall ${f.hall}` : `Bât. ${f.batiment}`;
+        sel.innerHTML += `<option value="${f.id}">${batHall} — ${partieName} (${f.id})</option>`;
+      });
+    }
+    sel.disabled = false;
+  }
+
+  async function openPlanningReferenceCorrectionModal(interventionId) {
+    const view = window.currentView || 'locataires';
+    const isReserve = String(interventionId).startsWith('R-');
+
+    showLoading('Chargement...', 'Récupération de la structure du bâtiment');
+    let details, structureList;
+    try {
+      [details, structureList] = await Promise.all([
+        new Promise((resolve, reject) => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+          .gsGetInterventionDetails(APP_DATA.token, interventionId, view, isClient)),
+        planRefCorrFetchStructure(view)
+      ]);
+    } catch (e) {
+      Swal.close();
+      showModal({ icon: 'error', title: 'Erreur', text: "Impossible de charger les données nécessaires à la correction." });
+      appErrorLog(e, "openPlanningReferenceCorrectionModal", { interventionId, view });
+      return;
+    }
+    Swal.close();
+    if (!details) return;
+
+    const oldLogementId = details.logement || '';
+    const oldItem = structureList.find(i => String(i.id).trim() === String(oldLogementId).trim());
+    const oldLogementLabel = oldItem
+      ? (oldItem.nom ? `${oldItem.nom} ${oldItem.prenom || ''} (${oldLogementId})`.trim()
+         : (oldItem.description ? `${oldItem.description} (${oldLogementId})`
+            : `${oldItem.trame || ''}${oldItem.partie ? ' - Partie ' + oldItem.partie : ''} (${oldLogementId})`.trim()))
+      : oldLogementId;
+
+    const preselectL2 = oldItem
+      ? (view === 'facades' ? String(oldItem.orientation || '').trim() : `${String(oldItem.batiment || '').trim()}||${oldItem.hall ? String(oldItem.hall).trim() : ''}`)
+      : null;
+    const preselectL3 = oldItem
+      ? (view === 'facades' ? String(oldItem.trame_filter_val || oldItem.trame || '').trim() : String(oldItem.etage || '').trim())
+      : null;
+
+    const l2Label = view === 'facades' ? 'Orientation' : 'Bâtiment - Hall';
+    const l3Label = view === 'facades' ? 'Trame' : planRefCorrFieldLabel(view, 'etage', 'Étage');
+
+    Swal.fire({
+      title: `<div class="text-xl font-black text-slate-800">Modifier la Référence</div>
+              <div class="text-xs font-medium text-slate-500 mt-1 uppercase tracking-wider">Intervention ID : ${interventionId}</div>`,
+      html: `
+        <div class="flex flex-col gap-4 mt-2 text-left">
+          <div class="text-xs bg-slate-50 border border-slate-200 rounded-lg p-2">
+            Vue : <b>${planRefCorrViewLabel(view)}</b><br>
+            Référence actuelle : <b>${oldLogementLabel || 'Inconnue'}</b>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">${l2Label}</label>
+            <select id="planrefcorr-l2" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50">
+              <option value="" disabled selected>${l2Label}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">${l3Label}</label>
+            <select id="planrefcorr-l3" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50" disabled>
+              <option value="" disabled selected>${l3Label}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">ID</label>
+            <select id="planrefcorr-l4" class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50" disabled>
+              <option value="" disabled selected>ID</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Motif de la correction <span class="text-red-500">*</span></label>
+            <textarea id="planrefcorr-note" rows="2" placeholder="Ex: Réserve rattachée au mauvais lot lors de la saisie..." class="w-full rounded-lg border-slate-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50"></textarea>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Continuer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#0d59f2',
+      focusConfirm: false,
+      didOpen: () => {
+        const selL2 = document.getElementById('planrefcorr-l2');
+        const selL3 = document.getElementById('planrefcorr-l3');
+        const selL4 = document.getElementById('planrefcorr-l4');
+
+        planRefCorrPopulateL2(view, structureList, preselectL2);
+
+        selL2.addEventListener('change', (e) => {
+          selL4.innerHTML = `<option value="" disabled selected>ID</option>`;
+          selL4.disabled = true;
+          planRefCorrPopulateL3(view, structureList, e.target.value, null);
+        });
+
+        selL3.addEventListener('change', (e) => {
+          planRefCorrPopulateL4(view, structureList, selL2.value, e.target.value);
+        });
+
+        // Pré-remplissage niveaux 2 & 3 depuis la référence actuelle (épargne
+        // des clics) — le niveau 4 (ID) reste volontairement vide pour forcer
+        // un choix actif et éviter de "corriger" vers la même référence.
+        if (preselectL2) {
+          selL2.value = preselectL2;
+          planRefCorrPopulateL3(view, structureList, preselectL2, preselectL3);
+          if (preselectL3) selL3.value = preselectL3;
+        }
+      },
+      preConfirm: () => {
+        const note = document.getElementById('planrefcorr-note').value.trim();
+        if (!note) {
+          Swal.showValidationMessage("Le motif de la correction est obligatoire pour l'historique.");
+          return false;
+        }
+        const l4 = document.getElementById('planrefcorr-l4');
+        if (!l4 || !l4.value) {
+          Swal.showValidationMessage("Complétez la sélection pour identifier la référence cible.");
+          return false;
+        }
+        const newId = l4.value;
+        const newLabel = l4.options[l4.selectedIndex].text;
+
+        if (String(newId).trim() === String(oldLogementId).trim()) {
+          Swal.showValidationMessage("La nouvelle référence est identique à la référence actuelle.");
+          return false;
+        }
+
+        return {
+          id: interventionId,
+          isReserve: isReserve,
+          moduleView: view,
+          note: note,
+          newLogementId: newId,
+          newLogementLabel: newLabel
+        };
+      }
+    }).then((result) => {
+      if (!result.isConfirmed) return;
+      const data = result.value;
+
+      const hasPlanning = !!(details.dateStr && String(details.dateStr).trim() !== '');
+
+      if (hasPlanning) {
+        Swal.fire({
+          title: 'Intervention déjà planifiée',
+          html: `Cette intervention est planifiée le <b>${details.dateStr}${details.creneau ? ' à ' + details.creneau : ''}</b>.<br>Que souhaitez-vous faire de cette planification ?`,
+          icon: 'question',
+          showDenyButton: true,
+          showCancelButton: true,
+          confirmButtonText: 'Déplacer vers la nouvelle référence',
+          denyButtonText: 'Retirer du planning',
+          cancelButtonText: 'Annuler la correction',
+          confirmButtonColor: '#0d59f2',
+          denyButtonColor: '#e11d48'
+        }).then((planChoice) => {
+          if (planChoice.isConfirmed) submitPlanningReferenceCorrection(Object.assign({}, data, { planningAction: 'move' }));
+          else if (planChoice.isDenied) submitPlanningReferenceCorrection(Object.assign({}, data, { planningAction: 'remove' }));
+          // Annuler/fermer : on abandonne toute la correction, rien n'est envoyé.
+        });
+      } else {
+        submitPlanningReferenceCorrection(Object.assign({}, data, { planningAction: null }));
+      }
+    });
+  }
+
+  function submitPlanningReferenceCorrection(data) {
+    showLoading('Correction en cours...', 'Mise à jour de la référence');
+
+    const payload = {
+      interId: data.id,
+      newLogementId: data.newLogementId,
+      newLogementLabel: data.newLogementLabel,
+      planningAction: data.planningAction, // 'move' | 'remove' | null
+      note: data.note,
+      moduleView: data.moduleView,
+      userEmail: (typeof APP_USER_EMAIL !== 'undefined') ? APP_USER_EMAIL : "Email inconnu"
+    };
+
+    const oldLogId = window.currentInterventionLogId;
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res.planningWarning) {
+          showToast('Référence corrigée — vérifiez le planning', 'warning', res.planningWarning, 4500);
+        } else {
+          showToast('Référence corrigée avec succès', 'success');
+        }
+
+        const structuredDetails = {
+          "Référence": { "Ancienne": res.oldLogementId, "Nouvelle": res.newLogementId },
+          "Planification": (data.planningAction === 'move' ? "Déplacée vers la nouvelle référence"
+                          : data.planningAction === 'remove' ? "Supprimée"
+                          : "Sans objet (aucune planification existante)") + (res.planningWarning ? ` — ATTENTION : ${res.planningWarning}` : ''),
+          "Motif": data.note
+        };
+        appLog(data.moduleView, data.id, "Correction référence", data.isReserve ? "Public" : "Private", "Detail", structuredDetails, payload.userEmail);
+
+        // La référence a changé : ce point n'appartient plus au logement
+        // actuellement affiché dans la fiche — on rafraîchit les deux lignes
+        // concernées (ancienne et nouvelle référence) si elles sont
+        // visibles dans la grille actuelle, puis on ferme la fiche (elle
+        // n'a plus de sens pour ce logement).
+        if (oldLogId) refreshSingleRowDOM(oldLogId);
+        refreshSingleRowDOM(data.newLogementId);
+        closeEditSidebar();
+      })
+      .withFailureHandler((err) => {
+        appErrorLog(err, "gsCorrectInterventionReference", { payload });
+        showModal({ icon: 'error', title: 'Erreur', text: "La correction a échoué : " + err.message });
+      })
+      .gsCorrectInterventionReference(APP_DATA.token, APP_DATA.projectId, payload);
+  }
+
+  window.onCorrigerInterventionClicked = function(interventionId) {
+    openPlanningReferenceCorrectionModal(interventionId);
+  };
+
+  function fetchAndDrawIntervention(interId, dateISO = window.currentInterventionDateISO) {
+    // FIX E1: All three fetches run in parallel via Promise.all.
+    // Previously: disciplines resolved → equipes resolved → details resolved (fully sequential, ~2–4s).
+    // Now: all three start at once. Caches short-circuit to Promise.resolve() so warm loads are instant.
+    const getDisciplines = () => new Promise(resolve =>
+      google.script.run.withSuccessHandler(resolve).gsGetDisciplines(APP_DATA.token));
+    const getEquipes = () => new Promise(resolve =>
+      google.script.run.withSuccessHandler(resolve).gsGetEquipes(APP_DATA.token));
+    const getDetails = () => new Promise((resolve, reject) =>
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+        .gsGetInterventionDetails(APP_DATA.token, interId, window.currentView));
+
+    async function loadData() {
+      try {
+        const [disciplines, equipes, data] = await Promise.all([
+          (currentDisciplines && currentDisciplines.length > 0) ? Promise.resolve(currentDisciplines) : getDisciplines(),
+          (currentEquipes     && currentEquipes.length     > 0) ? Promise.resolve(currentEquipes)     : getEquipes(),
+          getDetails()
+        ]);
+
+        currentDisciplines = disciplines;
+        currentEquipes     = equipes;
+
+        if (data) {
+          drawInterventionUI(data, interId, window.currentInterventionLogId);
+        } else {
+          const content = document.getElementById('sidebar-content');
+          content.innerHTML = `
+            <div class="py-12 text-center flex flex-col items-center justify-center">
+              <span class="material-symbols-outlined text-[48px] text-slate-300 mb-3">search_off</span>
+              <h4 class="text-sm font-black text-slate-700 uppercase tracking-widest mb-1">Intervention introuvable</h4>
+              <p class="text-[11px] font-medium text-slate-500 max-w-[250px] leading-relaxed mb-6">Le point <b>${interId}</b> n'a pas été trouvé dans la base de données (${interId.startsWith('A-') ? 'Autocontrôles' : 'Réserves'}).</p>
+              <button onclick="closeEditSidebar()" class="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-200 transition-colors uppercase tracking-widest">Fermer</button>
+            </div>
+          `;
+        }
+      } catch (e) {
+        console.error(e);
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: "Impossible de charger les détails."
+        });
+        appErrorLog(e, "fetchAndDrawIntervention", {
+          interId: interId,
+          dateISO: dateISO,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      }
+    }
+    
+    loadData();
+  }
+
+  // Fonction appelée quand l'utilisateur change de sélection dans le dropdown principal
+  function changeInterventionView(selectEl) {
+     const content = document.getElementById('sidebar-content');
+     content.innerHTML = `<div class="py-20 text-center"><span class="material-symbols-outlined animate-spin text-3xl text-primary">sync</span><p class="text-xs font-bold mt-2 text-slate-500 uppercase tracking-widest">Chargement...</p></div>`;
+     
+     fetchAndDrawIntervention(selectEl.value);
+  }
+
+  function drawInterventionUI(data, interId, logId) {
+    const content = document.getElementById('sidebar-content');
+    const isReserve = interId.startsWith('R-');
+    const isProjectActive = projectStatus === 'active';
+    const canEditTechnical = !isClient && isAuthorized && isProjectActive;
+    const canEditStatus = (isAuthorized || isClient) && isProjectActive;
+
+    const meta = window.lastPlanningData.logements[logId] || {};
+    const occupantDisplay = meta.nom ? `<span class="text-xs text-slate-500 font-bold ml-1">(${meta.nom} ${meta.prenom || ''})</span>` : "";
+    
+    let notesObj = { pub: data.description || "", priv: "" };
+    if (isReserve) {
+      try { notesObj = JSON.parse(data.description); } catch(e) { notesObj = { pub: data.description, priv: "" }; }
+    }
+
+    let discOptions = `<option value="">-- Sélectionner --</option>`;
+    if (currentDisciplines) {
+      currentDisciplines.forEach(d => {
+        const sel = (data.discipline === d.name) ? "selected" : "";
+        discOptions += `<option value="${d.name}" ${sel}>${d.name}</option>`;
+      });
+    }
+
+    let eqOptions = `<option value="">-- Sélectionner --</option>`;
+    if (currentEquipes) {
+      currentEquipes.forEach(e => {
+        const sel = (data.equipe === e.name) ? "selected" : "";
+        eqOptions += `<option value="${e.name}" ${sel}>${e.name}</option>`;
+      });
+    }
+
+    let crenStart = "";
+    let crenEnd = "";
+    if (data.creneau) {
+       let parts = data.creneau.split('-');
+       if(parts.length > 0) crenStart = parts[0].trim();
+       if(parts.length > 1) crenEnd = parts[1].trim();
+    }
+    
+    let isoDate = "";
+    let frenchDate = "";
+    if (data.dateStr) {
+       let p = data.dateStr.split('/');
+       if (p.length === 3) isoDate = `${p[2]}-${p[1]}-${p[0]}`;
+       frenchDate = data.dateStr;
+    } else if (window.currentInterventionDateISO) {
+       isoDate = window.currentInterventionDateISO;
+       let p = isoDate.split('-');
+       if (p.length === 3) frenchDate = `${p[2]}/${p[1]}/${p[0]}`;
+    }
+
+    let dropdownHtml = "";
+    if (window.currentInterventionsList.length > 1) {
+       dropdownHtml = `<select onchange="changeInterventionView(this)" class="w-full mb-4 p-2 text-sm font-bold border-2 border-slate-200 rounded-xl focus:border-primary">`;
+       window.currentInterventionsList.forEach(item => {
+          let label = item.startsWith('R-') ? 'Réserve' : 'Autocontrôle';
+          dropdownHtml += `<option value="${item}" ${item === interId ? 'selected' : ''}>${label} : ${item}</option>`;
+       });
+       dropdownHtml += `</select>`;
+    }
+
+
+    // =========================================================
+    // --- NEW: STATUS & ACTIONS UI LOGIC ---
+    // =========================================================
+    
+    // 1. Data mapping (Assumes your backend populates data.statut and data.secondaryStatut)
+    const primaryStatut = data.statut || data.status || "Non défini"; 
+    const secondaryStatut = data.secondaryStatut || ""; 
+    const idReserve = interId; // Reusing your existing interId variable
+
+    // 2. Secondary Status Logic (Only applies to Reserves)
+    let secondaryStatusHtml = '';
+    if (isReserve) {
+      const finalSecondaryStatut = secondaryStatut || 'Non Levée';
+      const isLevee = finalSecondaryStatut.toLowerCase() === 'levée' || finalSecondaryStatut.toLowerCase() === 'levee';
+      
+      const badgeClasses = isLevee
+        ? 'bg-teal-50 text-teal-700 border-teal-200' 
+        : 'bg-amber-50 text-amber-700 border-amber-200';
+
+      secondaryStatusHtml = `
+        <span class="px-2 py-1 rounded-md text-[11px] font-black uppercase shadow-sm border ${badgeClasses}">
+          ${finalSecondaryStatut}
+        </span>
+      `;
+    }
+
+    // 3. Combined Status Display
+    const statusDisplayHtml = `
+      <div class="flex items-center flex-wrap gap-2">
+        <span class="text-sm text-slate-500 font-semibold">Statut:</span>
+        <span class="px-2 py-1 rounded-md text-sm font-bold bg-slate-100 text-slate-700 shadow-sm border border-slate-200">
+          ${primaryStatut}
+        </span>
+        ${secondaryStatusHtml}
+      </div>
+    `;
+
+    // 4. Action Buttons Logic
+    const statusLower = primaryStatut.toLowerCase();
+
+    // Warning Button
+    const showWarning = (statusLower === 'bloquée' || statusLower === 'bloquee' || statusLower === 'bloqué' || statusLower === 'bloquant');
+    const warningBtnHtml = showWarning 
+      ? `<button onclick="event.stopPropagation(); window.onWarningClicked('${idReserve}')" class="btn-warning bg-rose-50 text-rose-600 hover:bg-rose-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+             <span class="material-symbols-outlined !text-[16px]">warning</span> Attention
+           </button>` 
+      : '';
+
+    // History Button
+    const historyBtnHtml = `
+      <button onclick="event.stopPropagation(); window.onHistoryClicked('${idReserve}')" class="btn-history bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+        <span class="material-symbols-outlined !text-[16px]">history</span> Historique
+      </button>`;
+      
+    // Corriger Button (Hidden for clients)
+    const corrigerBtnHtml = !isClient 
+      ? `<button onclick="event.stopPropagation(); window.onCorrigerInterventionClicked('${idReserve}')" class="btn-corriger bg-purple-50 text-purple-600 hover:bg-purple-100 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm" data-id="${idReserve}">
+             <span class="material-symbols-outlined !text-[16px]">build</span> Corriger
+           </button>` 
+      : '';
+
+    // Valider Button
+    const isValidated = (statusLower === 'validée' || statusLower === 'validee' || statusLower === 'fini');
+    const validerBtnClass = isValidated 
+      ? `bg-slate-50 text-slate-300 cursor-not-allowed border border-slate-100` 
+      : `bg-emerald-50 text-emerald-600 hover:bg-emerald-100 shadow-sm cursor-pointer`;
+
+    const validerBtnHtml = `
+      <button onclick="event.stopPropagation(); window.onValidateInterventionClicked('${idReserve}')" class="btn-valider ${validerBtnClass} px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors" data-id="${idReserve}" ${isValidated ? 'disabled' : ''}>
+        <span class="material-symbols-outlined !text-[16px]">check_circle</span> Valider
+      </button>`;
+
+    // 5. Final Output Container
+    const actionAreaHtml = `
+      <div class="intervention-actions bg-white border border-slate-200 rounded-xl p-3 mb-6 shadow-sm flex flex-col gap-3">
+        ${statusDisplayHtml}
+        <div class="flex flex-wrap items-center gap-2 mt-1 border-t border-slate-100 pt-3">
+          ${warningBtnHtml}
+          ${historyBtnHtml}
+          ${corrigerBtnHtml}
+          ${validerBtnHtml}
+        </div>
+      </div>
+    `;
+    // =========================================================
+
+
+    // --- MAIN HTML ASSEMBLY ---
+    let html = `
+      ${dropdownHtml}
+      <div class="mb-4">
+        <div class="flex items-center gap-2 mb-1">
+           <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase ${isReserve ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}">${isReserve ? 'Réserve' : 'Autocontrôle'}</span>
+           <span class="text-[10px] font-bold text-slate-400">${logId}</span> ${occupantDisplay}
+        </div>
+        <div class="text-xl font-black text-slate-800">${interId}</div>
+      </div>
+
+      ${actionAreaHtml}
+
+      <div class="bg-slate-100/50 rounded-xl p-4 border border-slate-200 mb-4">
+        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Informations Techniques</h4>
+        
+        <div class="mb-3">
+          <label class="text-[10px] font-bold text-slate-500 block mb-1">Discipline (Corps d'état)</label>
+          <select id="input-inter-disc" onchange="autoSaveInterventionField('${interId}', 'discipline', this.value)" ${!canEditTechnical ? 'disabled' : ''} class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold focus:ring-primary">
+            ${discOptions}
+          </select>
+        </div>
+        
+        <div class="mb-3">
+          <label class="text-[10px] font-bold text-slate-500 block mb-1">Équipe</label>
+          <select id="input-inter-eq" onchange="autoSaveInterventionField('${interId}', 'equipe', this.value)" ${!canEditTechnical ? 'disabled' : ''} class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold focus:ring-primary">
+            ${eqOptions}
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4">
+          <div>
+            <label class="text-[10px] font-bold text-slate-500 block mb-1">Date Prévue</label>
+            <div onclick="${canEditTechnical ? `openCustomCalendarPicker('intervention', '${interId}', '', '${isoDate}')` : ''}" 
+                 class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold flex justify-between items-center ${canEditTechnical ? 'cursor-pointer hover:bg-slate-50 hover:border-primary/50' : ''} transition-all">
+              <span id="display-inter-date">${frenchDate || 'Choisir date...'}</span>
+              <span class="material-symbols-outlined text-slate-400 text-lg">calendar_month</span>
+            </div>
+            <input type="hidden" id="input-inter-date" value="${isoDate}" />
+          </div>
+          
+          <div>
+            <label class="text-[10px] font-bold text-slate-500 block mb-1">Créneau Horaire</label>
+            <div onclick="${canEditTechnical ? `openCreneauPicker('${interId}', '${crenStart}', '${crenEnd}')` : ''}"
+                 class="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm font-bold flex justify-between items-center ${canEditTechnical ? 'cursor-pointer hover:bg-slate-50 hover:border-primary/50' : ''} transition-all">
+              <span id="display-inter-cren">${data.creneau || 'Choisir un créneau...'}</span>
+              <span class="material-symbols-outlined text-slate-400 text-lg">schedule</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-slate-200">
+          <label class="text-[10px] font-bold text-slate-400 block mb-1 flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px]">event_busy</span> Date Limite (Calculée)
+          </label>
+          <input type="text" value="${data.dueDateStr || 'Non définie'}" disabled class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm font-bold text-slate-400 cursor-not-allowed" />
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
+        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Description</h4>
+        <textarea id="input-inter-pub" rows="2" ${!canEditStatus ? 'disabled' : ''} class="w-full text-sm border border-slate-200 rounded-lg p-2 focus:ring-primary resize-none text-slate-700">${notesObj.pub}</textarea>
+      </div>
+    `;
+
+    if (isReserve && !window.isClientViewActive && !isClient) {
+      html += `
+        <div class="bg-indigo-50 rounded-xl border border-indigo-200 p-4 shadow-sm mb-4">
+          <h4 class="text-xs font-bold text-indigo-600 uppercase tracking-widest mb-2">Note Privée</h4>
+          <textarea id="input-inter-priv" rows="2" ${!canEditTechnical ? 'disabled' : ''} class="w-full text-sm border border-indigo-200 rounded-lg p-2 focus:ring-indigo-500 resize-none text-indigo-900">${notesObj.priv}</textarea>
+        </div>
+      `;
+    }
+
+    if (canEditTechnical || canEditStatus) {
+      html += `
+        <button onclick="saveInterventionNotes('${interId}', this)" class="w-full py-4 mt-2 bg-primary text-white rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/30 hover:bg-primary-dark transition-all flex items-center justify-center gap-2">
+          <span class="material-symbols-outlined !text-[20px]">save</span> ENREGISTRER NOTES
+        </button>
+      `;
+    }
+    html += ` 
+        <div class="flex gap-2 mt-4">
+          <button onclick="viewInterventionPhotos(window.currentEditingInterventionId)" 
+            class="flex-1 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center gap-1 border border-slate-200">
+            <span class="material-symbols-outlined !text-[16px]">photo_camera</span> Photos
+          </button>
+          <button onclick="viewInterventionPlan(window.currentEditingInterventionId)" 
+            class="flex-1 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center gap-1 border border-slate-200">
+            <span class="material-symbols-outlined !text-[16px]">map</span> Plan
+          </button>
+        </div>
+      `;
+
+    content.innerHTML = renderSidebarShell(`Intervention — ${interId}`, html);
+
+    // Keep color logic intact just in case you use these IDs elsewhere, 
+    // but note that 'input-inter-status' was replaced by our new UI!
+    const selectInterStatus = document.getElementById('input-inter-status');
+    if (selectInterStatus) updateSelectColor(selectInterStatus);
+    setTimeout(() => {
+        const selectStatus = document.getElementById('input-inter-status');
+        if (selectStatus) updateSelectColor(selectStatus);
+    }, 50);
+  }
+
+  // --- POPUP CRÉNEAU HORAIRE AMÉLIORÉ (SANS SAISIE CLAVIER) ---
+  async function openCreneauPicker(interId, currentStart, currentEnd) {
+    // Normalisation des formats si la base contient des "h" au lieu de ":"
+    if (currentStart) currentStart = currentStart.replace('h', ':');
+    if (currentEnd) currentEnd = currentEnd.replace('h', ':');
+
+    // Générateur dynamique de créneaux fluides toutes les 30 minutes
+    const buildSelectOptions = (currentValue, allowEmpty, emptyLabel) => {
+      let htmlOptions = allowEmpty ? `<option value="">${emptyLabel}</option>` : '';
+      let timeSlots = [];
+      
+      for (let h = 5; h <= 19; h++) {
+        const hourString = String(h).padStart(2, '0');
+        timeSlots.push(`${hourString}:00`, `${hourString}:30`);
+      }
+      timeSlots.push("20:00"); // Heure maximale standard
+      
+      // Sécurité : Si l'heure enregistrée est custom (ex: 08:15), on l'intègre proprement
+      if (currentValue && !timeSlots.includes(currentValue)) {
+        timeSlots.push(currentValue);
+        timeSlots.sort();
+      }
+      
+      timeSlots.forEach(time => {
+        htmlOptions += `<option value="${time}" ${currentValue === time ? 'selected' : ''}>${time}</option>`;
+      });
+      return htmlOptions;
+    };
+
+    const startOptions = buildSelectOptions(currentStart, false);
+    const endOptions = buildSelectOptions(currentEnd, true, "Pas d'heure de fin");
+
+    const result = await showModal({
+      title: 'Créneau Horaire',
+      heightAuto: false, // On conserve cette protection
+      html: `
+        <div class="text-left font-sans">
+          <div class="mb-5">
+            <span class="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">Options Prédéfinies</span>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='08:00'; document.getElementById('swal-cren-end').value='12:00';" 
+                class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">🌅</span>
+                <span class="text-xs font-black text-slate-700 group-hover:text-white">Matin</span>
+                <span class="text-[10px] text-slate-400 group-hover:text-primary-light font-medium mt-0.5">08:00 - 12:00</span>
+              </button>
+          
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='13:00'; document.getElementById('swal-cren-end').value='17:00';" 
+                class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">☀️</span>
+                <span class="text-xs font-black text-slate-700 group-hover:text-white">Après-Midi</span>
+                <span class="text-[10px] text-slate-400 group-hover:text-primary-light font-medium mt-0.5">13:00 - 17:00</span>
+              </button>
+          
+              <button type="button" onclick="document.getElementById('swal-cren-start').value='08:00'; document.getElementById('swal-cren-end').value='17:00';" 
+                class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">📅</span>
+                <span class="text-xs font-black text-slate-700 group-hover:text-white">Journée</span>
+                <span class="text-[10px] text-slate-400 group-hover:text-primary-light font-medium mt-0.5">08:00 - 17:00</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="relative flex items-center my-5">
+            <div class="flex-grow border-t border-slate-100"></div>
+            <span class="flex-shrink mx-3 text-[9px] font-black uppercase tracking-wider text-slate-400">Ou ajustement précis</span>
+            <div class="flex-grow border-t border-slate-100"></div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de début</label>
+              <select id="swal-cren-start" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary focus:border-primary text-slate-700 shadow-sm cursor-pointer transition-all">
+                ${startOptions}
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de fin</label>
+              <select id="swal-cren-end" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary focus:border-primary text-slate-700 shadow-sm cursor-pointer transition-all">
+                ${endOptions}
+              </select>
+            </div>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Enregistrer',
+      cancelButtonText: 'Annuler',
+      preConfirm: () => {
+        const start = document.getElementById('swal-cren-start').value;
+        const end = document.getElementById('swal-cren-end').value;
+        if (start && end && end <= start) {
+          Swal.showValidationMessage("L'heure de fin doit être postérieure à l'heure de début.");
+          return false;
+        }
+        return { start, end };
+      }
+    });
+
+    const formValues = result.value;
+
+    if (formValues) {
+      const { start, end } = formValues;
+      let finalCreneau = start;
+      if (start && end) {
+          finalCreneau = `${start} - ${end}`;
+      } else if (!start && !end) {
+          finalCreneau = "";
+      }
+
+      document.getElementById('display-inter-cren').textContent = finalCreneau || 'Choisir un créneau...';
+
+      const container = document.getElementById('display-inter-cren').parentElement;
+      container.setAttribute('onclick', `openCreneauPicker('${interId}', '${start}', '${end}')`);
+
+      autoSaveInterventionField(interId, 'creneau', finalCreneau);
+    }
+  }
+  
+  // Fonction de sauvegarde de l'intervention
+function autoSaveInterventionField(interId, fieldName, value) {
+   const payload = {};
+   payload[fieldName] = value;
+   
+   // On capture l'ancienne date d'origine AVANT l'enregistrement
+   const oldIsoDate = window.currentInterventionDateISO;
+   showLoading('Sauvegarde...', '', true);
+   google.script.run
+     .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({
+            icon: 'warning',
+            title: 'Action impossible',
+            text: res.message
+          });
+          return;
+        }
+        showToast('Modifié avec succès');
+
+        appLog(
+          window.currentView,
+          interId,
+          "MODIFICATION_INTERVENTION_CHAMP",
+          "Public",
+          "Detail",
+          { field: fieldName, value: value }
+        );
+        
+        // SI ON CHANGE LA DATE, ON MET À JOUR LA LIGNE DANS LE DOM SANS RECHARGEMENT GLOBAL !
+        if (fieldName === 'dateStr') {
+           let logId = window.currentInterventionLogId;
+           let parts = value.split('/');
+           let newIsoDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+
+           // 1. Mettre à jour le cache local (window.lastPlanningData.repairs)
+           if (window.lastPlanningData && window.lastPlanningData.repairs && window.lastPlanningData.repairs[logId]) {
+               
+               // Retirer le point de l'ancienne cellule de date
+               if (oldIsoDate && window.lastPlanningData.repairs[logId][oldIsoDate]) {
+                   window.lastPlanningData.repairs[logId][oldIsoDate] = window.lastPlanningData.repairs[logId][oldIsoDate].filter(id => id !== interId);
+                   // Nettoyage si la case devient vide
+                   if (window.lastPlanningData.repairs[logId][oldIsoDate].length === 0) {
+                       delete window.lastPlanningData.repairs[logId][oldIsoDate];
+                   }
+               }
+               
+               // Ajouter le point à la nouvelle cellule de date
+               if (!window.lastPlanningData.repairs[logId][newIsoDate]) {
+                   window.lastPlanningData.repairs[logId][newIsoDate] = [];
+               }
+               if (!window.lastPlanningData.repairs[logId][newIsoDate].includes(interId)) {
+                   window.lastPlanningData.repairs[logId][newIsoDate].push(interId);
+               }
+           }
+
+           // 2. Mettre à jour la date de suivi dans la sidebar active
+           window.currentInterventionDateISO = newIsoDate;
+           
+           // 3. Rafraîchir UNIQUEMENT la ligne concernée dans le DOM
+           refreshSingleRowDOM(logId);
+
+           // CORRECTION : 4. Récupérer toutes les interventions de la NOUVELLE date pour actualiser le menu déroulant
+           let newItems = window.lastPlanningData.repairs[logId]?.[newIsoDate] || [];
+           if (isClient || window.isClientViewActive) {
+              newItems = newItems.filter(i => !i.startsWith('A-'));
+           }
+           window.currentInterventionsList = newItems;
+
+           // CORRECTION : 5. Redessiner entièrement l'interface de l'intervention pour synchroniser les données
+           fetchAndDrawIntervention(interId, newIsoDate);
+        }
+     })
+     .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "autoSaveInterventionField", {
+          interId: interId,
+          fieldName: fieldName,
+          value: value,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+     })
+     .gsSaveInterventionDetails(APP_DATA.token, interId, payload, window.currentView);
+  }
+
+  // Remplace l'ancien 'saveIntervention' et ne sauvegarde que les notes
+  function saveInterventionNotes(interId, btnElement) {
+    const isReserve = interId.startsWith('R-');
+    const pubText = document.getElementById('input-inter-pub')?.value || "";
+    const privText = document.getElementById('input-inter-priv')?.value || "";
+    let descriptionVal = isReserve ? JSON.stringify({ pub: pubText, priv: privText }) : pubText;
+
+    showLoading('Sauvegarde...', '', true);
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false) {
+          showModal({ icon: 'error', title: 'Erreur', text: res.message });
+          return;
+        }
+        showToast('Notes sauvegardées');
+        refreshSingleRowDOM(logId);
+
+        appLog(
+          window.currentView,
+          interId,
+          "MODIFICATION_INTERVENTION_NOTES",
+          "Private",
+          "Detail",
+          { notes: descriptionVal }
+        );
+
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "saveInterventionNotes", {
+          interId: interId,
+          description: descriptionVal,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsSaveInterventionDetails(APP_DATA.token, interId, { description: descriptionVal }, window.currentView);
+  }
+
+  function updateSelectColor(selectEl) {
+    const val = selectEl.value;
+    
+    // 1. On retire toutes les couleurs de fond potentielles
+    const allBgColors = [
+      'bg-blue-200', 'bg-red-300', 'bg-red-400', 'bg-orange-200',
+      'bg-green-200', 'bg-green-400', 'bg-transparent'
+    ];
+    selectEl.classList.remove(...allBgColors);
+
+    // On force le texte à rester sombre pour une lisibilité parfaite sur fond coloré
+    selectEl.classList.add('text-slate-900');
+
+    // 2. On applique la nouvelle couleur de fond
+    if (val === 'En cours') {
+      selectEl.classList.add('bg-blue-200'); // Bleu
+    } else if (val === 'Bloqué') {
+      selectEl.classList.add('bg-red-300'); // Rouge doux
+    } else if (val === 'Bloquant') {
+      selectEl.classList.add('bg-red-400'); // Rouge très agressif
+    } else if (val === 'Réserves' || val === 'Attention') {
+      selectEl.classList.add('bg-orange-200'); // Orange
+    } else if (val === 'Info') {
+      selectEl.classList.add('bg-blue-200'); // bleu clair
+    } else if (val === 'Fini') {
+      selectEl.classList.add('bg-green-400'); // Vert plus soutenu
+    } else {
+      selectEl.classList.add('bg-transparent'); // Vide
+    }
+  }
+
+  // =========================================================
+  // DELETE SINGLE TASK (From Edit Sidebar)
+  // =========================================================
+
+  function deleteTaskPill(logId, date, taskAbbr) {
+    // 1. Format the data to match the structure expected by the bulk deletion tool
+    const cellsData = [{
+      logementId: String(logId),
+      cellContent: String(taskAbbr),
+      date: String(date)
+    }];
+
+    // 2. Show the loading state
+    showLoading('Analyse...', "Vérification de l'avancement...");
+
+    // 3. Send it to the exact same backend and frontend handlers as the bulk delete button
+    google.script.run
+      .withSuccessHandler(async (response) => {
+        // Feed the response directly into your existing analysis handler
+        await handleDeletionAnalysis(response);
+      })
+      .withFailureHandler((err) => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur serveur',
+          text: err.message
+        });
+        appErrorLog(err, "deleteTaskPill", {
+          logId: logId,
+          taskAbbr: taskAbbr,
+          targetDate: date,
+          cellsData: cellsData,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsAnalyzeDeletion(APP_DATA.token, cellsData, window.currentView);
+  }
+  
+  // =========================================================
+  // CUSTOM CALENDAR
+  // =========================================================
+
+  /**
+ * 1. Call this function exactly ONCE when your app initializes 
+ * (e.g., inside your 'window.onload' or your main 'loadApp' function)
+ */
+function initCalendarBackground() {
+  if (window.calendarLoadingState !== 'idle') return;
+  
+  window.calendarLoadingState = 'loading';
+  google.script.run
+    .withSuccessHandler((calendarMap) => {
+      window.masterProjectCalendar = calendarMap;
+      window.calendarLoadingState = 'ready';
+      console.log('Calendar loaded in background.');
+    })
+    .withFailureHandler((err) => {
+      window.calendarLoadingState = 'idle'; // Reset if failed so it can retry
+      appErrorLog(err, "initCalendarBackground", {
+        context: "Chargement silencieux du calendrier projet",
+        projectId: PROJECT_ID || "Inconnu"
+      });
+    })
+    .gsGetProjectCalendar(APP_DATA.token);
+}
+
+/**
+ * 2. Updated Picker: This now opens instantly if ready, 
+ * or handles the wait if still loading.
+ */
+// =========================================================
+// UNIFIED CUSTOM CALENDAR (Tasks & Interventions)
+// =========================================================
+
+function openCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr = null) {
+  if (window.calendarLoadingState === 'ready') {
+    renderCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr);
+    return;
+  }
+
+  if (window.calendarLoadingState === 'loading') {
+    showLoading('Chargement en cours...', 'Le calendrier est en préparation.');
+    const checkInterval = setInterval(() => {
+      if (window.calendarLoadingState === 'ready') {
+        clearInterval(checkInterval);
+        Swal.close();
+        renderCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr);
+      }
+    }, 500);
+    return;
+  }
+
+  initCalendarBackground();
+  openCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr);
+}
+
+function renderCustomCalendarPicker(targetType, targetId, extraParam, currentDateStr, navDateStr) {
+  const dateToDisplay = navDateStr ? new Date(navDateStr) : (currentDateStr ? new Date(currentDateStr) : new Date());
+  const currentYear = dateToDisplay.getFullYear();
+  const currentMonth = dateToDisplay.getMonth();
+  const projStart = window.projectStart ? new Date(window.projectStart) : null;
+  const projEnd = window.projectEnd ? new Date(window.projectEnd) : null;
+  const monthNames = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  
+  // NOUVEAU : Récupération de la vraie date d'aujourd'hui au format YYYY-MM-DD
+  const realTodayObj = new Date();
+  const realTodayStr = `${realTodayObj.getFullYear()}-${String(realTodayObj.getMonth() + 1).padStart(2, '0')}-${String(realTodayObj.getDate()).padStart(2, '0')}`;
+
+  let firstDayIndex = (new Date(currentYear, currentMonth, 1).getDay() + 6) % 7;
+  let calendarHtml = `
+    <div class="flex justify-between items-center mb-4 bg-slate-50 p-2 rounded-lg border border-slate-200">
+      <button onclick="renderCustomCalendarPicker('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${new Date(currentYear, currentMonth - 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_left</span></button>
+      <div class="font-bold text-slate-800 text-sm">${monthNames[currentMonth]} ${currentYear}</div>
+      <button onclick="renderCustomCalendarPicker('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${new Date(currentYear, currentMonth + 1, 1).toISOString()}')" class="p-1 hover:bg-white rounded shadow-sm text-slate-500"><span class="material-symbols-outlined">chevron_right</span></button>
+    </div>
+    <div class="grid grid-cols-7 gap-1 text-center text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+      <div>Lu</div><div>Ma</div><div>Me</div><div>Je</div><div>Ve</div><div>Sa</div><div>Di</div>
+    </div>
+  
+    <div class="grid grid-cols-7 gap-1.5 text-center">
+  `;
+
+  for (let i = 0; i < firstDayIndex; i++) { calendarHtml += `<div class="p-2 text-transparent select-none">.</div>`; }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dayStr = String(day).padStart(2, '0');
+    const monthStr = String(currentMonth + 1).padStart(2, '0');
+    const loopDateStr = `${currentYear}-${monthStr}-${dayStr}`;
+    const loopDateObj = new Date(currentYear, currentMonth, day);
+    
+    const isOutOfRange = (projStart && loopDateObj < projStart) || (projEnd && loopDateObj > projEnd);
+    const isSelected = (loopDateStr === currentDateStr);
+    const isRealToday = (loopDateStr === realTodayStr);
+
+    let isNonWorking = false;
+    if (window.masterProjectCalendar && window.masterProjectCalendar[loopDateStr] !== undefined) {
+      isNonWorking = (window.masterProjectCalendar[loopDateStr] === 0);
+    } else {
+      isNonWorking = (loopDateObj.getDay() === 0 || loopDateObj.getDay() === 6);
+    }
+
+    let baseClass = "p-2 text-xs rounded-lg transition-all ";
+    
+    if (isOutOfRange) {
+        calendarHtml += `<div class="${baseClass} text-slate-200 bg-slate-50 select-none">${day}</div>`;
+    } else if (isNonWorking) {
+      calendarHtml += `<div class="p-2 text-xs font-bold text-red-400 bg-red-50/70 border border-red-100 rounded-lg line-through pointer-events-none select-none">${day}</div>`;
+    } else if (isSelected && isRealToday) {
+      // Si la date est à la fois "Aujourd'hui" ET "Sélectionnée" (Fond bleu + bordure orange)
+      calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border-2 border-amber-500 ring-2 ring-amber-500/50">${day}</div>`;
+    } else if (isSelected) {
+      // Date actuellement sélectionnée (Bleu classique)
+      calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-primary shadow-sm cursor-pointer border border-primary">${day}</div>`;
+    } else if (isRealToday) {
+      // Vraie date du jour (Orange/Amber comme la colonne du planning)
+      calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-black text-white bg-amber-500 shadow-sm cursor-pointer border border-amber-600 hover:bg-amber-600">${day}</div>`;
+    } else {
+      // Jours normaux
+      calendarHtml += `<div onclick="selectCustomCalendarDate('${targetType}', '${targetId}', '${extraParam}', '${currentDateStr}', '${loopDateStr}')" class="${baseClass} font-bold text-slate-700 bg-white border border-slate-200 cursor-pointer hover:bg-primary hover:text-white hover:border-primary">${day}</div>`;
+    }
+  }
+
+  calendarHtml += `</div>`;
+  showModal({
+    title: 'Choisir une date',
+    html: calendarHtml,
+    showConfirmButton: false,
+    showCancelButton: true,
+    cancelButtonText: 'Fermer',
+    width: '380px'
+  });
+}
+
+function selectCustomCalendarDate(targetType, targetId, extraParam, oldDateStr, selectedIsoDate) {
+  Swal.close();
+  
+  if (targetType === 'task') {
+    // Mise à jour visuelle rapide du bouton
+    const triggerEl = document.getElementById('task-date-picker-trigger');
+    if (triggerEl) triggerEl.querySelector('span').textContent = selectedIsoDate.split('-').reverse().join('/');
+    
+    // Appel du moteur Domino qui gérera l'UI, le loader et appellera gsShiftTaskWithDomino
+    triggerDominoEffect(targetId, extraParam, oldDateStr, selectedIsoDate);
+  } 
+  else if (targetType === 'intervention') {
+    const display = document.getElementById('display-inter-date');
+    const hidden = document.getElementById('input-inter-date');
+    if (hidden) hidden.value = selectedIsoDate;
+    
+    let frenchDate = "";
+    if (selectedIsoDate) {
+        frenchDate = selectedIsoDate.split('-').reverse().join('/');
+        if (display) display.textContent = frenchDate;
+    }
+    
+    // CORRECTION : Mettre à jour instantanément l'attribut onclick pour éviter que le calendrier 
+    // ne se rouvre avec l'ancienne date si l'utilisateur clique trop vite.
+    const container = display ? display.parentElement : null;
+    if (container) {
+      container.setAttribute('onclick', `openCustomCalendarPicker('intervention', '${targetId}', '', '${selectedIsoDate}')`);
+    }
+
+    autoSaveInterventionField(targetId, 'dateStr', frenchDate);
+  }
+}
+
+
+// =========================================================
+  // 10. DOUBLE-CLICK: PENDING INTERVENTIONS PLANIFIER
+  // =========================================================
+  
+  document.addEventListener('DOMContentLoaded', () => {
+    const tbody = document.querySelector(".gantt-table tbody");
+    if (!tbody) return;
+
+    // --- Écouteur du Double-Clic (Mode Normal) ---
+    tbody.addEventListener('dblclick', function(e) {
+      if (!window.isEditModeActive) {
+        const td = e.target.closest('td.cell-day');
+        if (!td) return;
+        const tr = td.closest('tr');
+        if (!tr) return;
+
+        const logId = tr.getAttribute('data-id');
+        const targetDateISO = td.getAttribute('data-date');
+        const targetDateFR = targetDateISO.split('-').reverse().join('/');
+
+        // 1. Récupération des interventions
+        showLoading('Recherche...', 'Récupération des interventions en attente');
+
+        google.script.run
+          .withSuccessHandler(response => handlePendingInterventions(response, logId, targetDateISO, targetDateFR))
+          .withFailureHandler(err => {
+            showModal({
+              icon: 'error',
+              title: 'Erreur',
+              text: err.message
+            });
+            appErrorLog(err, "gsGetPendingInterventions", {
+              logId: logId,
+              targetDateISO: targetDateISO,
+              currentView: window.currentView,
+              projectId: PROJECT_ID || "Inconnu"
+            });
+          })
+          .gsGetPendingInterventions(APP_DATA.token, logId, window.currentView);
+      }
+    });
+  });
+
+  async function handlePendingInterventions(response, logId, targetDateISO, targetDateFR) {
+    if (!response.success) {
+      return showModal({
+        icon: 'error',
+        title: 'Erreur',
+        text: response.error
+      });
+    }
+
+    const interventions = response.data;
+    window.tempPendingInterventions = interventions;
+
+    let listHtml = `
+      <div class="text-left mb-4 bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div>
+          <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest block">Logement ciblé</span>
+          <span class="text-lg font-black text-slate-800">${logId}</span>
+        </div>
+        <div class="text-right">
+          <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest block">Date cliquée</span>
+          <span class="text-sm font-black text-primary">${targetDateFR}</span>
+        </div>
+      </div>
+      <div class="max-h-[65vh] overflow-y-auto overflow-x-hidden space-y-3 p-1">
+    `;
+
+    if (interventions.length === 0) {
+      listHtml += `
+        <div class="py-12 text-center flex flex-col items-center justify-center bg-white rounded-xl border border-slate-200 shadow-sm">
+          <span class="material-symbols-outlined text-[48px] text-slate-300 mb-3">task_alt</span>
+          <h4 class="text-sm font-black text-slate-700 uppercase tracking-widest mb-1">Aucune intervention</h4>
+          <p class="text-[11px] font-medium text-slate-500 max-w-[250px] leading-relaxed">Il n'y a aucune intervention (Réserve ou Autocontrôle) en attente ou à planifier pour ce logement.</p>
+        </div>
+      `;
+    } else {
+      interventions.forEach((inter, idx) => {
+        const badgeColor = inter.isReserve ? "bg-orange-100 text-orange-600 border-orange-200" : "bg-blue-100 text-blue-600 border-blue-200";
+        const typeLabel = inter.isReserve ? "Réserve" : "Autocontrôle";
+        
+        let descTexte = inter.description;
+        try { 
+          if (descTexte.startsWith('{')) {
+             const parsed = JSON.parse(descTexte);
+             descTexte = parsed.pub || parsed.priv || "Note...";
+          }
+        } catch(e) {}
+
+        // --- GESTION DES COULEURS DE STATUT EXACTES ---
+        let statusBgClass = "bg-slate-100 text-slate-500 border border-slate-200"; 
+        const val = inter.status ? inter.status.trim() : "";
+        
+        if (val === 'Planifié') statusBgClass = 'bg-white border border-slate-200 text-slate-900';
+        else if (val === 'En cours') statusBgClass = 'bg-blue-200 text-slate-900';
+        else if (val === 'Bloqué') statusBgClass = 'bg-red-200 text-slate-900';
+        else if (val === 'Bloquant') statusBgClass = 'bg-red-400 text-slate-900';
+        else if (val === 'Fini') statusBgClass = 'bg-green-400 text-slate-900';
+        else if (val === 'Info') statusBgClass = 'bg-blue-200 text-slate-900';
+
+        listHtml += `
+          <div class="border border-slate-200 rounded-xl p-3 bg-white shadow-sm flex flex-col md:flex-row gap-4 relative text-left items-stretch hover:border-slate-300 transition-colors">
+            
+            <div class="flex-1 flex flex-col gap-2">
+              <div class="flex justify-between items-start mb-1">
+                <div class="flex items-center gap-2">
+                  <span class="px-2 py-0.5 rounded text-[9px] font-black uppercase border ${badgeColor}">${typeLabel}</span>
+                  <span class="text-sm font-black text-slate-800">${inter.id}</span>
+                </div>
+                <div class="text-[9px] font-black px-2 py-1 rounded uppercase ${statusBgClass}">${val || 'Nouveau'}</div>
+              </div>
+              
+              <div class="grid grid-cols-2 gap-2 text-xs">
+                <div><span class="text-slate-400 font-bold text-[10px] uppercase">Discipline:</span> <span class="text-slate-700 font-bold">${inter.discipline || '-'}</span></div>
+                <div><span class="text-slate-400 font-bold text-[10px] uppercase">Équipe:</span> <span class="text-slate-700 font-bold">${inter.equipe || '-'}</span></div>
+                <div class="col-span-2"><span class="text-slate-400 font-bold text-[10px] uppercase">Desc:</span> <span class="text-slate-600 leading-relaxed">${descTexte || '-'}</span></div>
+              </div>
+            </div>
+
+            <div class="w-full md:w-[220px] shrink-0 flex flex-col justify-between border-t md:border-t-0 md:border-l border-slate-100 pt-3 md:pt-0 md:pl-4">
+              <div class="space-y-1.5 mb-3">
+                <div class="flex justify-between items-center bg-slate-50 p-1.5 rounded border border-slate-100">
+                  <span class="text-slate-400 font-bold text-[9px] uppercase">Date Initiale:</span>
+                  <span class="text-slate-700 font-bold text-[10px]">${inter.dateStr || '-'}</span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-50 p-1.5 rounded border border-slate-100">
+                  <span class="text-slate-400 font-bold text-[9px] uppercase">Créneau:</span>
+                  <span class="text-slate-700 font-bold text-[10px]">${inter.creneau || '-'}</span>
+                </div>
+                <div class="flex justify-between items-center bg-red-50/50 p-1.5 rounded border border-red-100">
+                  <span class="text-red-400 font-bold text-[9px] uppercase">Limite:</span>
+                  <span class="text-red-600 font-black text-[10px]">${inter.dueDateStr || '-'}</span>
+                </div>
+              </div>
+
+              <div class="flex gap-2 mt-auto">
+                <button onclick="viewInterventionPhotos('${inter.id}')" class="p-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center border border-slate-200 shrink-0" title="Voir les photos">
+                  <span class="material-symbols-outlined !text-[16px]">photo_camera</span>
+                </button>
+                <button onclick="viewInterventionPlan('${inter.id}')" class="p-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center border border-slate-200 shrink-0" title="Voir le plan">
+                  <span class="material-symbols-outlined !text-[16px]">map</span>
+                </button>
+                <button onclick="startPlanningIntervention(${idx}, '${targetDateFR}', '${targetDateISO}', '${logId}')" class="flex-1 py-2 bg-primary hover:bg-primary-dark text-white rounded-lg text-[10px] font-black uppercase transition-colors flex items-center justify-center gap-1 shadow-sm">
+                  <span class="material-symbols-outlined !text-[14px]">event_available</span> Planifier
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+    
+    listHtml += `</div>`;
+
+    showModal({
+      title: "Interventions en attente",
+      html: listHtml,
+      width: '850px',
+      showConfirmButton: false,
+      showCloseButton: true
+    });
+  }
+
+  function viewInterventionPhotos(interId) {
+    showToast(`Ouverture de la galerie...`, 'info', '(Fonctionnalité en cours de développement)', 2000);
+  }
+
+  function viewInterventionPlan(interId) {
+    showToast(`Ouverture du plan...`, 'info', '(Fonctionnalité en cours de développement)', 2000);
+  }
+
+  async function startPlanningIntervention(idx, targetDateFR, targetDateISO, logId) {
+    const inter = window.tempPendingInterventions[idx];
+    let newStatus = inter.status;
+
+    // ÉTAPE 1 : Choix du Statut
+    if (inter.status && inter.status.trim() !== '') {
+      // On récupère le résultat complet du modal
+      const result = await showModal({
+        title: 'Mise à jour du statut',
+        html: `Le statut actuel est <b class="text-amber-500">${inter.status}</b>.<br>Quel statut souhaitez-vous lui attribuer en la planifiant ?`,
+        input: 'radio',
+        inputOptions: {
+          'Planifié': 'Planifié',
+          'En cours': 'En cours'
+        },
+        inputValidator: (value) => { 
+          if (!value) return 'Vous devez choisir un statut !';
+        },
+        showCancelButton: true,
+        confirmButtonText: 'Suivant <span class="material-symbols-outlined !text-[14px] ml-1">arrow_forward</span>',
+        cancelButtonText: 'Annuler'
+      });
+
+      if (!result.value) return; // Annulé ou fermé
+  
+      newStatus = result.value;
+    } else {
+      newStatus = 'Planifié';
+    }
+
+    // ÉTAPE 2 : Choix du Créneau Horaire (Utilisation d'un utilitaire custom pour retourner la valeur)
+    const creneauResult = await promptForCreneauSequence(inter.creneau);
+    if (creneauResult === null) return; // Annulé
+
+    // ÉTAPE 3 : Exécution de la Sauvegarde
+    const payload = {
+      dateStr: targetDateFR,
+      status: newStatus,
+      creneau: creneauResult
+    };
+
+    showLoading('Planification...', 'Mise à jour de la base de données');
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success === false && res.isUserNotice) {
+          showModal({
+            icon: 'warning',
+            title: 'Action impossible',
+            text: res.message
+          });
+          return;
+        }
+        showToast('Planifié !');
+
+        appLog(
+          window.currentView,
+          res.newId || "new-int",
+          "CREATION_INTERVENTION",
+          "Public",
+          "Milestone",
+          { 
+            logement: logId, 
+            discipline: inter.discipline, 
+            date: targetDateFR 
+          }
+        );
+        
+        updateLocalCacheAfterInterventionPlanning(logId, inter.id, targetDateISO);
+        refreshSingleRowDOM(logId);
+      })
+      .withFailureHandler(err => {
+        showModal({
+          icon: 'error',
+          title: 'Erreur',
+          text: err.message
+        });
+        appErrorLog(err, "startPlanningIntervention", {
+          idx: idx,
+          targetDateFR: targetDateFR,
+          targetDateISO: targetDateISO,
+          logId: logId,
+          interId: inter.id,
+          payload: payload,
+          currentView: window.currentView,
+          projectId: PROJECT_ID || "Inconnu"
+        });
+      })
+      .gsSaveInterventionDetails(APP_DATA.token, inter.id, payload, window.currentView);
+  }
+
+  function updateLocalCacheAfterInterventionPlanning(logId, interId, newDateISO) {
+    if (!window.lastPlanningData || !window.lastPlanningData.repairs) return;
+
+    // 1. Initialiser l'objet du logement s'il n'existe pas
+    if (!window.lastPlanningData.repairs[logId]) {
+      window.lastPlanningData.repairs[logId] = {};
+    }
+    const repairsRow = window.lastPlanningData.repairs[logId];
+
+    // 2. Nettoyer l'ID de l'intervention de toutes les dates (au cas où elle était déjà planifiée ailleurs)
+    for (const dateKey in repairsRow) {
+      repairsRow[dateKey] = repairsRow[dateKey].filter(id => id !== interId);
+      if (repairsRow[dateKey].length === 0) {
+          delete repairsRow[dateKey];
+      }
+    }
+
+    // 3. Ajouter l'intervention à sa nouvelle date
+    // (SÉCURITÉ : on s'assure que la date est dans notre fenêtre de 50 jours)
+    if (window.lastPlanningData.headers && window.lastPlanningData.headers.dates.includes(newDateISO)) {
+      if (!repairsRow[newDateISO]) repairsRow[newDateISO] = [];
+      if (!repairsRow[newDateISO].includes(interId)) {
+          repairsRow[newDateISO].push(interId);
+      }
+    }
+  }
+
+  // Version utilitaire du sélecteur de créneau qui retourne directement la chaîne générée
+  async function promptForCreneauSequence(currentCreneau) {
+    let currentStart = "", currentEnd = "";
+    if (currentCreneau) {
+       let parts = currentCreneau.split('-');
+       if(parts.length > 0) currentStart = parts[0].trim().replace('h', ':');
+       if(parts.length > 1) currentEnd = parts[1].trim().replace('h', ':');
+    }
+
+    const buildSelectOptions = (currentValue, allowEmpty, emptyLabel) => {
+      let htmlOptions = allowEmpty ? `<option value="">${emptyLabel}</option>` : '';
+      let timeSlots = [];
+      for (let h = 5; h <= 19; h++) {
+        const hourString = String(h).padStart(2, '0');
+        timeSlots.push(`${hourString}:00`, `${hourString}:30`);
+      }
+      timeSlots.push("20:00");
+      if (currentValue && !timeSlots.includes(currentValue)) {
+        timeSlots.push(currentValue);
+        timeSlots.sort();
+      }
+      timeSlots.forEach(time => {
+        htmlOptions += `<option value="${time}" ${currentValue === time ? 'selected' : ''}>${time}</option>`;
+      });
+      return htmlOptions;
+    };
+
+    const startOptions = buildSelectOptions(currentStart, false);
+    const endOptions = buildSelectOptions(currentEnd, true, "Pas d'heure de fin");
+
+    // Note: showModal returns the full Swal result object
+    const result = await showModal({
+      title: 'Créneau Horaire',
+      html: `
+        <div class="text-left font-sans">
+          <div class="mb-5">
+            <span class="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">Options Prédéfinies</span>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="document.getElementById('swal-seq-start').value='08:00'; document.getElementById('swal-seq-end').value='12:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">🌅</span><span class="text-xs font-black text-slate-700 group-hover:text-white">Matin</span>
+              </button>
+              <button type="button" onclick="document.getElementById('swal-seq-start').value='13:00'; document.getElementById('swal-seq-end').value='17:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">☀️</span><span class="text-xs font-black text-slate-700 group-hover:text-white">Après-Midi</span>
+              </button>
+              <button type="button" onclick="document.getElementById('swal-seq-start').value='08:00'; document.getElementById('swal-seq-end').value='17:00';" class="flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200/60 rounded-xl hover:bg-primary hover:text-white hover:border-primary group transition-all cursor-pointer shadow-sm">
+                <span class="text-lg mb-0.5">📅</span><span class="text-xs font-black text-slate-700 group-hover:text-white">Journée</span>
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de début</label>
+              <select id="swal-seq-start" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary focus:border-primary text-slate-700 shadow-sm cursor-pointer">${startOptions}</select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-1.5">Heure de fin</label>
+              <select id="swal-seq-end" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-sm font-bold focus:ring-primary focus:border-primary text-slate-700 shadow-sm cursor-pointer">${endOptions}</select>
+            </div>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Valider <span class="material-symbols-outlined !text-[14px] ml-1">check</span>',
+      cancelButtonText: 'Annuler',
+      preConfirm: () => {
+        const start = document.getElementById('swal-seq-start').value;
+        const end = document.getElementById('swal-seq-end').value;
+        if (start && end && end <= start) {
+          Swal.showValidationMessage("L'heure de fin doit être postérieure à l'heure de début.");
+          return false;
+        }
+        return { start, end };
+      }
+    });
+
+    const formValues = result.value;
+
+    if (formValues) {
+      const { start, end } = formValues;
+      if (start && end) return `${start} - ${end}`;
+      if (start) return start;
+      return "";
+    }
+    return null; 
+  }
+
+
+
+</script>
