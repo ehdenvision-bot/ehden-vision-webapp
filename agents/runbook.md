@@ -4,109 +4,52 @@ Read `agents/current-state.md` and `agents/decisions.md` first.
 
 ## Access
 
-- **Local dev**: http://localhost:3000 — `admin@example.com` / `changeme123` (from
-  `npm run db:seed`, dev-only, rotate before any non-local use).
-- **This sandbox's external proxy**: `https://michel.optima-tech.info/proxy/3000/` forwards to
-  this container's port 3000. The server must bind `0.0.0.0` (already does, see
-  `app/src/server.js`) or the proxy gets `ECONNREFUSED`.
-- **Production**: not deployed yet. See `app/README.md`'s Access section — do not write real
-  credentials there or here until an actual deployment exists.
-- **No other live systems or third-party credentials are in scope yet.** If any get added
-  (SMTP for password-reset emails, object storage for photos), use `app/.env` and never print
-  secrets into chat, logs, or these docs.
+- **Live app**: a Google Apps Script project owned by / running under `ehdenvision@gmail.com`
+  — a personal `@gmail.com` account, not a custom-domain Workspace account. **[Fill in: the web
+  app URL if it's deployed as a web app, or how it's opened if it's bound to a Sheet/Doc/Form
+  instead.]**
+- **Local clone**: `Webapp Files/`, kept in sync with the live project via `clasp push` / `clasp
+  pull`. The script it points at is set in `Webapp Files/.clasp.json` (`scriptId`).
+- **Development account**: `michel.s.dahdah@gmail.com` (also the Claude Pro account — unrelated
+  to clasp's auth; Claude Code has no Google login of its own, it just runs `clasp` under
+  whatever account `~/.clasprc.json` holds). **[Confirm which account `clasp login` actually
+  used.]** If it's `michel.s.dahdah@gmail.com` rather than `ehdenvision@gmail.com` directly,
+  that account needs *edit* access on the script (shared by the owner) for `clasp push` to
+  work — view access is enough to clone/pull but not to push.
+- **No rewrite deployment exists yet.**
+- **Credentials**: clasp's own login token lives outside this repo (`~/.clasprc.json` by
+  default — never commit it). **[If the app calls other services — API keys, service accounts —
+  document where those live here, and never put a real secret in this file or in chat.]**
 
 ## Running the app
 
 ```bash
-cd app
-cp .env.example .env   # first time only
-npm install             # first time only
+cd Webapp Files
 
-# Postgres — native install, no Docker daemon in this sandbox (see CLAUDE.md)
-service postgresql start
-# first time only:
-#   sudo -u postgres psql -c "CREATE ROLE chantier LOGIN PASSWORD 'chantier' CREATEDB;"
-#   sudo -u postgres psql -c "CREATE DATABASE chantier OWNER chantier;"
-
-npx prisma migrate dev   # first time / after schema changes
-npm run db:seed          # first time only
-
-node src/server.js       # foreground, or see "Backgrounding" below
+clasp pull           # pull down anything changed in the Apps Script web editor first
+clasp push           # push local changes to the live Apps Script project
+clasp open           # open the project in the Apps Script web editor
+clasp deploy          # create/update a deployment, if the app is published as a web app
+clasp logs --watch    # tail Cloud Logging output from the live project
 ```
 
-Frontend (separate terminal): `cd app/frontend && npm install && npm run dev` — Vite dev server
-on :5173, proxies `/api` and `/uploads` to :3000 (see `app/frontend/vite.config.js`). To check
-the production-style single-process setup instead: `cd app && npm run build:frontend` then hit
-:3000 directly (Express serves `frontend/dist` if it exists, see `app/src/server.js`).
+**Don't edit both sides at once.** `clasp push` overwrites the remote project wholesale, and
+`clasp pull` overwrites the local copy wholesale — if the web editor and `Webapp Files/` diverge and
+you push or pull without checking first, one side's changes get silently discarded.
 
-### `prisma migrate dev` doesn't work non-interactively in this sandbox
-
-It errors with "Prisma Migrate has detected that the environment is non-interactive" even for a
-trivial schema change. Confirmed workaround (used for migration
-`20260821130000_locataires_planning_and_calendar_fields`):
-
-```bash
-mkdir -p prisma/migrations/<timestamp>_<name>
-npx prisma migrate diff \
-  --from-url "$(grep DATABASE_URL .env | cut -d= -f2- | tr -d '\"')" \
-  --to-schema-datamodel prisma/schema.prisma --script \
-  > prisma/migrations/<timestamp>_<name>/migration.sql
-
-# review the generated SQL, then actually apply it:
-PGPASSWORD=chantier psql -h localhost -U chantier -d chantier \
-  -f prisma/migrations/<timestamp>_<name>/migration.sql
-
-# mark it applied in Prisma's migration history (does NOT run the SQL —
-# only run this AFTER applying the SQL above yourself, not instead of it):
-npx prisma migrate resolve --applied <timestamp>_<name>
-
-npx prisma generate
-npx prisma migrate status   # should say "Database schema is up to date!"
-```
-
-## Backgrounding the dev server
-
-`node --watch` does **not** reliably detect file changes in this sandbox's filesystem (confirmed
-2026-08-21 — no restart, no log line, despite the edited file being correct on disk). Don't rely
-on it. Instead:
-
-1. Start plain `node src/server.js` as a backgrounded Bash command.
-2. After editing files, find and kill it, then start it again:
-   ```bash
-   ps aux | grep "[n]ode src/server.js"   # find the PID
-   kill <pid>                              # NOT pkill -f — see below
-   node src/server.js                      # restart, backgrounded again
-   ```
-3. **Do not use `pkill -f "node src/server.js"`.** It has reliably returned exit 144 in this
-   sandbox and appears to also terminate the invoking shell (likely because the wrapping shell
-   command's own argv contains the same match string). `kill <pid>` on the specific PID does
-   not have this problem (clean exit 143 = SIGTERM).
+**[Fill in anything else specific to this project: the entry point (`doGet`/`doPost`), any
+installed or simple triggers, external services it talks to.]**
 
 ## Verification pattern
 
-This repo has no automated test suite yet (`app/TODO.md` Phase 6). Verify changes with real
-end-to-end `curl` chains against the running dev server, not just `node --check` — syntax
-checking does not catch Prisma field-name mismatches against the actual schema (this happened
-once for real, see `agents/decisions.md`). A representative chain:
-
-```bash
-curl -s -c /tmp/cookies.txt -X POST http://localhost:3000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"changeme123"}'
-
-curl -s -b /tmp/cookies.txt -X POST http://localhost:3000/api/projects \
-  -H "Content-Type: application/json" -d '{"code":"...", "name":"..."}'
-# then chain the returned id into building -> unit -> reserve creation, etc.
-```
-
-For frontend/visual changes: no browser automation tool has been available in this session so
-far (`claude-in-chrome` skill reports the extension isn't connected). If that's still true,
-verify what you can via `curl` (status codes, markup structure, CSP headers allowing the
-resources you're loading) and say explicitly that visual rendering wasn't confirmed — don't
-claim a visual check that didn't happen.
+**[This repo has no automated tests yet, and Apps Script doesn't have a curl-chain equivalent
+the way a REST API does. Once there's a real way to verify a change actually works — exercising
+the deployed web app directly, checking `clasp logs`, `clasp run <function>` against a test
+function (needs its own one-time setup) — document the specific commands here. Don't leave this
+as a placeholder for long: "verify with something real, not just a syntax check" was the single
+most repeated lesson in the reference this file was adapted from.]**
 
 ## Claiming work — ownership tags on live todos
 
-Not yet needed — this has been a single-agent-at-a-time repo so far. Adopt an ownership-tag
-convention here (mirroring whatever the user's other repos use) if/when multiple agents start
-working this repo concurrently.
+Not yet needed — this is a single-agent-at-a-time repo so far. Adopt an ownership-tag
+convention here if that changes.

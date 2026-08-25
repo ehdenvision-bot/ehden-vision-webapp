@@ -1,0 +1,1706 @@
+<script>
+
+  // =========================================================
+  // 1. GLOBAL STATE & CONFIGURATION
+  // =========================================================
+  //
+  // This file (Workspace_Core_Scripts) is the shared "shell" engine used by
+  // EVERY layer (EDL, Travaux, Élec, Sanit, Réserves, Formulaires...).
+  // It owns everything described as "the same in all 6 layers":
+  //   - the Bâtiment/Hall/Étage/Porte/Pièce selectors
+  //   - the "Mode Édition" toggle + view/edit gating
+  //   - the plan-container (loading the plan image, zoom/pan, tags on top of it)
+  //   - the dynamic-panel header (ID summary) and its empty-state
+  //   - the layer-switcher nav on the left
+  //
+  // It does NOT know anything about EDL, Travaux, etc. Each layer registers
+  // itself with WorkspaceCore.registerLayer(...) — see section 2 below, and
+  // EDL_Scripts.html / Travaux_Scripts.html / ... for real examples.
+
+  const PROJECT_ID_FROM_SERVER = (typeof APP_DATA !== 'undefined') ? APP_DATA.projectId : "";
+  const APP_USER_EMAIL = (typeof APP_DATA !== 'undefined' && APP_DATA.user) ? APP_DATA.user.email : "Email inconnu";
+  let rawData = { locataires: [], communs: [], facades: [] };
+
+  let currentView = localStorage.getItem('currentView') || 'locataires';
+  if (currentView === 'communes') currentView = 'communs';
+  if (!['locataires', 'communs', 'facades'].includes(currentView)) currentView = 'locataires';
+  window.currentView = currentView;
+
+  const projectName  = APP_DATA.projectName;
+  const isAuthorized = APP_DATA.isAuthorized || false;
+  const isClient     = APP_DATA.isClient;
+
+  // Strictly role === 'admin' (not 'directeur') — gates the "Config Travaux"
+  // button only, independent of isAuthorized above. NOTE: navSettings/
+  // navUsers further below use a broader 'admin' || 'directeur' check for
+  // comparison — if Directeurs should also get the Config Travaux button,
+  // just widen this the same way.
+  const currentUserRole = String((APP_DATA.user && APP_DATA.user.role) || '').toLowerCase();
+  const isAdmin = (currentUserRole === 'admin');
+
+  const storedClientView = localStorage.getItem('isClientViewActive');
+  window.isClientViewActive = storedClientView !== null
+    ? storedClientView === 'true'
+    : (typeof APP_DATA !== 'undefined' && APP_DATA.isClientViewActive === true);
+
+  // Cascading Selection State — shared by every layer (this IS the "dynamic
+  // panel header" from point 4, and the thing that decides what shows in the
+  // plan-container from point 2).
+  let selectionState = {
+    batHall: null,      // { bat: "...", hall: "..." }
+    etage: null,
+    porte: null,
+    selectedItem: null  // the full row object, or a virtual "GLOBAL_..." object once chosen
+  };
+
+  // =========================================================
+  // 2. LAYER REGISTRY (WorkspaceCore)
+  // =========================================================
+  //
+  // Each layer is a self-contained module (see EDL_Scripts.html) that calls
+  // WorkspaceCore.registerLayer(id, config) once. A layer never needs to know
+  // about any other layer — it only talks to WorkspaceCore.
+  //
+  // config may define:
+  //
+  //   layoutMode                   'data-entry' (40/60 plan/panel split) or
+  //                                 'drawing' (60/40 split, hides the Pièce
+  //                                 selector). See the CSS in Workspace.html.
+  //
+  //   mount(container, ctx)        Build this layer's DOM into `container`
+  //                                 (the dynamic-panel mount point) and bind
+  //                                 its persistent listeners (status selects,
+  //                                 note blur-to-save, photo dropzone, ...).
+  //                                 Called ONCE every time this layer becomes
+  //                                 the active layer.
+  //
+  //   render(ctx)                  Refresh field values/lists for the current
+  //                                 selection. Called right after mount(), and
+  //                                 again every time the selection changes
+  //                                 (room, porte, étage...) while this layer
+  //                                 stays active. Only called when there IS a
+  //                                 selection — WorkspaceCore handles the
+  //                                 empty-state placeholder for you.
+  //
+  //   getEditToolsHtml(ctx)        Return the HTML to show in
+  //                                 #edit-tools-container (only visible while
+  //                                 "Mode Édition" is ON — see the
+  //                                 .edit-only-ui class). Optional.
+  //
+  //   bindEditTools(container,ctx) Wire up the buttons returned above.
+  //                                 Optional.
+  //
+  //   resolveAsset(ctx)            Return a filename string to load into the
+  //                                 plan-container INSTEAD of the shared plan
+  //                                 (this is the hook the Formulaires layer
+  //                                 uses to show its own photo). Return
+  //                                 null/undefined to fall back to the shared
+  //                                 plan resolver used by the other layers.
+  //                                 Optional.
+  //
+  //   onAssetLoaded(ctx)            Called after the plan-container image has
+  //                                 finished loading, so the layer can (re)draw
+  //                                 its own tags via WorkspaceCore.renderOverlayTags().
+  //                                 Optional.
+  //
+  //   onExitEditMode(ctx)           Called when the user turns "Mode Édition"
+  //                                 OFF (or switches away to another layer)
+  //                                 while this layer is active — this is where
+  //                                 a layer persists unsaved changes. Optional.
+  //
+  //   onBaseDataLoaded(ctx)         Called once on EVERY registered layer,
+  //                                 right after rawData has been fetched from
+  //                                 the server — good place to preload a
+  //                                 layer-specific cache (e.g. EDL's photos).
+  //                                 Optional.
+  //
+  const WorkspaceCore = (function () {
+    const layers = {};
+    let activeLayerId = null;
+
+    function registerLayer(id, config) {
+      layers[id] = Object.assign({ id: id }, config);
+    }
+
+    function getLayer(id) {
+      return layers[id] || null;
+    }
+
+    function getActiveLayer() {
+      return activeLayerId ? layers[activeLayerId] : null;
+    }
+
+    function getActiveLayerId() {
+      return activeLayerId;
+    }
+
+    // Bundles up everything a layer typically needs, so layer code doesn't
+    // have to reach for half a dozen globals itself.
+    function buildContext(extra) {
+      const activeItem = selectionState.selectedItem || null;
+      const roomSelect = document.getElementById('room-select');
+      return Object.assign({
+        currentView: window.currentView,
+        selectionState: selectionState,
+        activeItem: activeItem,
+        activeId: activeItem ? activeItem.id : null,
+        roomName: roomSelect ? roomSelect.value : null,
+        isClient: isClient,
+        isAuthorized: isAuthorized,
+        isClientViewActive: !!window.isClientViewActive
+      }, extra || {});
+    }
+
+    function activateLayer(id) {
+      const layer = layers[id];
+      if (!layer) { console.warn('[WorkspaceCore] Unknown layer id:', id); return; }
+
+      const workspace  = document.getElementById('workspace-screen');
+      const panelRoot  = document.getElementById('layer-panel-root');
+      const editTools  = document.getElementById('edit-tools-container');
+
+      const resFilters = document.getElementById('reservesFiltersContainer');
+      if (resFilters) resFilters.classList.add('hidden');
+
+      // Give the layer we're leaving one last chance to persist unsaved edits.
+      // Guarded with typeof, same as every other optional layer hook below
+      // (mount, render, getEditToolsHtml...) — Élec/Sanit/Formulaires don't
+      // define onExitEditMode yet, and calling it unguarded threw here,
+      // which silently aborted activateLayer() before it ever reached the
+      // data-mode (ratio) update or the new layer's mount() further down.
+      // That's what made switching layers look "stuck" on the previous
+      // layer's ratio/content when leaving one of those three while Mode
+      // Édition was on.
+      const prevLayer = getActiveLayer();
+      if (prevLayer && prevLayer.id !== id &&
+          workspace.getAttribute('data-edit-state') === 'edit' &&
+          typeof prevLayer.onExitEditMode === 'function') {
+        prevLayer.onExitEditMode(buildContext());
+      }
+
+      clearPlanOverlays();
+
+      activeLayerId = id;
+      workspace.setAttribute('data-mode', layer.layoutMode || 'data-entry');
+      if (layer.label) safeSetText('pageMainTitle', layer.label);
+
+      // Clean slate, then let the new layer build its own markup.
+      if (panelRoot) {
+        panelRoot.className = 'hidden';
+        panelRoot.innerHTML = '';
+        if (typeof layer.mount === 'function') layer.mount(panelRoot, buildContext());
+      }
+
+      if (editTools) {
+        editTools.innerHTML = (typeof layer.getEditToolsHtml === 'function') ? (layer.getEditToolsHtml(buildContext()) || '') : '';
+        if (typeof layer.bindEditTools === 'function') layer.bindEditTools(editTools, buildContext());
+      }
+
+      // Re-sync the plan-container (left side) with whatever THIS layer
+      // should show there — its own renderPlanPanel() (e.g. Travaux's
+      // recap) if it defines one, or the shared plan photo otherwise.
+      // Previously nothing did this on a plain layer switch, so the left
+      // side kept showing whatever the PREVIOUS layer had put there (most
+      // visibly: Travaux's "Récapitulatif des travaux" staying on screen
+      // after switching away to EDL/Élec/Sanit/Réserves/Formulaires) until
+      // the Bâtiment/Étage/Porte selection happened to change.
+      refreshPlanPanelForActiveLayer();
+
+      refreshActiveLayer();
+    }
+
+    function refreshActiveLayer() {
+      const layer = getActiveLayer();
+      if (!layer) return;
+
+      const hasSelection = !!selectionState.selectedItem;
+      setDynamicPanelState(hasSelection);
+      if (hasSelection && typeof layer.render === 'function') {
+        layer.render(buildContext());
+      }
+    }
+
+    function notifyBaseDataLoaded() {
+      Object.keys(layers).forEach(id => {
+        const layer = layers[id];
+        if (typeof layer.onBaseDataLoaded === 'function') layer.onBaseDataLoaded(buildContext());
+      });
+    }
+
+    function notifyAssetLoaded() {
+      const layer = getActiveLayer();
+      if (layer && typeof layer.onAssetLoaded === 'function') layer.onAssetLoaded(buildContext());
+    }
+
+    // The default/shared resolver (generatePlanFilename, section 8) is used
+    // unless the active layer supplies its own resolveAsset().
+    function resolveAssetFilename(val) {
+      const layer = getActiveLayer();
+      if (layer && typeof layer.resolveAsset === 'function') {
+        const custom = layer.resolveAsset(buildContext({ val: val }));
+        if (custom) return custom;
+      }
+      return generatePlanFilename(val);
+    }
+
+    return {
+      registerLayer: registerLayer,
+      getLayer: getLayer,
+      getActiveLayer: getActiveLayer,
+      getActiveLayerId: getActiveLayerId,
+      buildContext: buildContext,
+      activateLayer: activateLayer,
+      refreshActiveLayer: refreshActiveLayer,
+      notifyBaseDataLoaded: notifyBaseDataLoaded,
+      notifyAssetLoaded: notifyAssetLoaded,
+      resolveAssetFilename: resolveAssetFilename
+    };
+  })();
+
+  // =========================================================
+  // 2.5 CUSTOM ICON FONT (Drive "04- Icons") — shared across every layer
+  // =========================================================
+  // Lets an icon-name field — Travaux's "Icône (recap)" today, any future
+  // layer's icon field tomorrow — pull from a private, project-specific
+  // icon set in addition to Google's Material Symbols library. The Drive
+  // side is documented in getCustomIconManifest() / fetchCustomIconFontAsBase64()
+  // in the .gs backend.
+  //
+  // NOT ligature-based. A default IcoMoon export (no "Support Liga" option)
+  // maps each icon to a private-use-area character via CSS "content:", not
+  // to text you can type — so instead of setting a <span>'s text to the
+  // icon's name and letting the font substitute it (how Material Symbols
+  // works), customIconManifest maps name -> numeric codepoint (straight
+  // from IcoMoon's own selection.json), and iconGlyphText() below resolves
+  // a name to the actual character to render. Material Symbols icons are
+  // untouched by any of this — they still render via plain text + the
+  // font's own ligatures, exactly as before.
+  //
+  // customIconManifest starts out `null` (not "loaded yet"), NOT an empty
+  // object — isCustomIconName() treats null as "assume Material Symbols",
+  // so every icon field keeps behaving exactly as it does today until the
+  // one-time fetch below resolves. Nothing needs to wait on it.
+
+  let customIconManifest = null;
+
+  function isCustomIconName(name) {
+    if (!customIconManifest) return false;
+    return Object.prototype.hasOwnProperty.call(customIconManifest, String(name || '').trim());
+  }
+
+  function iconFontClass(name) {
+    return isCustomIconName(name) ? 'custom-icon-font' : 'material-symbols-outlined';
+  }
+
+  // The actual character to put in a <span>'s text for this name: the
+  // private-use-area glyph for a custom icon (via its codepoint from
+  // selection.json), or just the name itself for a Material Symbol (still
+  // relies on that font's own ligatures — unchanged from before).
+  function iconGlyphText(name) {
+    const trimmed = String(name || '').trim();
+    if (isCustomIconName(trimmed)) return String.fromCodePoint(customIconManifest[trimmed]);
+    return trimmed;
+  }
+
+  // Is `name` something we can actually render an icon for — a known
+  // custom icon, OR a name Material Symbols recognizes? Custom names are a
+  // simple manifest lookup (100% certain either way). Material Symbols has
+  // no such list available to us client-side, so this uses a width trick
+  // instead: every glyph in an icon font occupies the same advance width
+  // regardless of which icon it is, while an UNRECOGNIZED name falls back
+  // to the browser's normal text font and renders at a completely
+  // different (usually much wider, proportional-to-length) width. Render
+  // the name into a hidden probe element styled exactly like a Material
+  // Symbol, and compare its width against a known-good icon's width.
+  //
+  // This is a heuristic, not a real lookup (Google doesn't expose one to
+  // check client-side) — reliable for realistic icon names (multi-letter
+  // real words), but a 1–2 character nonsense string could in principle
+  // coincidence-match a real icon's width and register as a false
+  // positive. Not a concern in practice for how this field gets used.
+  let materialIconRefWidth_ = null;
+  let iconProbeEl_ = null;
+
+  function getIconProbeEl_() {
+    if (!iconProbeEl_) {
+      iconProbeEl_ = document.createElement('span');
+      iconProbeEl_.className = 'material-symbols-outlined';
+      iconProbeEl_.style.cssText = 'position:absolute; left:-9999px; top:-9999px; visibility:hidden; white-space:nowrap; font-size:20px;';
+      document.body.appendChild(iconProbeEl_);
+    }
+    return iconProbeEl_;
+  }
+
+  function looksLikeValidMaterialSymbol_(name) {
+    const el = getIconProbeEl_();
+    if (materialIconRefWidth_ == null) {
+      el.textContent = 'help_outline'; // any always-valid icon works as the reference
+      materialIconRefWidth_ = el.getBoundingClientRect().width;
+    }
+    el.textContent = name;
+    return Math.abs(el.getBoundingClientRect().width - materialIconRefWidth_) < 1;
+  }
+
+  function isResolvableIcon(name) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return false;
+    if (isCustomIconName(trimmed)) return true;
+    return looksLikeValidMaterialSymbol_(trimmed);
+  }
+
+  function escapeHtmlForIcon_(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Ready-to-insert <span> for one icon name, picking the right font AND
+  // the right glyph text automatically. extraClasses is appended as-is
+  // (size/color/shrink utility classes — the same ones every existing
+  // material-symbols-outlined span in this app already uses). Returns ''
+  // for an empty name so callers can keep the
+  // `logo ? iconSpanHtml(logo, ...) : ''` pattern they already use for "no
+  // icon on this row".
+  function iconSpanHtml(name, extraClasses) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return '';
+    const cls = iconFontClass(trimmed) + (extraClasses ? ' ' + extraClasses : '');
+    return '<span class="' + cls + '">' + escapeHtmlForIcon_(iconGlyphText(trimmed)) + '</span>';
+  }
+
+  // Injects (or replaces) the @font-face rule once the font's base64 data
+  // arrives — has to happen at runtime since a data: URL can't live in the
+  // static <style> block in Workspace.html (that block only carries the
+  // .custom-icon-font layout/reset rules, mirroring Material Symbols' own).
+  // fontInfo is { dataUrl, format } — format ('woff' or 'woff2') comes back
+  // from the server because it depends on whichever file is actually sitting
+  // in "04- Icons" (IcoMoon's default export only gives you .woff).
+  function injectCustomIconFontFace(fontInfo) {
+    if (!fontInfo || !fontInfo.dataUrl) return;
+    let styleEl = document.getElementById('custom-icon-font-face');
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'custom-icon-font-face';
+      document.head.appendChild(styleEl);
+    }
+    const format = fontInfo.format === 'woff2' ? 'woff2' : 'woff';
+    styleEl.textContent =
+      '@font-face { font-family: "CustomIcons"; src: url("' + fontInfo.dataUrl + '") format("' + format + '"); ' +
+      'font-weight: normal; font-style: normal; font-display: block; }';
+  }
+
+  function isCustomIconManifestReady() {
+    return customIconManifest !== null;
+  }
+
+  // Sorted { name, codepoint } list for anything that wants to let someone
+  // BROWSE the custom set (the Travaux "+" picker today). Empty array if
+  // the manifest hasn't loaded yet or genuinely has nothing in it — either
+  // way there's nothing to show, callers don't need to tell them apart.
+  function getCustomIconEntries() {
+    if (!customIconManifest) return [];
+    return Object.keys(customIconManifest).sort().map(name => ({ name: name, codepoint: customIconManifest[name] }));
+  }
+
+  // Fetches (or re-fetches) the manifest. Safe to call from multiple
+  // places without worrying about duplicate concurrent round-trips — if a
+  // fetch is already in flight, `callback` just gets queued onto it rather
+  // than starting a second one. `callback(ready)` is optional; fires once
+  // this fetch settles, `ready` is true on success / false on failure (the
+  // manifest itself is always left as a usable object either way, never
+  // stuck at null after this resolves at least once).
+  let customIconManifestLoading_ = false;
+  let customIconManifestCallbacks_ = [];
+
+  function refreshCustomIconManifest(callback) {
+    if (callback) customIconManifestCallbacks_.push(callback);
+    if (customIconManifestLoading_) return;
+    customIconManifestLoading_ = true;
+
+    google.script.run
+      .withSuccessHandler(manifest => {
+        customIconManifest = manifest || {};
+        customIconManifestLoading_ = false;
+        const cbs = customIconManifestCallbacks_; customIconManifestCallbacks_ = [];
+        cbs.forEach(cb => cb(true));
+      })
+      .withFailureHandler(err => {
+        customIconManifest = customIconManifest || {}; // known-empty rather than null forever, so isCustomIconName() stops guessing
+        customIconManifestLoading_ = false;
+        console.warn('[WorkspaceCore] getCustomIconManifest a échoué :', err && err.message);
+        const cbs = customIconManifestCallbacks_; customIconManifestCallbacks_ = [];
+        cbs.forEach(cb => cb(false));
+      })
+      .getCustomIconManifest();
+  }
+
+  // Fired once at bootstrap (see init() below) — independent of
+  // loadWorkspaceBaseData(), since neither call depends on rawData. Both
+  // are best-effort: if "04- Icons" doesn't exist yet, or the font isn't
+  // uploaded yet, every icon field just keeps working exactly as it does
+  // today (Material Symbols only) — nothing else on the page waits on this
+  // or breaks if it fails.
+  function loadCustomIconAssets() {
+    refreshCustomIconManifest();
+
+    google.script.run
+      .withSuccessHandler(fontInfo => injectCustomIconFontFace(fontInfo))
+      .withFailureHandler(err => {
+        console.warn('[WorkspaceCore] fetchCustomIconFontAsBase64 a échoué :', err && err.message);
+      })
+      .fetchCustomIconFontAsBase64();
+  }
+
+  WorkspaceCore.isCustomIconName = isCustomIconName;
+  WorkspaceCore.iconFontClass = iconFontClass;
+  WorkspaceCore.iconGlyphText = iconGlyphText;
+  WorkspaceCore.iconSpanHtml = iconSpanHtml;
+  WorkspaceCore.isResolvableIcon = isResolvableIcon;
+  WorkspaceCore.isCustomIconManifestReady = isCustomIconManifestReady;
+  WorkspaceCore.getCustomIconEntries = getCustomIconEntries;
+  WorkspaceCore.refreshCustomIconManifest = refreshCustomIconManifest;
+
+  // =========================================================
+  // 3. INITIALIZATION & NAVIGATION UI
+  // =========================================================
+
+  const userBtn  = document.getElementById('userMenuBtn');
+  const userMenu = document.getElementById('userMenu');
+  const navBtn   = document.getElementById('navMenuBtn');
+  const navMenu  = document.getElementById('navMenu');
+
+  if (userBtn) userBtn.onclick = (e) => { e.stopPropagation(); userMenu.classList.toggle('hidden'); navMenu.classList.add('hidden'); };
+  if (navBtn)  navBtn.onclick  = (e) => { e.stopPropagation(); navMenu.classList.toggle('hidden'); userMenu.classList.add('hidden'); };
+  document.onclick = (e) => {
+    if (userMenu && !userBtn.contains(e.target) && !userMenu.contains(e.target)) userMenu.classList.add('hidden');
+    if (navMenu  && !navBtn.contains(e.target)  && !navMenu.contains(e.target))  navMenu.classList.add('hidden');
+  };
+
+  // Sidebar State (UX preference — correct to store in localStorage)
+  const sidebar   = document.getElementById('mainSidebar');
+  const toggleBtn = document.getElementById('toggleSidebar');
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      sidebar.classList.toggle('collapsed');
+      localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    };
+  }
+  if (localStorage.getItem('sidebarCollapsed') === 'true') sidebar?.classList.add('collapsed');
+
+  // =========================================================
+  // 4. APP BOOTSTRAP
+  // =========================================================
+
+  window.onload = function init() {
+    const currentUser = APP_DATA.user || null;
+    if (!currentUser) {
+      window.top.location.replace(BASE_URL + "?page=login");
+      return;
+    }
+
+    const role = (currentUser.role || '').toLowerCase();
+    if (role === 'admin' || role === 'directeur') document.getElementById('navSettings')?.classList.remove('hidden');
+    if (role === 'admin' || role === 'directeur') document.getElementById('navUsers')?.classList.remove('hidden');
+
+    const name = currentUser.name || "collaborateur";
+    safeSetText('u_name', name);
+    safeSetText('u_role', currentUser.role || 'Utilisateur');
+    safeSetText('topProjectName', projectName);
+    safeSetText('pageMainTitle', 'EDL');
+    safeSetText('pageSubTitle', 'État des lieux et Remises en état.');
+
+    const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    safeSetText('u_initials', initials);
+
+    injectHeaderButtons();
+    if (!isClient) injectClientViewToggle();
+    setActiveTab(currentView === 'locataires' ? 'btnTabLoc' : currentView === 'communs' ? 'btnTabCom' : 'btnTabFas');
+
+    setupModeToggle();
+    setupAdminConfigTravauxButton();
+    setupAdminSousCategoriesButton();
+    setupCascadingSelectors();
+    setupLayerSwitching();
+
+    // Activate whichever layer is marked "active" in the HTML (layer-btn.active),
+    // defaulting to 'edl' if the markup ever ships without one.
+    const initialBtn = document.querySelector('.layer-btn.active');
+    WorkspaceCore.activateLayer(initialBtn ? initialBtn.dataset.layerId : 'edl');
+
+    loadWorkspaceBaseData();
+    loadCustomIconAssets();
+  };
+
+  // =========================================================
+  // 5. DATA FETCHING (shared base data — used by every layer's selectors)
+  // =========================================================
+
+  function loadWorkspaceBaseData() {
+    showLoading('Chargement en cours...', 'Récupération des données du projet.');
+
+    google.script.run
+      .withSuccessHandler(data => {
+        if (!data) { if (typeof Swal !== 'undefined') Swal.close(); return; }
+        rawData = data;
+
+        // Populate the very first dropdown now that data is ready
+        populateBatHall();
+
+        // Let every registered layer preload whatever it needs (e.g. EDL's photo cache)
+        WorkspaceCore.notifyBaseDataLoaded();
+
+        if (typeof Swal !== 'undefined') Swal.close();
+      })
+      .withFailureHandler(err => {
+        appErrorLog(err, "loadWorkspaceBaseData", { projectId: APP_DATA.projectId });
+        showModal({ icon: 'error', title: 'Erreur', text: 'Impossible de récupérer les données.' });
+      })
+      .getLocatairesPageDataEDL(APP_DATA.token);
+  }
+
+  // Kept as a thin alias in case anything outside this file (Header, a
+  // manual refresh button, ...) still calls the old name by habit.
+  function loadEDLData() { return loadWorkspaceBaseData(); }
+
+  function injectHeaderButtons() {
+    const actionArea = document.getElementById('headerActionArea');
+    if (!actionArea) return;
+    actionArea.innerHTML = `
+      <div class="flex items-center gap-3">
+        <div class="flex bg-slate-200/50 p-1 rounded-xl w-fit shadow-inner border border-slate-300/50">
+          <button onclick="switchView('locataires')" id="btnTabLoc" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all bg-white shadow-sm text-primary">LOCATAIRES</button>
+          <button onclick="switchView('communs')"    id="btnTabCom" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">COMMUNS</button>
+          <button onclick="switchView('facades')"    id="btnTabFas" class="px-6 py-1.5 rounded-lg text-[11px] font-black transition-all text-slate-600 hover:text-primary">FACADES</button>
+        </div>
+      </div>`;
+  }
+
+  // =========================================================
+  // 6. VIEW SWITCHING (LOCATAIRES / COMMUNS / FACADES tabs)
+  // =========================================================
+  // NOTE: this is orthogonal to the 6-layer system below — it decides WHICH
+  // data source feeds the cascading selectors, independent of which layer
+  // (EDL, Travaux, ...) is currently active.
+
+  function switchView(view) {
+    currentView = view;
+    window.currentView = view;
+    localStorage.setItem('currentView', view);
+    if (window.history.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('currentView', view);
+      window.history.replaceState({ path: url.href }, '', url.href);
+    }
+    setActiveTab(view === 'locataires' ? 'btnTabLoc' : view === 'communs' ? 'btnTabCom' : 'btnTabFas');
+    resetCascadingSelection(); // also clears the plan and the dynamic panel
+    populateBatHall();
+  }
+
+  function setActiveTab(activeId) {
+    ['btnTabLoc', 'btnTabCom', 'btnTabFas'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      const isActive = (id === activeId);
+      btn.classList.toggle('bg-white', isActive);
+      btn.classList.toggle('shadow-sm', isActive);
+      btn.classList.toggle('text-primary', isActive);
+      btn.classList.toggle('text-slate-600', !isActive);
+      btn.classList.toggle('hover:text-primary', !isActive);
+    });
+  }
+
+  // =========================================================
+  // 7. EDIT MODE & PERMISSIONS
+  // =========================================================
+  // Shared by all 6 layers (point 5). Elements that must never be editable
+  // outside "Mode Édition" get the .edit-only-ui / .edit-only-ui-input class
+  // (see Workspace.html <style>) — that CSS is what enforces the rule, this
+  // function only flips the data-edit-state switch and asks the active layer
+  // to save. To make a field an EXCEPTION (always editable), simply don't
+  // give it the .edit-only-ui / .edit-only-ui-input class — no JS change
+  // needed here.
+
+  function setupModeToggle() {
+    const toggleBtn = document.getElementById('mode-toggle-btn');
+    const workspace = document.getElementById('workspace-screen');
+
+    if (!isAuthorized) {
+      toggleBtn.classList.add('hidden');
+      return;
+    }
+
+    toggleBtn.addEventListener('click', () => {
+      const isCurrentlyView = workspace.getAttribute('data-edit-state') === 'view';
+
+      if (isCurrentlyView) {
+        workspace.setAttribute('data-edit-state', 'edit');
+        clearHighlight();
+        toggleBtn.classList.replace('bg-rose-50', 'bg-emerald-50');
+        toggleBtn.classList.replace('text-rose-600', 'text-emerald-600');
+        toggleBtn.classList.replace('hover:bg-rose-100', 'hover:bg-emerald-100');
+        toggleBtn.innerHTML = `<span class="material-symbols-outlined !text-[16px]">visibility</span><span id="mode-toggle-text">Terminer l'édition</span>`;
+        showToast('Mode Édition activé', 'info', '', 1500);
+      } else {
+        workspace.setAttribute('data-edit-state', 'view');
+
+        // Ask whichever layer is active to persist its own unsaved changes.
+        const layer = WorkspaceCore.getActiveLayer();
+        if (layer && typeof layer.onExitEditMode === 'function') {
+          layer.onExitEditMode(WorkspaceCore.buildContext());
+        }
+
+        toggleBtn.classList.replace('bg-emerald-50', 'bg-rose-50');
+        toggleBtn.classList.replace('text-emerald-600', 'text-rose-600');
+        toggleBtn.classList.replace('hover:bg-emerald-100', 'hover:bg-rose-100');
+        toggleBtn.innerHTML = `<span class="material-symbols-outlined !text-[16px]">edit_document</span><span id="mode-toggle-text">Mode Édition</span>`;
+        showToast('Mode Vue activé.', 'info', '', 1500);
+      }
+    });
+  }
+
+  // "Config Travaux" admin button, sitting right beside Mode Édition (see
+  // Workspace.html). Gated purely on isAdmin (role === 'admin', see the
+  // global above) — completely separate gate from isAuthorized, which only
+  // governs #mode-toggle-btn. The actual popup (list/add/edit/delete
+  // against the "Config Travaux" sheet) is owned by the Travaux layer —
+  // see openTravauxConfigManager() in Travaux_Scripts.html — this function
+  // only shows/hides the button and forwards the click.
+  function setupAdminConfigTravauxButton() {
+    const btn = document.getElementById('admin-config-travaux-btn');
+    if (!btn) return;
+
+    if (!isAdmin) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
+
+    btn.addEventListener('click', () => {
+      if (typeof window.openTravauxConfigManager === 'function') {
+        window.openTravauxConfigManager();
+      } else {
+        console.warn('[Workspace] openTravauxConfigManager() is not defined — is Travaux_Scripts.html loaded?');
+      }
+    });
+  }
+
+  // "Sous-catégories" admin button, same gate/shape as
+  // setupAdminConfigTravauxButton() just above — the popup itself (the
+  // 3-column drag-and-drop grid against the new "Sous Categories Travaux"
+  // sheet) is owned by the Travaux layer — see openSousCategoriesManager()
+  // in Travaux_Scripts.html — this function only shows/hides the button and
+  // forwards the click.
+  function setupAdminSousCategoriesButton() {
+    const btn = document.getElementById('admin-souscategories-travaux-btn');
+    if (!btn) return;
+
+    if (!isAdmin) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
+
+    btn.addEventListener('click', () => {
+      if (typeof window.openSousCategoriesManager === 'function') {
+        window.openSousCategoriesManager();
+      } else {
+        console.warn('[Workspace] openSousCategoriesManager() is not defined — is Travaux_Scripts.html loaded?');
+      }
+    });
+  }
+
+  // =========================================================
+  // 8. CASCADING APARTMENT SELECTION LOGIC
+  // =========================================================
+  // Fully shared — this feeds the "dynamic panel header" (point 4) and
+  // decides what to load into the plan-container (point 2). No layer-specific
+  // code lives here; selection changes are announced to the active layer via
+  // WorkspaceCore.refreshActiveLayer().
+
+  function autoResizeSelect(el) {
+    if (!el) return;
+    const selectedText = el.options[el.selectedIndex]?.text || "";
+    el.style.width = Math.max(selectedText.length + 5, 12) + "ch";
+  }
+
+  function getDropdownLabels() {
+    if (currentView === 'communs') return { step2: 'Étage', step3: 'Description' };
+    if (currentView === 'facades') return { step2: 'Orientation', step3: 'Trame' };
+    return { step2: 'Étage', step3: 'Porte' }; // locataires default
+  }
+
+  // --- POPULATION SCRIPTS ---
+
+  function populateBatHall() {
+    const selBatHall = document.getElementById('sel-bathall');
+    selBatHall.innerHTML = `<option value="" disabled selected>Bâtiment - Hall</option>`;
+
+    const dataList = rawData[currentView] || [];
+    const batHallMap = new Map();
+
+    dataList.forEach(item => {
+      if (!item.batiment) return;
+      const bat = String(item.batiment).trim();
+      const hall = item.hall ? String(item.hall).trim() : "";
+      const key = `${bat}||${hall}`;
+      if (!batHallMap.has(key)) batHallMap.set(key, { bat, hall });
+    });
+
+    const sortedOptions = Array.from(batHallMap.entries()).sort((a, b) => {
+      if (a[1].bat !== b[1].bat) return a[1].bat.localeCompare(b[1].bat, undefined, {numeric: true});
+      return a[1].hall.localeCompare(b[1].hall, undefined, {numeric: true});
+    });
+
+    sortedOptions.forEach(([key, val]) => {
+      const label = val.hall ? `Bât. ${val.bat} - Hall ${val.hall}` : `Bât. ${val.bat}`;
+      selBatHall.innerHTML += `<option value="${key}">${label}</option>`;
+    });
+
+    autoResizeSelect(selBatHall);
+  }
+
+  function populateStep2(bat, hall) {
+    const selEtage = document.getElementById('sel-etage');
+    const dataList = rawData[currentView] || [];
+
+    const filtered = dataList.filter(item =>
+      String(item.batiment || '').trim() === bat &&
+      String(item.hall || '').trim() === hall
+    );
+
+    let labels = getDropdownLabels();
+    selEtage.innerHTML = `<option value="" disabled selected>${labels.step2}</option>`;
+
+    if (currentView === 'facades') {
+      const orientations = [...new Set(filtered.map(i => String(i.orientation ?? '').trim()).filter(val => val !== ''))];
+      orientations.sort().forEach(o => selEtage.innerHTML += `<option value="${o}">${o}</option>`);
+    } else {
+      const etages = [...new Set(filtered.map(i => String(i.etage ?? '').trim()).filter(val => val !== ''))];
+      etages.sort((a, b) => a.localeCompare(b, undefined, {numeric: true})).forEach(e => {
+        selEtage.innerHTML += `<option value="${e}">Étage ${e}</option>`;
+      });
+    }
+
+    selEtage.disabled = false;
+    autoResizeSelect(selEtage);
+  }
+
+  function populateStep3(bat, hall, step2Val) {
+    const selPorte = document.getElementById('sel-porte');
+    const dataList = rawData[currentView] || [];
+
+    const filtered = dataList.filter(item => {
+      const matchBatHall = String(item.batiment ?? '').trim() === bat && String(item.hall ?? '').trim() === hall;
+      if (!matchBatHall) return false;
+
+      if (currentView === 'facades') return String(item.orientation ?? '').trim() === step2Val;
+      return String(item.etage ?? '').trim() === step2Val;
+    });
+
+    let labels = getDropdownLabels();
+    let placeholderHtml = `<option value="" disabled selected>${labels.step3}</option>`;
+    let optionsHtml = '';
+    let optionCount = 0;
+
+    if (currentView === 'locataires') {
+      filtered.sort((a, b) => String(a.porte || '').localeCompare(String(b.porte || ''), undefined, {numeric: true}));
+      filtered.forEach(loc => {
+        optionsHtml += `<option value="${loc.id}">Porte ${loc.porte || loc.id}</option>`;
+        optionCount++;
+      });
+
+    } else if (currentView === 'communs') {
+      filtered.sort((a, b) => String(a.description || '').localeCompare(String(b.description || '')));
+      filtered.forEach(com => {
+        const label = com.ref ? `${com.description} (${com.ref})` : com.description;
+        optionsHtml += `<option value="${com.id}">${label}</option>`;
+        optionCount++;
+      });
+
+    } else if (currentView === 'facades') {
+      const trames = [...new Set(filtered.map(f => String(f.trame || '').trim()).filter(Boolean))];
+      trames.sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+      trames.forEach(t => {
+        optionsHtml += `<option value="${t}">Trame ${t}</option>`;
+        optionCount++;
+      });
+    }
+
+    if (optionCount >= 1) {
+      let selectAllText = "";
+
+      if (currentView === 'locataires') {
+        selectAllText = "Tout l'étage";
+      } else if (currentView === 'communs') {
+        selectAllText = "Tout l'étage";
+      } else if (currentView === 'facades') {
+        selectAllText = "Toute la façade";
+      }
+
+      optionsHtml = `<option value="all">${selectAllText}</option>` + optionsHtml;
+    }
+
+    selPorte.innerHTML = placeholderHtml + optionsHtml;
+    selPorte.disabled = optionCount === 0;
+    autoResizeSelect(selPorte);
+  }
+
+  function populateRoomOrPartie(bat, hall, step2Val, step3Val) {
+    const roomSelect = document.getElementById('room-select');
+    const roomLabel = document.getElementById('room-label');
+    const roomIcon = document.getElementById('room-icon');
+    const roomContainer = document.getElementById('room-dropdown-container');
+
+    roomContainer.classList.remove('hidden');
+
+    let optionsHtml = '';
+    let optionCount = 0;
+    let selectAllText = "Sélectionner tout";
+
+    // "Tout l'étage" / "Toute la façade" was chosen at step 3
+    if (step3Val === 'all') {
+      if (currentView === 'facades') {
+        roomLabel.textContent = "Partie :";
+        roomIcon.textContent = "view_in_ar";
+        optionsHtml = `<option value="all">Toute la façade</option>`;
+      } else if (currentView === 'locataires') {
+        roomLabel.textContent = "Pièce :";
+        roomIcon.textContent = "meeting_room";
+        optionsHtml = `<option value="all">Général (Tout l'étage)</option>`;
+      } else {
+        roomLabel.textContent = "Zone :";
+        roomIcon.textContent = "meeting_room";
+        optionsHtml = `<option value="all">Étage complet</option>`;
+      }
+
+      roomSelect.innerHTML = optionsHtml;
+      roomSelect.disabled = false;
+      roomSelect.selectedIndex = 0;
+      roomSelect.dispatchEvent(new Event('change')); // triggers the room-select handler below
+      return;
+    }
+
+    if (currentView === 'facades') {
+      roomLabel.textContent = "Partie :";
+      roomIcon.textContent = "view_in_ar";
+      selectAllText = "Toutes les parties";
+
+      const filtered = (rawData.facades || []).filter(item =>
+        String(item.batiment || '').trim() === bat &&
+        String(item.hall || '').trim() === hall &&
+        String(item.orientation || '').trim() === step2Val &&
+        (step3Val === 'all' || String(item.trame || '').trim() === step3Val)
+      );
+
+      filtered.sort((a, b) => String(a.partie || '').localeCompare(String(b.partie || ''), undefined, {numeric: true}));
+
+      filtered.forEach(fac => {
+        const partieName = (fac.partie && String(fac.partie).trim() !== "")
+            ? String(fac.partie).trim()
+            : 'Trame complète';
+
+        optionsHtml += `<option value="${fac.id}">${partieName}</option>`;
+        optionCount++;
+      });
+
+    } else if (currentView === 'locataires') {
+      roomLabel.textContent = "Pièce :";
+      roomIcon.textContent = "meeting_room";
+      selectAllText = "Toutes les pièces";
+
+      if (step3Val !== 'all') {
+        const selectedLocataire = (rawData.locataires || []).find(i => String(i.id) === String(step3Val));
+        if (selectedLocataire && selectedLocataire.configLogement && rawData.configLogement) {
+          const configName = String(selectedLocataire.configLogement).trim();
+          const configRow = rawData.configLogement.find(r => String(r.configLogement).trim() === configName);
+
+          if (configRow) {
+            for (const [roomName, isChecked] of Object.entries(configRow)) {
+              if (roomName !== 'configLogement' && isChecked === true) {
+                optionsHtml += `<option value="${roomName}">${roomName}</option>`;
+                optionCount++;
+              }
+            }
+          }
+        }
+      }
+
+    } else if (currentView === 'communs') {
+      roomLabel.textContent = "Zone :";
+      roomIcon.textContent = "meeting_room";
+      selectAllText = "Toutes les zones";
+
+      // Add logic for communs here if needed in the future
+      optionsHtml += `<option value="zone-unique">Zone Unique</option>`;
+      optionCount++;
+    }
+
+    if (optionCount > 1) {
+      optionsHtml = `<option value="all">${selectAllText}</option>` + optionsHtml;
+    } else if (optionCount === 0) {
+      optionsHtml = `<option value="" disabled>Aucune sélection disponible</option>`;
+    }
+
+    roomSelect.innerHTML = optionsHtml;
+    roomSelect.disabled = optionCount === 0;
+
+    if (optionCount > 0) {
+      roomSelect.selectedIndex = 0;
+      roomSelect.dispatchEvent(new Event('change'));
+    }
+  }
+
+  // --- EVENT LISTENERS ---
+
+  function resetCascadingSelection() {
+    selectionState = { batHall: null, etage: null, porte: null, selectedItem: null };
+
+    const selBatHall = document.getElementById('sel-bathall');
+    const selEtage = document.getElementById('sel-etage');
+    const selPorte = document.getElementById('sel-porte');
+    const roomSelect = document.getElementById('room-select');
+    const roomLabel = document.getElementById('room-label');
+    const btnReset = document.getElementById('btn-reset-selection');
+    const detailsPanel = document.getElementById('selected-item-details');
+    const roomContainer = document.getElementById('room-dropdown-container');
+
+    roomContainer.classList.add('hidden');
+
+    const labels = getDropdownLabels();
+
+    selBatHall.value = "";
+    selEtage.innerHTML = `<option value="" disabled selected>${labels.step2}</option>`;
+    selEtage.disabled = true;
+    selPorte.innerHTML = `<option value="" disabled selected>${labels.step3}</option>`;
+    selPorte.disabled = true;
+
+    roomSelect.innerHTML = `<option value="" disabled selected>En attente...</option>`;
+    roomSelect.disabled = true;
+    roomLabel.textContent = (currentView === 'facades') ? "Partie :" : "Pièce :";
+
+    btnReset.classList.add('hidden');
+    detailsPanel.classList.add('hidden');
+    detailsPanel.innerHTML = '';
+
+    autoResizeSelect(selBatHall);
+    autoResizeSelect(selEtage);
+    autoResizeSelect(selPorte);
+
+    setDynamicPanelState(false);
+    clearPlan();
+  }
+
+  function setupCascadingSelectors() {
+    const selBatHall = document.getElementById('sel-bathall');
+    const selEtage = document.getElementById('sel-etage');
+    const selPorte = document.getElementById('sel-porte');
+    const roomSelect = document.getElementById('room-select');
+    const btnReset = document.getElementById('btn-reset-selection');
+
+    if (btnReset) {
+      btnReset.addEventListener('click', resetCascadingSelection);
+    }
+
+    selBatHall.addEventListener('change', (e) => {
+      autoResizeSelect(selBatHall);
+      const [bat, hall] = e.target.value.split('||');
+      selectionState.batHall = { bat, hall };
+      btnReset.classList.remove('hidden');
+
+      const labels = getDropdownLabels();
+      selEtage.innerHTML = `<option value="" disabled selected>${labels.step2}</option>`;
+      selEtage.disabled = true;
+      selPorte.innerHTML = `<option value="" disabled selected>${labels.step3}</option>`;
+      selPorte.disabled = true;
+      roomSelect.innerHTML = `<option value="" disabled selected>En attente...</option>`;
+      roomSelect.disabled = true;
+      document.getElementById('room-dropdown-container').classList.add('hidden');
+
+      document.getElementById('selected-item-details').classList.add('hidden');
+      setDynamicPanelState(false);
+      clearPlan();
+
+      populateStep2(bat, hall);
+    });
+
+    selEtage.addEventListener('change', (e) => {
+      autoResizeSelect(selEtage);
+      selectionState.etage = e.target.value;
+
+      const labels = getDropdownLabels();
+      selPorte.innerHTML = `<option value="" disabled selected>${labels.step3}</option>`;
+      selPorte.disabled = true;
+      roomSelect.innerHTML = `<option value="" disabled selected>En attente...</option>`;
+      roomSelect.disabled = true;
+      document.getElementById('room-dropdown-container').classList.add('hidden');
+
+      document.getElementById('selected-item-details').classList.add('hidden');
+      setDynamicPanelState(false);
+      clearPlan();
+
+      populateStep3(selectionState.batHall.bat, selectionState.batHall.hall, selectionState.etage);
+    });
+
+    selPorte.addEventListener('change', (e) => {
+      autoResizeSelect(selPorte);
+      const val = e.target.value;
+      selectionState.porte = e.target.options[e.target.selectedIndex].text;
+
+      document.getElementById('selected-item-details').classList.add('hidden');
+      setDynamicPanelState(false);
+
+      if (val === 'all') {
+        showToast(`Affichage global activé`, 'info', '', 1500);
+
+        selectionState.selectedItem = {
+          id: 'GLOBAL_' + selectionState.batHall.bat + '_' + selectionState.etage,
+          batiment: selectionState.batHall.bat,
+          hall: selectionState.batHall.hall,
+          etage: selectionState.etage,
+          orientation: selectionState.etage,
+          trame: 'Toutes',
+          porte: 'Toutes',
+          nom: 'Sélection',
+          prenom: 'Globale',
+          description: 'Ensemble du niveau/façade',
+          type: 'Global',
+          surface: '-',
+          configLogement: 'Toutes'
+        };
+
+        renderSelectedItemDetails(selectionState.selectedItem);
+        populateRoomOrPartie(selectionState.batHall.bat, selectionState.batHall.hall, selectionState.etage, val);
+        loadAssetForSelection('all');
+        WorkspaceCore.refreshActiveLayer();
+        return;
+      }
+
+      // Existing individual object selection route
+      if (currentView === 'facades') {
+        selectionState.selectedItem = null;
+        populateRoomOrPartie(selectionState.batHall.bat, selectionState.batHall.hall, selectionState.etage, val);
+        loadAssetForSelection(val);
+      } else {
+        const dataList = rawData[currentView] || [];
+        selectionState.selectedItem = dataList.find(i => String(i.id) === String(val));
+
+        if (selectionState.selectedItem) {
+          renderSelectedItemDetails(selectionState.selectedItem);
+        }
+
+        populateRoomOrPartie(selectionState.batHall.bat, selectionState.batHall.hall, selectionState.etage, val);
+        showToast(`Élément chargé`, 'success', '', 1000);
+        loadAssetForSelection(val);
+      }
+
+      WorkspaceCore.refreshActiveLayer();
+    });
+
+    roomSelect.addEventListener('change', (e) => {
+      const selectedValue = e.target.value;
+
+      if (currentView === 'facades' && selectedValue !== 'all') {
+        selectionState.selectedItem = (rawData.facades || []).find(i => String(i.id) === String(selectedValue));
+        if (selectionState.selectedItem) {
+          renderSelectedItemDetails(selectionState.selectedItem);
+        }
+      }
+
+      if (currentView === 'facades') {
+        showToast(`Partie sélectionnée.`, 'success', '', 2000);
+      }
+
+      WorkspaceCore.refreshActiveLayer();
+    });
+  }
+
+  // --- DETAILS RENDERER (the "dynamic panel header", shared by all 6 layers) ---
+  function renderSelectedItemDetails(item) {
+    const container = document.getElementById('selected-item-details');
+    container.classList.remove('hidden');
+    container.className = "px-5 py-2 border-b border-slate-100 bg-white shrink-0 text-xs text-slate-600 shadow-sm z-20";
+
+    const locLabel = item.hall ? `Bât. ${item.batiment} / Hall ${item.hall}` : `Bât. ${item.batiment}`;
+
+    let html = '';
+
+    if (currentView === 'locataires') {
+      html = `
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-2 gap-y-2">
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">ID Lot</span><span class="font-bold text-primary">${item.id}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Localisation</span><span class="font-bold">${locLabel}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Étage</span><span class="font-bold">${(item.etage !== null && item.etage !== undefined && String(item.etage).trim() !== '') ? item.etage : '-'}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Porte</span><span class="font-bold">${item.porte || '-'}</span></div>
+
+          <div class="min-w-0">
+            <span class="font-black text-slate-400 uppercase text-[9px] block">Locataire</span>
+            <span class="font-bold block truncate" title="${item.nom} ${item.prenom}">${item.nom} ${item.prenom}</span>
+          </div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Empilement</span><span class="font-bold">${item.empilement || '-'}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Surface</span><span class="font-bold">${item.surface || 0} m²</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Type</span><span class="font-bold">L${item.typeLog} (${item.configLogement})</span></div>
+        </div>`;
+
+    } else if (currentView === 'communs') {
+      html = `
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-2 gap-y-2">
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">ID Commun</span><span class="font-bold text-primary">${item.id}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Localisation</span><span class="font-bold">${locLabel}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Étage</span><span class="font-bold">${(item.etage !== null && item.etage !== undefined && String(item.etage).trim() !== '') ? item.etage : '-'}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Référence</span><span class="font-bold">${item.ref || '-'}</span></div>
+          <div class="col-span-2 md:col-span-4"><span class="font-black text-slate-400 uppercase text-[9px] block">Description</span><span class="font-bold">${item.description}</span></div>
+        </div>`;
+
+    } else if (currentView === 'facades') {
+      let typeDesc = "—";
+      if (rawData.facadesConfig) {
+        const configRow = rawData.facadesConfig.find(r => String(r.type).trim() === String(item.type).trim());
+        if (configRow && configRow.description) typeDesc = configRow.description;
+      }
+
+      html = `
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-2 gap-y-2">
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">ID Façade</span><span class="font-bold text-primary">${item.id}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Localisation</span><span class="font-bold">${locLabel}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Orientation</span><span class="font-bold">${item.orientation || '-'}</span></div>
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Trame / Partie</span><span class="font-bold">${item.trame} / ${item.partie || '-'}</span></div>
+
+          <div><span class="font-black text-slate-400 uppercase text-[9px] block">Type</span><span class="font-bold">${item.type || '-'}</span></div>
+          <div class="col-span-1 md:col-span-3"><span class="font-black text-slate-400 uppercase text-[9px] block">Description du Type</span><span class="font-bold">${typeDesc}</span></div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+  }
+
+  // =========================================================
+  // 9. CLIENT VIEW MODE
+  // =========================================================
+
+  function injectClientViewToggle() {
+    const container = document.getElementById('pageExtensionZone');
+    if (!container || !isAuthorized) return;
+    const isChecked = window.isClientViewActive ? 'checked' : '';
+    container.innerHTML = `
+      <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between mb-1">
+        <div class="flex flex-col">
+          <span class="text-[10px] font-black text-slate-700 uppercase tracking-widest flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px] text-slate-400">visibility_off</span>
+            Vue Client
+          </span>
+          <p class="text-[9px] text-slate-400 font-medium">Masquer les notes privées</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="clientViewToggle" class="sr-only peer" onchange="toggleClientView(this.checked)" ${isChecked}>
+          <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+        </label>
+      </div>`;
+  }
+
+  function toggleClientView(isActive) {
+    window.isClientViewActive = isActive;
+    localStorage.setItem('isClientViewActive', isActive);
+    showToast(isActive ? "Mode Présentation : Données privées masquées" : "Vue complète : Données privées affichées", 'info', '', 2000);
+
+    // Let the active layer hide/show anything gated by Client View.
+    WorkspaceCore.refreshActiveLayer();
+  }
+
+  // =========================================================
+  // 10. LAYER SWITCHING (the 6 nav buttons on the far left)
+  // =========================================================
+
+  function setupLayerSwitching() {
+    const layerBtns = document.querySelectorAll('.layer-btn');
+
+    layerBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const clickedBtn = e.currentTarget;
+        const layerId = clickedBtn.dataset.layerId;
+        if (!layerId) return;
+
+        layerBtns.forEach(b => b.classList.remove('active'));
+        clickedBtn.classList.add('active');
+
+        WorkspaceCore.activateLayer(layerId);
+
+        const layerName = clickedBtn.querySelector('span:last-child').textContent;
+        showToast(`Passage en mode ${layerName}`, 'info', '', 1000);
+      });
+    });
+  }
+
+  // =========================================================
+  // 11. PLAN / ASSET ENGINE (point 2 — shared by layers 1-5; Formulaires
+  //     overrides via resolveAsset())
+  // =========================================================
+
+  /** Replicates the spreadsheet macro zero-padding logic */
+  function tokenTwoDigits(v) {
+    const n = Math.floor(Math.abs(Number(v)));
+    if (isNaN(n)) return String(v).trim();
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  /** Replicates the spreadsheet macro floor rendering logic (<0 => Bxx, else Rxx) */
+  function tokenEtage(etgRaw) {
+    const etgNum = parseInt(etgRaw, 10);
+    if (isNaN(etgNum)) return "R00"; // Fallback safety
+    const prefix = etgNum < 0 ? "B" : "R";
+    return prefix + tokenTwoDigits(Math.abs(etgNum));
+  }
+
+  /** Replicates the spreadsheet orientation mapping logic (Nord -> N, etc.) */
+  function tokenOrientation(oriRaw) {
+    const t = String(oriRaw || '').toLowerCase().trim()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // Clear accents
+
+    if (t === 'nord') return 'N';
+    if (t === 'sud') return 'S';
+    if (t === 'est') return 'E';
+    if (t === 'ouest') return 'O';
+
+    const first = t.charAt(0).toUpperCase();
+    if (['N', 'S', 'E', 'O'].includes(first)) return first;
+    return '';
+  }
+
+  /** Assembles the standard Bâtiment/Hall prefix */
+  function tokenBatHall() {
+    const bat = String(selectionState.batHall.bat || '').trim();
+    const hall = String(selectionState.batHall.hall || '').trim();
+    return hall === "" ? bat : `${bat}-${hall}`;
+  }
+
+  /** Default/shared resolver — used by every layer unless it defines its own resolveAsset() */
+  function generatePlanFilename(val) {
+    const batHallStr = tokenBatHall();
+
+    if (val === 'all') {
+      if (currentView === 'facades') {
+        const oriToken = tokenOrientation(selectionState.etage);
+        return `global_fac_${batHallStr}-${oriToken}`;
+      } else {
+        const etageToken = tokenEtage(selectionState.etage);
+        return `global_${batHallStr}-${etageToken}`;
+      }
+    } else {
+      if (currentView === 'locataires') {
+        const configLog = selectionState.selectedItem ? selectionState.selectedItem.configLogement : val;
+        return `log_${configLog}`;
+      }
+      if (currentView === 'communs') {
+        return `com_${val}`;
+      }
+      if (currentView === 'facades') {
+        return `fac_${val}`;
+      }
+    }
+    return null;
+  }
+
+  // Remembers whatever was last passed to loadAssetForSelection() (a Porte
+  // id, 'all', etc.) so activateLayer() can replay the exact same call when
+  // the user merely switches layers, with no selection change involved.
+  let lastAssetSelectionVal = null;
+
+  let planContainerToken = 0;
+
+  // Tags whatever is CURRENTLY drawn into #plan-wrapper: 'layer:<id>' when a
+  // layer's own renderPlanPanel() owns it (e.g. Travaux's recap), or
+  // 'photo:<filename>' when it's the shared plan photo for that filename, or
+  // null for the empty placeholder. Lets refreshPlanPanelForActiveLayer()
+  // (called on every layer switch, see WorkspaceCore.activateLayer) skip
+  // reloading when the panel already shows the right thing, instead of
+  // re-fetching the same photo from the server on every single layer click.
+  let planContainerSource = null;
+
+  /** Entry point used by the cascading selectors — goes through the active layer's
+   *  resolveAsset() override first, falling back to generatePlanFilename().
+   *
+   *  NEW: a layer can instead define renderPlanPanel(ctx, wrapperEl) to take over
+   *  the plan-container entirely with its own live HTML — used by Travaux for its
+   *  printable work-summary instead of a plan photo. Checked on every selection
+   *  change (not just on layer activation), so the custom content stays in sync
+   *  as the person clicks through IDs/rooms, exactly like the photo flow does.
+   *  Purely additive: a layer that doesn't define renderPlanPanel goes through
+   *  the exact same path as before. */
+  function loadAssetForSelection(val) {
+    lastAssetSelectionVal = val;
+    const myToken = ++planContainerToken; // claim the plan-container NOW, synchronously
+    const layer = WorkspaceCore.getActiveLayer();
+    if (layer && typeof layer.renderPlanPanel === 'function') {
+      const wrapper = document.getElementById('plan-wrapper');
+      if (wrapper) layer.renderPlanPanel(WorkspaceCore.buildContext(), wrapper);
+      planContainerSource = 'layer:' + layer.id;
+      return;
+    }
+    const filename = WorkspaceCore.resolveAssetFilename(val);
+    planContainerSource = 'photo:' + filename;
+    loadPlanGraphicAsset(filename, myToken);
+  }
+
+  /** Triggers server invocation and renders the asset into the plan-container */
+function loadPlanGraphicAsset(filename, token) {
+    const wrapper = document.getElementById('plan-wrapper');
+    if (!wrapper) return;
+
+    const zoomControls = document.getElementById('plan-zoom-controls');
+    if (zoomControls) zoomControls.classList.remove('hidden');
+
+    wrapper.innerHTML = `
+      <div class="w-full h-full border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center text-slate-500 bg-slate-50/50 shadow-sm gap-3">
+        <div class="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-xs font-semibold tracking-wider uppercase">Chargement du plan : ${filename}</p>
+      </div>`;
+
+    google.script.run
+      .withSuccessHandler((base64DataUrl) => {
+        // Stale if ANYTHING claimed the plan-container since this request
+        // was fired — a newer photo, or a layer (e.g. Travaux) that took
+        // over via renderPlanPanel(). Drop it instead of overwriting
+        // whatever's correctly on screen now.
+        if (token !== planContainerToken) return;
+
+        wrapper.innerHTML = `
+          <div class="relative inline-block max-w-full max-h-full">
+            <img src="${base64DataUrl}" id="interactive-plan-img" class="max-w-full max-h-full object-contain drop-shadow-md transition-opacity duration-300 opacity-0" onload="this.classList.remove('opacity-0')"/>
+            <div id="plan-markers-overlay" class="absolute inset-0 z-10 pointer-events-none"></div>
+          </div>`;
+        resetZoomPanState();
+        WorkspaceCore.notifyAssetLoaded();
+      })
+      .withFailureHandler((error) => {
+        if (token !== planContainerToken) return; // stale — ignore
+        wrapper.innerHTML = `
+          <div class="w-full h-full border-2 border-dashed border-red-300 rounded-2xl flex flex-col items-center justify-center text-slate-400 bg-white shadow-sm gap-3 p-8 text-center">
+            <div class="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center border border-red-100 text-red-500"><span class="material-symbols-outlined">map</span></div>
+            <h2 class="text-xs font-black uppercase tracking-widest text-slate-600">Aucun plan disponible</h2>
+            <p class="text-[11px] text-slate-400 mt-2 font-mono break-words max-w-[400px]">${error.message}</p>
+          </div>`;
+      }).fetchPlanAssetAsBase64(filename);
+  }
+
+  /** Clears the interactive plan zone and restores its placeholder */
+  function clearPlan() {
+    planContainerToken++; // claim the plan-container too — a pending photo fetch must not overwrite this
+    const wrapper = document.getElementById('plan-wrapper');
+    if (wrapper) {
+      wrapper.innerHTML = `
+        <div class="w-full h-full border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center text-slate-400 bg-white shadow-sm">
+           <span class="material-symbols-outlined !text-4xl mb-2 opacity-50">map</span>
+           <p class="text-xs font-bold uppercase tracking-widest">[Zone du Plan Interactif]</p>
+        </div>`;
+      resetZoomPanState();
+    }
+    planContainerSource = null;
+  }
+
+  /** Called by WorkspaceCore.activateLayer() every time the user switches
+   *  layers (never on a plain selection change — the cascading selectors
+   *  already call loadAssetForSelection()/clearPlan() directly for that).
+   *  Makes sure the plan-container matches the layer that's active NOW:
+   *    - if it already shows the right thing (same layer's renderPlanPanel,
+   *      or the correct photo filename already loaded), do nothing — avoids
+   *      re-fetching an unchanged photo from the server on every layer click;
+   *    - if the new layer owns the panel via renderPlanPanel(), (re)draw it —
+   *      cheap, purely local HTML, safe even before anything is selected yet
+   *      (Travaux's renderPlanPanel shows its own "Sélectionnez un élément");
+   *    - otherwise, if a Bâtiment/Hall has already been chosen, (re)load the
+   *      shared plan photo for the current selection — this is what restores
+   *      the real plan after leaving a layer like Travaux that had taken the
+   *      panel over;
+   *    - otherwise (nothing chosen yet at all), leave/reset the panel on the
+   *      empty placeholder rather than risk calling generatePlanFilename()
+   *      with no Bâtiment/Hall selected (it reads selectionState.batHall.bat
+   *      unconditionally and would throw). */
+  function refreshPlanPanelForActiveLayer() {
+    const layer = WorkspaceCore.getActiveLayer();
+    if (!layer) return;
+
+    if (typeof layer.renderPlanPanel === 'function') {
+      if (planContainerSource !== 'layer:' + layer.id) {
+        loadAssetForSelection(lastAssetSelectionVal);
+      }
+      return;
+    }
+
+    if (!selectionState.batHall) {
+      if (planContainerSource !== null) clearPlan();
+      return;
+    }
+
+    const targetFilename = WorkspaceCore.resolveAssetFilename(lastAssetSelectionVal);
+    if (planContainerSource !== 'photo:' + targetFilename) {
+      loadAssetForSelection(lastAssetSelectionVal);
+    }
+  }
+
+  // =========================================================
+  // 12. GLOBAL ZOOM & PAN LOGIC (MIDDLE MOUSE DRAG)
+  // =========================================================
+
+  let planZoomState = {
+    scale: 1,
+    translateX: 0,
+    translateY: 0,
+    isDragging: false,
+    startX: 0,
+    startY: 0
+  };
+
+  function resetZoomPanState() {
+    planZoomState.scale = 1;
+    planZoomState.translateX = 0;
+    planZoomState.translateY = 0;
+    const wrapper = document.getElementById('plan-wrapper');
+    if (wrapper) wrapper.style.transform = `translate(0px, 0px) scale(1)`;
+  }
+
+  function initGlobalZoomPan() {
+    const viewport = document.getElementById('apartment-plan-visual');
+    const wrapper = document.getElementById('plan-wrapper');
+    if (!viewport || !wrapper) return;
+
+    const MIN_SCALE = 1;
+    const MAX_SCALE = 5;
+
+    function updateTransform() {
+      wrapper.style.transform = `translate(${planZoomState.translateX}px, ${planZoomState.translateY}px) scale(${planZoomState.scale})`;
+    }
+
+    viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomIntensity = 0.15;
+
+      if (e.deltaY < 0) {
+        planZoomState.scale = Math.min(MAX_SCALE, planZoomState.scale + zoomIntensity);
+      } else {
+        planZoomState.scale = Math.max(MIN_SCALE, planZoomState.scale - zoomIntensity);
+
+        if (planZoomState.scale === MIN_SCALE) {
+          planZoomState.translateX = 0;
+          planZoomState.translateY = 0;
+        }
+      }
+      updateTransform();
+    }, { passive: false });
+
+    viewport.addEventListener('mousedown', (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+
+      planZoomState.isDragging = true;
+      planZoomState.startX = e.clientX - planZoomState.translateX;
+      planZoomState.startY = e.clientY - planZoomState.translateY;
+      viewport.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!planZoomState.isDragging) return;
+      planZoomState.translateX = e.clientX - planZoomState.startX;
+      planZoomState.translateY = e.clientY - planZoomState.startY;
+      updateTransform();
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 1 || planZoomState.isDragging) {
+        planZoomState.isDragging = false;
+        viewport.style.cursor = 'default';
+      }
+    });
+
+    window.addEventListener('auxclick', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+
+    document.getElementById('zoom-in-btn').addEventListener('click', () => {
+      planZoomState.scale = Math.min(MAX_SCALE, planZoomState.scale + 0.5);
+      updateTransform();
+    });
+
+    document.getElementById('zoom-out-btn').addEventListener('click', () => {
+      planZoomState.scale = Math.max(MIN_SCALE, planZoomState.scale - 0.5);
+      if (planZoomState.scale === MIN_SCALE) {
+        planZoomState.translateX = 0;
+        planZoomState.translateY = 0;
+      }
+      updateTransform();
+    });
+
+    document.getElementById('zoom-reset-btn').addEventListener('click', resetZoomPanState);
+  }
+
+  document.addEventListener('DOMContentLoaded', initGlobalZoomPan);
+
+  // =========================================================
+  // 13. GENERIC OVERLAY TAGS & HIGHLIGHT SYSTEM (point 3 — reusable by all
+  //     6 layers). A layer only ever needs to call renderOverlayTags(items);
+  //     everything else (creating the dot, syncing with a list item, ESC to
+  //     clear...) is handled here.
+  //
+  //     Contract for a layer's own list items (e.g. an intervention card, a
+  //     future "form" card...): give the element class "plan-tag-target" and
+  //     a matching data-tag-id, and clicking its matching plan tag (or the
+  //     element itself, if it dispatches toggleHighlight(id) on click) will
+  //     highlight both in sync.
+  // =========================================================
+
+  /** items: [{ id, x, y, colorClass, title? }] — x/y are percentages (0-100) */
+  function renderOverlayTags(items) {
+    const overlay = document.getElementById('plan-markers-overlay');
+    if (!overlay) return;
+
+    overlay.innerHTML = '';
+    if (!items || !items.length) return;
+
+    items.forEach(item => {
+      if (item.x == null || item.y == null || isNaN(item.x) || isNaN(item.y)) return;
+
+      const tag = document.createElement('div');
+      tag.className = `plan-tag absolute w-4 h-4 rounded-full border-2 border-white shadow-sm pointer-events-auto cursor-pointer transform -translate-x-1/2 -translate-y-1/2 transition-all z-10 ${item.colorClass || 'bg-primary'}`;
+      tag.style.left = `${item.x}%`;
+      tag.style.top = `${item.y}%`;
+      tag.dataset.tagId = item.id;
+      if (item.title) tag.title = item.title;
+
+      tag.addEventListener('click', () => toggleHighlight(item.id));
+      overlay.appendChild(tag);
+    });
+  }
+
+  let activeHighlightId = null;
+
+  /** Toggles the highlight state of a plan tag and its matching list item. View Mode only. */
+  function toggleHighlight(id) {
+    const workspace = document.getElementById('workspace-screen');
+    if (workspace && workspace.getAttribute('data-edit-state') === 'edit') return;
+
+    if (activeHighlightId === id) {
+      clearHighlight();
+      return;
+    }
+
+    clearHighlight();
+    activeHighlightId = id;
+
+    const tag = document.querySelector(`.plan-tag[data-tag-id="${id}"]`);
+    if (tag) tag.classList.add('ring-4', 'ring-primary', 'scale-150', 'z-20');
+
+    const card = document.querySelector(`.plan-tag-target[data-tag-id="${id}"]`);
+    if (card) {
+      card.classList.add('ring-2', 'ring-primary', 'bg-blue-50');
+      card.classList.remove('border-slate-200');
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+
+  /** Removes the highlight from the currently active tag and list item. */
+  function clearHighlight() {
+    if (!activeHighlightId) return;
+
+    const tag = document.querySelector(`.plan-tag[data-tag-id="${activeHighlightId}"]`);
+    if (tag) tag.classList.remove('ring-4', 'ring-primary', 'scale-150', 'z-20');
+
+    const card = document.querySelector(`.plan-tag-target[data-tag-id="${activeHighlightId}"]`);
+    if (card) {
+      card.classList.remove('ring-2', 'ring-primary', 'bg-blue-50');
+      card.classList.add('border-slate-200');
+    }
+
+    activeHighlightId = null;
+  }
+
+  /**
+   * Clears all layer-specific overlays (tags, lines, drawings) from the plan.
+   * This ensures a clean slate when switching between layers.
+   */
+  function clearPlanOverlays() {
+    // We target '.plan-tag' for your current Reserves/EDL tags.
+    // We also include a generic '.layer-overlay' class that you can use 
+    // in the future for things like SVG lines or electrical symbols.
+    const overlays = document.querySelectorAll('.plan-tag, .layer-overlay');
+    overlays.forEach(element => element.remove());
+    
+    // If you have an active highlight state, clear that too so it doesn't persist
+    clearHighlight();
+
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const workspace = document.getElementById('workspace-screen');
+      if (workspace && workspace.getAttribute('data-edit-state') !== 'edit') {
+        clearHighlight();
+      }
+    }
+  });
+
+  // =========================================================
+  // 14. DYNAMIC PANEL — EMPTY STATE (shared placeholder from point 4)
+  // =========================================================
+
+  /** Shows the "waiting for selection" placeholder, or reveals #layer-panel-root. */
+  function setDynamicPanelState(hasSelection) {
+    const emptyState = document.getElementById('empty-state-placeholder');
+    const panelRoot = document.getElementById('layer-panel-root');
+    if (emptyState) emptyState.classList.toggle('hidden', hasSelection);
+    if (panelRoot) panelRoot.classList.toggle('hidden', !hasSelection);
+  }
+
+
+  /**
+  * Call this function whenever the user leaves the Reserves layer
+  * to re-enable the room dropdown selector.
+  */
+  window.unlockRoomDropdown = function() {
+    const roomDropdown = document.getElementById('room-select'); 
+    if (roomDropdown) {
+      roomDropdown.disabled = false;
+      // Remove the visual locked styles
+      roomDropdown.classList.remove('opacity-50', 'cursor-not-allowed');
+      roomDropdown.title = ""; // Clear the tooltip
+    }
+  };
+
+  // Close custom filter dropdowns when clicking outside and apply changes
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#reservesFiltersContainer')) {
+    let menuClosed = false;
+    
+    document.querySelectorAll('.res-filter-dropdown').forEach(el => {
+      if (!el.classList.contains('hidden')) {
+        el.classList.add('hidden');
+        menuClosed = true; // We found an open menu and closed it
+      }
+    });
+    
+    // If a menu was closed by clicking outside, apply filters and repopulate!
+    if (menuClosed) {
+      applyReservesFilters(); // Ensure you have this function defined to render the filtered list
+      populateReservesFilterOptions(true);
+    }
+  }
+});
+
+// Close custom filters on Escape key
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' || e.key === 'Esc') {
+    let menuClosed = false;
+    document.querySelectorAll('.res-filter-dropdown').forEach(el => {
+      if (!el.classList.contains('hidden')) {
+        el.classList.add('hidden');
+        menuClosed = true;
+      }
+    });
+
+    if (menuClosed) {
+      applyReservesFilters(); 
+      populateReservesFilterOptions(true);
+    }
+  }
+});
+
+</script>
