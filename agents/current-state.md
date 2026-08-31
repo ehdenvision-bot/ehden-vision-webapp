@@ -1,6 +1,38 @@
 # Current State
 
-Last updated: 2026-08-25.
+Last updated: 2026-08-31.
+
+## 2026-08-31 — git remote created; Windows clone + sandbox merged; Locataires bridge (Apps Script side) started
+
+- **Remote**: `https://github.com/ehdenvision-bot/ehden-vision-webapp.git` (private). First
+  commit `e40e54f` pushed from the sandbox. This is now the single source of truth — the
+  project had no commit history or off-machine backup before today.
+- **Two diverged working copies were merged.** A separate Windows machine held a `clasp`-based
+  working copy in a folder named `Webapp/` (this repo standardises on **`Webapp Files/`**).
+  Diff: identical except the Windows copy had **newer** `EDL.html`, `EDL_Code.js`,
+  `EDL_Scripts_1..4.html`, `Logs.js` (EDL-layer + Logs `Role`-column work its 491-line
+  `progress-log.md` documents), plus `agents/edl-{architecture,page-spec,todo}.md`. Those
+  newer files + docs were taken into `Webapp Files/` / `agents/`; the sandbox's more-developed
+  `decisions.md` / `runbook.md` / `todo.md` / `CLAUDE.md` / `architecture.md` were kept.
+  Full pre-merge snapshot: `../Webapp Text VB _pre-sync-backup/` on the Windows machine.
+  - **⚠ Unverified against live.** `clasp` has never been logged in in either environment, so
+    no copy of `Webapp Files/` is confirmed current with the deployed Apps Script project. The
+    6 EDL/Logs files above are *believed* newer (they came from the clasp-based stream) but
+    **run `clasp pull` and diff before any `clasp push`** — see `agents/todo.md`.
+- **Locataires bridge — Apps Script side (local only, not pushed, no behaviour change):**
+  - `Webapp Files/ApiClient.js` (new) — `callApi_(fnName, args)` → `POST
+    {API_BASE_URL}/bridge/rpc/<fn>` with `X-Api-Key`; returns `body.result` on 2xx else throws
+    `body.message`. Config from Script Properties (`API_BASE_URL`, `API_SHARED_SECRET`) read
+    every call; nothing hardcoded. `apiHealthCheck_()` helper for editor testing.
+  - `Webapp Files/Locataires_Code.js` — `getLocatairesPageData` / `updateLocataireData` /
+    `updatePlanningOnlyData` are now flag-gated dispatchers (same client-callable names): run
+    the existing `getSession_` / `assertCanEdit_` check, then route on
+    `USE_API_LOCATAIRES==='true'` (unset/false → the unchanged `*_sheets_` bodies).
+  - `backups/Locataires_Code.pre-api.js` — verbatim pre-refactor copy.
+  - Server side (`app/src/rpc/locataires.js`, migration `...003_create-locataires.js`) is
+    **already fully ported** in the sandbox build — the `app/README.md` "not ported" line is
+    stale. Remaining for the trial: create Postgres tables + one-time data load, set
+    `APPSCRIPT_SHARED_SECRET`, host `app/` publicly, then flip `USE_API_LOCATAIRES`.
 
 ## Project
 

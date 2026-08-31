@@ -7,6 +7,13 @@
   // =========================================================
 
   let photoCache = {};
+  // Staff-only "show unused too" toggle for the gallery — per-session UI
+  // state, not persisted. Unused photos are always in photoCache/rendered
+  // data; this just controls whether they're filtered out of the grid.
+  let showUnusedPhotos = false;
+  // Photo viewer state (spec section 2's "bigger view") — which room's
+  // photo list is currently open in the plan-container, and which index.
+  let photoViewerState = null; // { idLot, room, index } | null
 
   function initPhotoCache(photosArray) {
     photoCache = {};
@@ -49,10 +56,16 @@
     const privInput = document.getElementById('edl-note-priv');
     const statusContainer = document.getElementById('global-status-container');
     const statusSelect = document.getElementById('edl-status-select');
+    const generalContainer = document.getElementById('edl-general-note-container');
+    const generalPubInput = document.getElementById('edl-general-note-pub');
+    const generalPrivInput = document.getElementById('edl-general-note-priv');
 
     pubInput.value = '';
     privInput.value = '';
     statusSelect.value = '';
+    if (generalPubInput) generalPubInput.value = '';
+    if (generalPrivInput) generalPrivInput.value = '';
+    if (generalContainer) generalContainer.classList.add('hidden');
 
     document.getElementById('private-note-container').classList.toggle('hidden', ctx.isClientViewActive);
     if (!ctx.activeId) return;
@@ -78,6 +91,27 @@
         privInput.value = planData.privateNote || '';
       }
       applyStatusSelectColor(statusSelect);
+
+      // NEW 2026-08-26 (spec section 2): a second, EDL-specific general
+      // note pair — only for "Toutes les pièces" on a normal apartment,
+      // not Communs/Façades (those hit this same branch via
+      // ctx.currentView !== 'locataires' but don't get this note).
+      // Distinct purpose from the Planning note just above: this one is
+      // specifically about the work observed for THIS EDL, reusing the
+      // same 'Général' EDL Notes column whole-building entries use.
+      if (ctx.currentView === 'locataires' && generalContainer) {
+        generalContainer.classList.remove('hidden');
+        const generalPrivContainer = document.getElementById('edl-general-note-priv-container');
+        if (generalPrivContainer) generalPrivContainer.classList.toggle('hidden', ctx.isClientViewActive);
+        const notesRow = (rawData.edlNotes || []).find(r => String(r.ID) === String(ctx.activeId));
+        if (notesRow && notesRow['Général']) {
+          try {
+            const parsed = JSON.parse(notesRow['Général']);
+            if (generalPubInput) generalPubInput.value = parsed.pub || '';
+            if (generalPrivInput) generalPrivInput.value = parsed.priv || '';
+          } catch (e) { console.error("Parse error:", e); }
+        }
+      }
     } else {
       statusContainer.classList.add('hidden');
       const notesRow = (rawData.edlNotes || []).find(r => String(r.ID) === String(ctx.activeId));
@@ -98,14 +132,21 @@
     const isWholeLevel = String(ctx.activeId).startsWith('GLOBAL_');
 
     const roomName = (isWholeLevel || isGlobal) ? 'Général' : roomSelect.value;
+    const generalPubInput = document.getElementById('edl-general-note-pub');
+    const generalPrivInput = document.getElementById('edl-general-note-priv');
+    const hasGeneralNote = isGlobal && !isWholeLevel && ctx.currentView === 'locataires';
+
     const payload = {
       id: ctx.activeId,
       room: roomName,
       isGlobal: isGlobal,
       isWholeLevel: isWholeLevel,
+      currentView: ctx.currentView,
       pubNote: document.getElementById('edl-note-pub').value.trim(),
       privNote: document.getElementById('edl-note-priv').value.trim(),
-      status: (isGlobal && !isWholeLevel) ? document.getElementById('edl-status-select').value : null
+      status: (isGlobal && !isWholeLevel) ? document.getElementById('edl-status-select').value : null,
+      edlGeneralPub: hasGeneralNote && generalPubInput ? generalPubInput.value.trim() : undefined,
+      edlGeneralPriv: hasGeneralNote && generalPrivInput ? generalPrivInput.value.trim() : undefined
     };
 
     google.script.run
@@ -113,6 +154,15 @@
         if (isGlobal && !isWholeLevel) {
           if (!rawData.planning) rawData.planning = {};
           rawData.planning[ctx.activeId] = { status: payload.status, note: payload.pubNote, privateNote: payload.privNote };
+
+          if (hasGeneralNote) {
+            let notesRow = rawData.edlNotes.find(r => String(r.ID) === String(ctx.activeId));
+            if (!notesRow) {
+              notesRow = { ID: ctx.activeId };
+              rawData.edlNotes.push(notesRow);
+            }
+            notesRow['Général'] = JSON.stringify({ pub: payload.edlGeneralPub || '', priv: payload.edlGeneralPriv || '' });
+          }
         } else {
           let notesRow = rawData.edlNotes.find(r => String(r.ID) === String(ctx.activeId));
           if (!notesRow) {
@@ -125,6 +175,7 @@
       })
       .withFailureHandler((err) => {
         console.error("Auto-save failed:", err.message);
+        appErrorLog(err, "saveEDLNotesData", { projectId: APP_DATA.projectId, activeId: ctx.activeId });
       })
       .saveEDLNotesData(APP_DATA.token, APP_DATA.projectId, payload);
   }
@@ -134,27 +185,42 @@
     if (!grid) return;
     grid.innerHTML = '';
 
+    const toggleBtn = document.getElementById('photo-unused-toggle');
+    if (toggleBtn) toggleBtn.classList.toggle('hidden', !ctx.activeId || !ctx.roomName);
+
     if (!ctx.activeId || !photoCache[ctx.activeId] || !photoCache[ctx.activeId][ctx.roomName]) {
       grid.innerHTML = '<p class="text-xs text-slate-400 italic col-span-full">Aucune photo pour cette sélection.</p>';
       return;
     }
 
-    const photos = photoCache[ctx.activeId][ctx.roomName];
-    if (!Array.isArray(photos)) return;
+    const allPhotos = photoCache[ctx.activeId][ctx.roomName];
+    if (!Array.isArray(allPhotos)) return;
+    const photos = showUnusedPhotos ? allPhotos : allPhotos.filter(p => !p.unused);
 
     let htmlContent = '';
-    photos.forEach(p => {
+    photos.forEach((p) => {
       if (!p || !p.driveId) return;
       const imgUrl = 'https://lh3.googleusercontent.com/d/' + p.driveId;
+      // Index into allPhotos (not the filtered `photos` array) — the
+      // viewer's prev/next always cycles the full list, so its indices
+      // must stay stable regardless of the show/hide-unused toggle.
+      const fullIndex = allPhotos.indexOf(p);
       htmlContent +=
-        '<div class="relative group aspect-square bg-slate-100 rounded-lg overflow-hidden border border-slate-200">' +
-           '<img src="' + imgUrl + '" class="w-full h-full object-cover" />' +
-           '<button class="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">' +
-             '<span class="material-symbols-outlined !text-[14px]">delete</span>' +
-           '</button>' +
+        '<div class="relative group aspect-square bg-slate-100 rounded-lg overflow-hidden border border-slate-200' + (p.unused ? ' opacity-60' : '') + '">' +
+           '<img src="' + imgUrl + '" class="w-full h-full object-cover cursor-pointer" onclick="window.__edlOpenPhotoViewer(' + fullIndex + ')" />' +
+           (p.unused ? '<span class="absolute top-1 left-1 bg-slate-800/90 text-white text-[8px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded">Non utilisée</span>' : '') +
+           (p.caption ? '<div class="absolute bottom-0 inset-x-0 bg-black/55 text-white text-[9px] px-1.5 py-1 truncate">' + escapeHtml(p.caption) + '</div>' : '') +
+           '<div class="edit-only-ui absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">' +
+             '<button title="' + (p.unused ? 'Réactiver cette photo' : 'Marquer inutilisée') + '" onclick="event.stopPropagation(); window.__edlToggleUnusedPhoto(\'' + p.photoId + '\', ' + (!p.unused) + ')" class="bg-white/90 text-slate-600 p-1 rounded-full hover:bg-white">' +
+               '<span class="material-symbols-outlined !text-[14px]">' + (p.unused ? 'visibility' : 'visibility_off') + '</span>' +
+             '</button>' +
+             '<button title="Déplacer cette photo" onclick="event.stopPropagation(); window.__edlMigratePhoto(\'' + p.photoId + '\')" class="bg-white/90 text-slate-600 p-1 rounded-full hover:bg-white">' +
+               '<span class="material-symbols-outlined !text-[14px]">drive_file_move</span>' +
+             '</button>' +
+           '</div>' +
         '</div>';
     });
-    grid.innerHTML = htmlContent || '<p class="text-xs text-slate-400 italic col-span-full">Aucune photo pour cette sélection.</p>';
+    grid.innerHTML = htmlContent || '<p class="text-xs text-slate-400 italic col-span-full">' + (showUnusedPhotos ? 'Aucune photo pour cette sélection.' : 'Aucune photo visible (essayez d\'afficher les photos inutilisées).') + '</p>';
   }
 
   function bindPhotoUpload(container) {
@@ -181,23 +247,249 @@
           const base64Data = canvas.toDataURL('image/webp', 0.8).split(',')[1];
           const activeId = selectionState.selectedItem.id;
           const room = document.getElementById('room-select').value;
+          const captionInput = document.getElementById('photo-caption-input');
+          const caption = captionInput ? captionInput.value.trim() : '';
 
           google.script.run
             .withSuccessHandler((response) => {
               if (!photoCache[activeId]) photoCache[activeId] = {};
               if (!photoCache[activeId][room]) photoCache[activeId][room] = [];
               photoCache[activeId][room].push(response);
+              if (captionInput) captionInput.value = '';
 
               updatePhotos(WorkspaceCore.buildContext());
               showToast('Photo ajoutée !', 'success');
+              appLog('edl', activeId, 'Ajout photo', 'Private', 'Detail', { Pièce: room, Légende: caption || '(aucune)' });
             })
-            .uploadEDLPhoto(activeId, room, file.name, base64Data, 'image/webp');
+            .withFailureHandler((err) => {
+              showModal({ icon: 'error', title: 'Erreur', text: "L'envoi de la photo a échoué." });
+              appErrorLog(err, 'uploadEDLPhoto', { activeId, room });
+            })
+            .uploadEDLPhoto(APP_DATA.token, APP_DATA.projectId, activeId, room, file.name, base64Data, 'image/webp', caption);
         };
         img.src = event.target.result;
       };
       reader.readAsDataURL(file);
     });
   }
+
+  // =========================================================
+  // PHOTO VIEWER (spec section 2 — "bigger view")
+  // =========================================================
+  // Reuses the shared plan-container's zoom/pan via
+  // WorkspaceCore.showImageInPlanViewer()/restorePlanViewer() (added
+  // 2026-08-26 in Workspace_Core_Scripts.html) instead of a second
+  // zoom system, per the spec's explicit instruction. Controls are
+  // injected into .plan-container at open time and removed on close,
+  // rather than added to the static shell markup, keeping this feature
+  // scoped to the EDL layer's own script like every other layer-specific
+  // affordance.
+
+  function currentViewerPhotos() {
+    if (!photoViewerState) return [];
+    const room = (photoCache[photoViewerState.idLot] || {})[photoViewerState.room];
+    return Array.isArray(room) ? room : [];
+  }
+
+  function renderPhotoViewerControls() {
+    const planContainer = document.querySelector('.plan-container');
+    if (!planContainer) return;
+    let controls = document.getElementById('edl-photo-viewer-controls');
+    if (!controls) {
+      controls = document.createElement('div');
+      controls.id = 'edl-photo-viewer-controls';
+      // Tagged .layer-overlay so it's swept for free by the shell's
+      // existing clearPlanOverlays() on every layer switch (it targets
+      // '.plan-tag, .layer-overlay' document-wide, not just things inside
+      // #plan-markers-overlay) — otherwise these controls would stay
+      // stuck on screen if the user switches away while the viewer's open
+      // without clicking "back to plan" first.
+      controls.className = 'layer-overlay absolute top-4 left-4 z-30 flex flex-col gap-2 items-start';
+      planContainer.appendChild(controls);
+    }
+
+    const photos = currentViewerPhotos();
+    const p = photos[photoViewerState.index] || {};
+    const infoOpen = !!photoViewerState.infoOpen;
+
+    controls.innerHTML = `
+      <div class="flex gap-1.5 bg-white/95 backdrop-blur-sm p-1.5 rounded-xl shadow-lg border border-slate-200">
+        <button title="Retour au plan" onclick="window.__edlClosePhotoViewer()" class="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600"><span class="material-symbols-outlined !text-[18px]">arrow_back</span></button>
+        <button title="Photo précédente" onclick="window.__edlPhotoViewerNav(-1)" class="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600" ${photos.length < 2 ? 'disabled style="opacity:.35"' : ''}><span class="material-symbols-outlined !text-[18px]">chevron_left</span></button>
+        <button title="Photo suivante" onclick="window.__edlPhotoViewerNav(1)" class="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600" ${photos.length < 2 ? 'disabled style="opacity:.35"' : ''}><span class="material-symbols-outlined !text-[18px]">chevron_right</span></button>
+        <button title="Informations" onclick="window.__edlTogglePhotoViewerInfo()" class="p-1.5 rounded-lg ${infoOpen ? 'bg-primary-light text-primary' : 'hover:bg-slate-100 text-slate-600'}"><span class="material-symbols-outlined !text-[18px]">info</span></button>
+      </div>
+      ${infoOpen ? `
+      <div class="bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-lg border border-slate-200 text-[11px] text-slate-600 max-w-[260px]">
+        ${p.caption ? `<div class="font-bold text-slate-700 mb-1">${escapeHtml(p.caption)}</div>` : '<div class="italic text-slate-400 mb-1">Aucune légende</div>'}
+        <div>Ajoutée par <b>${escapeHtml(p.uploader || 'Inconnu')}</b></div>
+        <div>${escapeHtml(formatHistoryTimestamp ? formatHistoryTimestamp(p.timestamp) : String(p.timestamp || ''))}</div>
+        ${p.unused ? `<div class="mt-1 pt-1 border-t border-slate-100 text-amber-600 font-bold">Non utilisée${p.unusedReason ? ' — ' + escapeHtml(p.unusedReason) : ''}</div>` : ''}
+      </div>` : ''}
+    `;
+  }
+
+  window.__edlOpenPhotoViewer = function (index) {
+    const ctx = WorkspaceCore.buildContext();
+    if (!ctx.activeId || !ctx.roomName) return;
+    photoViewerState = { idLot: ctx.activeId, room: ctx.roomName, index: index, infoOpen: false };
+    const photos = currentViewerPhotos();
+    const p = photos[index];
+    if (!p) { photoViewerState = null; return; }
+    WorkspaceCore.showImageInPlanViewer('https://lh3.googleusercontent.com/d/' + p.driveId);
+    renderPhotoViewerControls();
+  };
+
+  window.__edlPhotoViewerNav = function (delta) {
+    if (!photoViewerState) return;
+    const photos = currentViewerPhotos();
+    if (!photos.length) return;
+    let next = photoViewerState.index + delta;
+    if (next < 0) next = photos.length - 1;
+    if (next >= photos.length) next = 0;
+    photoViewerState.index = next;
+    const p = photos[next];
+    WorkspaceCore.showImageInPlanViewer('https://lh3.googleusercontent.com/d/' + p.driveId);
+    renderPhotoViewerControls();
+  };
+
+  window.__edlTogglePhotoViewerInfo = function () {
+    if (!photoViewerState) return;
+    photoViewerState.infoOpen = !photoViewerState.infoOpen;
+    renderPhotoViewerControls();
+  };
+
+  window.__edlClosePhotoViewer = function () {
+    photoViewerState = null;
+    const controls = document.getElementById('edl-photo-viewer-controls');
+    if (controls) controls.remove();
+    WorkspaceCore.restorePlanViewer();
+  };
+
+  // =========================================================
+  // MARK PHOTO UNUSED (spec section 2 — never a true delete)
+  // =========================================================
+
+  window.__edlToggleUnusedPhoto = async function (photoId, makeUnused) {
+    let reason = '';
+    if (makeUnused) {
+      const { isConfirmed, value } = await Swal.fire({
+        title: 'Marquer cette photo comme inutilisée',
+        html: `<div class="text-left text-xs text-slate-500 mb-2">La photo reste visible (grisée, badge "Non utilisée") — ce n'est pas une suppression.</div>
+               <textarea id="unused-reason-input" rows="2" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="Raison (optionnel)"></textarea>`,
+        showCancelButton: true,
+        confirmButtonText: 'Marquer inutilisée',
+        cancelButtonText: 'Annuler',
+        confirmButtonColor: '#0d59f2',
+        focusConfirm: false,
+        preConfirm: () => document.getElementById('unused-reason-input').value.trim()
+      });
+      if (!isConfirmed) return;
+      reason = value || '';
+    }
+
+    google.script.run
+      .withSuccessHandler(() => {
+        Object.keys(photoCache).forEach(idLot => {
+          Object.keys(photoCache[idLot] || {}).forEach(room => {
+            (photoCache[idLot][room] || []).forEach(p => {
+              if (p.photoId === photoId) { p.unused = makeUnused; p.unusedReason = makeUnused ? reason : ''; }
+            });
+          });
+        });
+        updatePhotos(WorkspaceCore.buildContext());
+        showToast(makeUnused ? 'Photo marquée inutilisée.' : 'Photo réactivée.', 'success');
+        appLog('edl', photoId, makeUnused ? 'Photo marquée inutilisée' : 'Photo réactivée', 'Private', 'Milestone', { Raison: reason || '(aucune)' });
+      })
+      .withFailureHandler((err) => {
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de mettre à jour la photo." });
+        appErrorLog(err, 'gsSetEDLPhotoUnused', { photoId, makeUnused });
+      })
+      .gsSetEDLPhotoUnused(APP_DATA.token, APP_DATA.projectId, photoId, makeUnused, reason);
+  };
+
+  // =========================================================
+  // MIGRATE SINGLE PHOTO (spec section 2)
+  // =========================================================
+
+  window.__edlMigratePhoto = async function (photoId) {
+    const { isConfirmed, value } = await Swal.fire({
+      title: 'Déplacer cette photo',
+      html: `<div class="flex flex-col gap-3 mt-1 text-left">
+               <div><label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">ID appartement cible (laisser vide pour ne pas changer)</label>
+               <input id="migrate-photo-id" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="ex: L-014"></div>
+               <div><label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Pièce cible (laisser vide pour ne pas changer)</label>
+               <input id="migrate-photo-room" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="ex: Salon"></div>
+             </div>`,
+      showCancelButton: true,
+      confirmButtonText: 'Déplacer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#0d59f2',
+      focusConfirm: false,
+      preConfirm: () => ({
+        targetIdLot: document.getElementById('migrate-photo-id').value.trim(),
+        targetRoom: document.getElementById('migrate-photo-room').value.trim()
+      })
+    });
+    if (!isConfirmed) return;
+    if (!value.targetIdLot && !value.targetRoom) return;
+
+    google.script.run
+      .withSuccessHandler(() => {
+        // Simplest correct refresh: re-pull the full photo list rather than
+        // patch the nested cache by hand (this photo just moved buckets).
+        google.script.run
+          .withSuccessHandler(photos => { initPhotoCache(photos || []); updatePhotos(WorkspaceCore.buildContext()); })
+          .withFailureHandler(err => appErrorLog(err, "getEDLPhotosData (post-migrate refresh)", {}))
+          .getEDLPhotosData(APP_DATA.token);
+        showToast('Photo déplacée.', 'success');
+        appLog('edl', photoId, 'Photo déplacée', 'Private', 'Milestone', { 'Nouvel ID': value.targetIdLot || '(inchangé)', 'Nouvelle pièce': value.targetRoom || '(inchangée)' });
+      })
+      .withFailureHandler((err) => {
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de déplacer la photo." });
+        appErrorLog(err, 'gsMigrateEDLPhoto', { photoId, value });
+      })
+      .gsMigrateEDLPhoto(APP_DATA.token, APP_DATA.projectId, photoId, value.targetIdLot, value.targetRoom);
+  };
+
+  // =========================================================
+  // MIGRATE ALL EDL DATA (spec section 2 — bulk apartment-to-apartment)
+  // =========================================================
+
+  window.__edlMigrateAllData = async function () {
+    const ctx = WorkspaceCore.buildContext();
+    if (!ctx.activeId) { showModal({ icon: 'info', title: 'Sélection requise', text: 'Sélectionnez un appartement source d\'abord.' }); return; }
+
+    const { isConfirmed, value } = await Swal.fire({
+      title: 'Migrer toutes les données EDL',
+      html: `<div class="text-left text-xs text-slate-500 mb-3">Déplace toutes les photos, notes et statuts EDL de <b>${escapeHtml(ctx.activeId)}</b> vers un autre appartement. Bloqué si la cible a déjà ses propres données.</div>
+             <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">ID appartement cible</label>
+             <input id="migrate-all-target" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="ex: L-014">`,
+      showCancelButton: true,
+      confirmButtonText: 'Migrer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#dc2626',
+      focusConfirm: false,
+      preConfirm: () => document.getElementById('migrate-all-target').value.trim()
+    });
+    if (!isConfirmed || !value) return;
+
+    google.script.run
+      .withSuccessHandler((result) => {
+        showToast(`Migration terminée : ${result.movedPhotoCount} photo(s), ${result.movedNoteCount} note(s) EDL, statut ${result.movedPlanning ? 'déplacé' : 'inchangé'}.`, 'success', '', 4000);
+        appLog('edl', ctx.activeId, 'Migration EDL complète', 'Private', 'Milestone', { Cible: value, Photos: result.movedPhotoCount, Notes: result.movedNoteCount });
+        // Reload photo cache; notes/planning are refetched on next full page load —
+        // acceptable here since a migration is a rare, deliberate admin action.
+        google.script.run
+          .withSuccessHandler(photos => { initPhotoCache(photos || []); updatePhotos(WorkspaceCore.buildContext()); })
+          .getEDLPhotosData(APP_DATA.token);
+      })
+      .withFailureHandler((err) => {
+        showModal({ icon: 'error', title: 'Migration bloquée', text: err.message || "Impossible de migrer les données." });
+        appErrorLog(err, 'gsMigrateEDLData', { source: ctx.activeId, target: value });
+      })
+      .gsMigrateEDLData(APP_DATA.token, APP_DATA.projectId, ctx.activeId, value);
+  };
 
   function mount(container) {
     if (window.unlockRoomDropdown) window.unlockRoomDropdown();
@@ -234,16 +526,42 @@
         </div>
       </div>
 
-      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-        <h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-4 flex items-center gap-2">
-          <span class="material-symbols-outlined text-primary !text-[18px]">photo_library</span> Photos
+      <div id="edl-general-note-container" class="hidden bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+        <h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-1 flex items-center gap-2">
+          <span class="material-symbols-outlined text-primary !text-[18px]">summarize</span> Note générale EDL
         </h3>
+        <p class="text-[10px] text-slate-400 mb-4">Spécifique à cet état des lieux — distincte de la note de suivi de chantier ci-dessus.</p>
+        <div class="space-y-4">
+          <div>
+            <label class="text-[10px] font-black text-slate-400 uppercase ml-1 block mb-1">Note</label>
+            <textarea id="edl-general-note-pub" rows="2" class="w-full px-4 py-2 rounded-xl border-slate-200 focus:ring-primary text-xs font-medium text-slate-700 resize-none bg-slate-50 edit-only-ui-input" placeholder="Remarque EDL visible par le client..."></textarea>
+          </div>
+          <div id="edl-general-note-priv-container">
+            <label class="text-[10px] font-black text-rose-400 uppercase ml-1 mb-1 flex items-center gap-1">
+              <span class="material-symbols-outlined !text-[14px]">lock</span> Note Privée
+            </label>
+            <textarea id="edl-general-note-priv" rows="2" class="w-full px-4 py-2 rounded-xl border-rose-200 focus:ring-rose-500 bg-rose-50/30 text-xs font-medium text-slate-700 resize-none edit-only-ui-input" placeholder="Remarque EDL à usage interne uniquement..."></textarea>
+          </div>
+        </div>
+      </div>
 
-        <div id="photo-dropzone" class="edit-only-ui border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-400 bg-slate-50 hover:bg-primary-light hover:border-primary hover:text-primary transition-colors cursor-pointer mb-4">
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-xs font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary !text-[18px]">photo_library</span> Photos
+          </h3>
+          <button id="photo-unused-toggle" type="button" onclick="window.__edlToggleShowUnused()" class="hidden text-[10px] font-bold uppercase tracking-wide text-slate-500 hover:text-primary flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[14px]">${showUnusedPhotos ? 'visibility_off' : 'visibility'}</span>
+            <span id="photo-unused-toggle-label">${showUnusedPhotos ? 'Masquer les inutilisées' : 'Afficher les inutilisées'}</span>
+          </button>
+        </div>
+
+        <div id="photo-dropzone" class="edit-only-ui border-2 border-dashed border-slate-300 rounded-xl p-6 flex flex-col items-center justify-center text-slate-400 bg-slate-50 hover:bg-primary-light hover:border-primary hover:text-primary transition-colors cursor-pointer mb-2">
           <span class="material-symbols-outlined !text-3xl mb-1">add_a_photo</span>
           <p class="text-[11px] font-bold uppercase tracking-widest text-center">Ajouter une photo</p>
           <p class="text-[10px] mt-1 font-medium">Glisser-déposer ou cliquer (PNG, JPG, WEBP)</p>
         </div>
+        <input id="photo-caption-input" type="text" maxlength="140" class="edit-only-ui-input w-full mb-4 px-3 py-1.5 rounded-lg border-slate-200 text-[11px] text-slate-600" placeholder="Légende (facultatif) pour la prochaine photo ajoutée..." />
 
         <input type="file" id="photo-upload-input" class="hidden" accept="image/png, image/jpeg, image/webp" />
 
@@ -251,6 +569,10 @@
           <p class="text-xs text-slate-400 italic col-span-full">Aucune photo pour cette sélection.</p>
         </div>
       </div>
+
+      <button onclick="window.__edlMigrateAllData()" class="edit-only-ui w-full py-3 bg-white border border-slate-200 rounded-2xl text-[11px] font-black uppercase tracking-widest text-slate-500 hover:border-rose-300 hover:text-rose-500 transition-colors flex items-center justify-center gap-2">
+        <span class="material-symbols-outlined !text-[16px]">move_up</span> Migrer toutes les données EDL vers un autre appartement
+      </button>
     `;
 
     document.getElementById('edl-status-select').addEventListener('change', function (e) {
@@ -259,11 +581,30 @@
     });
     document.getElementById('edl-note-pub').addEventListener('blur', () => saveCurrentNotesInBackground(WorkspaceCore.buildContext()));
     document.getElementById('edl-note-priv').addEventListener('blur', () => saveCurrentNotesInBackground(WorkspaceCore.buildContext()));
+    document.getElementById('edl-general-note-pub').addEventListener('blur', () => saveCurrentNotesInBackground(WorkspaceCore.buildContext()));
+    document.getElementById('edl-general-note-priv').addEventListener('blur', () => saveCurrentNotesInBackground(WorkspaceCore.buildContext()));
 
     bindPhotoUpload(container);
   }
 
+  window.__edlToggleShowUnused = function () {
+    showUnusedPhotos = !showUnusedPhotos;
+    const label = document.getElementById('photo-unused-toggle-label');
+    const icon = document.querySelector('#photo-unused-toggle .material-symbols-outlined');
+    if (label) label.textContent = showUnusedPhotos ? 'Masquer les inutilisées' : 'Afficher les inutilisées';
+    if (icon) icon.textContent = showUnusedPhotos ? 'visibility_off' : 'visibility';
+    updatePhotos(WorkspaceCore.buildContext());
+  };
+
   function render(ctx) {
+    // A selection change (new apartment/room via the cascading selectors,
+    // not a layer switch) doesn't route through clearPlanOverlays() — so
+    // if the photo viewer was left open for the PREVIOUS selection, close
+    // it back to the plan now rather than leave it showing a stale photo
+    // list or stuck controls over the newly-selected apartment's plan.
+    if (photoViewerState && (photoViewerState.idLot !== ctx.activeId || photoViewerState.room !== ctx.roomName)) {
+      window.__edlClosePhotoViewer();
+    }
     updateStatusAndNotes(ctx);
     updatePhotos(ctx);
   }
@@ -282,7 +623,7 @@
         .withFailureHandler(err => {
           appErrorLog(err, "getEDLPhotosData", { projectId: APP_DATA.projectId });
         })
-        .getEDLPhotosData();
+        .getEDLPhotosData(APP_DATA.token);
     }
   });
 
@@ -375,20 +716,12 @@
     return v; // unrecognized value: pass through rather than silently hide the row
   }
 
-  // "Détails de champ" convention: semicolon-separated Label:Type pairs
-  // describing EXTRA inputs beyond the row's primary "Type de Champ" field,
-  // e.g. "Couleur:Dropdown;Quantité:Nombre". Blank -> no extra fields. A
-  // segment with no ':' becomes a plain "texte" field labeled with whatever
-  // text is there (covers old free-text rows without crashing on them).
-  function parseDetailsChamp(raw) {
-    const str = String(raw || '').trim();
-    if (!str) return [];
-    return str.split(';').map(function (part) {
-      const idx = part.indexOf(':');
-      if (idx === -1) return { label: part.trim(), type: 'texte' };
-      return { label: part.slice(0, idx).trim(), type: part.slice(idx + 1).trim().toLowerCase() };
-    }).filter(function (f) { return f.label; });
-  }
+  // "Détails de champ" mini-language (semicolon-separated Label:Type extra
+  // fields) removed entirely 2026-08-26 (agents/edl-page-spec.md section 3,
+  // "New: primary/secondary work items, replacing 'champs supplémentaires'")
+  // — replaced by the parentId-based primary/secondary link below.
+  // parseDetailsChamp()/extraFields/extraOptions no longer exist; a row's
+  // Détails de champ sheet cell (column I) is simply no longer read.
 
   function initTravauxConfigCache(rows) {
     travauxConfig = (rows || []).map(r => {
@@ -397,7 +730,10 @@
       //            box order is no longer a number stored here: it just
       //            follows sheet order (whichever Nom is seen first, top
       //            to bottom), same convention groupWorkItemsByDiscipline()
-      //            already uses for Discipline below.
+      //            already uses for Discipline below. A BLANK Nom is its own
+      //            convention (2026-08-26, spec section 3) — see the pinned
+      //            "Aide au déplacement des mobiliers" handling further
+      //            down; don't default it to 'Autres' here.
       //  - Ligne : this row's position *inside* its box in the recap (sort
       //            key only — gaps are fine, nothing needs to be
       //            contiguous; ties just fall back to sheet order).
@@ -408,39 +744,69 @@
       // Old 2-part "Nom|Ordre" rows still parse fine: that number is just
       // read as Ligne now, and Logo comes back blank.
       const scParts = String(r.sousCategorie || '').split('|');
-      const extraFields = parseDetailsChamp(r.detailsChamp);
-      // First ';'-block of Options belongs to the primary field (exactly
-      // what a plain splitList(r.options) would have given before this
-      // change, for any row with no ';' in Options); each block after that
-      // aligns positionally with extraFields.
-      const optionBlocks = String(r.options || '').split(';').map(splitList);
+      // A row's Options is a single flat list now that extra fields (which
+      // used to occupy blocks 2+ of a ';'-separated Options string) are
+      // gone — the [0] here is defensive: it strips any leftover extra-
+      // field option text a pre-migration row might still have saved,
+      // rather than accidentally folding it into the primary dropdown.
+      const primaryOptionsBlock = String(r.options || '').split(';')[0];
 
       return {
         idWork: r.idWork,
         cible: normalizeView(r.cible),
-        sousCategorieNom: (scParts[0] || 'Autres').trim() || 'Autres',
+        sousCategorieNom: (scParts[0] || '').trim(),
         sousCategorieLigne: scParts.length > 1 ? (parseFloat(scParts[1]) || 0) : 0,
         logo: (scParts[2] || '').trim(),
         discipline: r.discipline || 'Autres',
         typeTravail: r.typeTravail || r.idWork,
         piecesApplicables: splitList(r.piecesApplicables),
         typeChamp: String(r.typeChamp || '').trim(),
-        extraFields: extraFields,
-        options: optionBlocks[0] || [],
-        extraOptions: optionBlocks.slice(1)
+        options: splitList(primaryOptionsBlock),
+        // NEW 2026-08-26 (spec section 3): parentId blank/absent = this
+        // poste is a primary (or standalone); non-blank = this poste is a
+        // secondary linked to the primary whose idWork matches. One level
+        // only — a secondary's own parentId is never itself looked up as a
+        // further chain, enforced at the admin-form level (a secondary can
+        // never be offered as another row's parent), not here.
+        parentId: String(r.parentId || '').trim(),
+        // NEW 2026-08-26 (spec section 3): optional suffix/unit ("cm"),
+        // shown right after the field's value ("Largeur: 40 cm").
+        suffix: String(r.suffix || '').trim()
       };
     });
   }
 
+  // True for a poste with a blank sous-catégorie — the new "pinned,
+  // header-level item" convention (spec section 3): shown at the top of
+  // "Gérer les postes de travaux" and the top of the Locataires checklist,
+  // excluded from any sous-catégorie box on the left recap.
+  function isPinnedWorkItem(item) {
+    return !item.sousCategorieNom;
+  }
+
   // Work items that apply to the view + room currently being edited.
+  // Secondary items (parentId set) are deliberately excluded from this
+  // list — they're never their own top-level checklist row, only rendered
+  // inline under their primary by buildWorkItemRowHtml(). Look them up via
+  // travauxConfig directly (see getSecondariesOf below) when needed.
   function getApplicableWorkItems(ctx, roomName) {
     return travauxConfig.filter(item => {
+      if (item.parentId) return false;
       if (item.cible && item.cible !== ctx.currentView) return false;
       if (item.piecesApplicables.length === 0) return true; // no restriction -> applies everywhere
       // Accepts any French "all" form written in the sheet (Tout / Toute / Tous / Toutes).
       if (item.piecesApplicables.some(p => p.toLowerCase().startsWith('tout'))) return true;
       return item.piecesApplicables.some(p => p.toLowerCase() === String(roomName || '').toLowerCase());
     });
+  }
+
+  // Every secondary linked to one primary, in sheet order. Deliberately
+  // does NOT re-check piecesApplicables/cible against the current
+  // room/view — a secondary always follows its primary wherever the
+  // primary itself is shown, per spec ("a primary field with smaller
+  // linked sub-fields following it").
+  function getSecondariesOf(primaryIdWork) {
+    return travauxConfig.filter(item => item.parentId === primaryIdWork);
   }
 
   // Groups items by Discipline, preserving the sheet's row order (both
@@ -478,7 +844,9 @@
   //
   // Operates on rawData.travauxConfig — the RAW sheet-shaped rows
   // (idWork/cible/sousCategorie/discipline/typeTravail/piecesApplicables/
-  // typeChamp/detailsChamp/options, exactly Config Travaux's columns B..J)
+  // typeChamp/options/parentId/suffix, Config Travaux's columns B..L —
+  // parentId/suffix added 2026-08-26, replacing the old detailsChamp
+  // column, which is no longer read/written)
   // — NOT the already-parsed `travauxConfig` array above (that one's
   // shaped for rendering the checklist, not for round-tripping back to the
   // sheet). Every successful save/delete gets the fresh full row list back
@@ -525,25 +893,63 @@
     );
   }
 
-  function ctmBuildRowHtml(row) {
+  // `opts` (added 2026-08-26, spec section 3 — position/hierarchy
+  // management) controls which position/hierarchy arrows render:
+  //   isSecondaryRow: true  -> only a left (outdent/detach) arrow
+  //   showArrows: true      -> up/down (reorder within its Sous-catégorie,
+  //                            via canMoveUp/canMoveDown) + a right
+  //                            (indent) arrow when canIndent && indentTargetId
+  //                            names the sibling immediately above to attach to
+  // Pinned rows get neither — they have no Ligne/position concept.
+  function ctmBuildRowHtml(row, allRows, opts) {
+    opts = opts || {};
     const scParts = String(row.sousCategorie || '').split('|');
     const sub = (scParts[0] || '').trim();
     const logo = (scParts[2] || '').trim();
     const pieces = splitList(row.piecesApplicables);
     const piecesLabel = pieces.length ? pieces.join(', ') : 'Toutes les pièces';
+    const parentId = String(row.parentId || '').trim();
+    // Surface pinned/secondary status in the admin list — otherwise
+    // there's no way to tell, at a glance, which rows are pinned or linked
+    // without opening each one to edit.
+    const parentRow = parentId ? (allRows || []).filter(function (r) { return String(r.idWork) === parentId; })[0] : null;
+    const subLabel = parentId
+      ? ('↳ Secondaire de « ' + escapeHtml(parentRow ? (parentRow.typeTravail || parentRow.idWork) : parentId) + ' »')
+      : (!sub ? '📌 Épinglé' : escapeHtml(sub));
+
+    let arrowsHtml = '';
+    if (opts.isSecondaryRow) {
+      arrowsHtml =
+        '<button type="button" class="ctm-outdent-btn w-6 h-6 flex items-center justify-center rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light transition-colors" title="Détacher (redevient un poste principal)">' +
+          '<span class="material-symbols-outlined !text-[15px]">chevron_left</span>' +
+        '</button>';
+    } else if (opts.showArrows) {
+      arrowsHtml =
+        '<button type="button" class="ctm-moveup-btn w-6 h-6 flex items-center justify-center rounded-lg transition-colors ' + (opts.canMoveUp ? 'text-slate-400 hover:text-primary hover:bg-primary-light' : 'text-slate-200 cursor-not-allowed') + '" title="Monter" ' + (opts.canMoveUp ? '' : 'disabled') + '>' +
+          '<span class="material-symbols-outlined !text-[15px]">keyboard_arrow_up</span>' +
+        '</button>' +
+        '<button type="button" class="ctm-movedown-btn w-6 h-6 flex items-center justify-center rounded-lg transition-colors ' + (opts.canMoveDown ? 'text-slate-400 hover:text-primary hover:bg-primary-light' : 'text-slate-200 cursor-not-allowed') + '" title="Descendre" ' + (opts.canMoveDown ? '' : 'disabled') + '>' +
+          '<span class="material-symbols-outlined !text-[15px]">keyboard_arrow_down</span>' +
+        '</button>' +
+        '<button type="button" class="ctm-indent-btn w-6 h-6 flex items-center justify-center rounded-lg transition-colors ' + (opts.canIndent ? 'text-slate-400 hover:text-primary hover:bg-primary-light' : 'text-slate-200 cursor-not-allowed') + '" title="Attacher comme secondaire du poste juste au-dessus" data-indent-target="' + escapeHtml(opts.indentTargetId || '') + '" ' + (opts.canIndent ? '' : 'disabled') + '>' +
+          '<span class="material-symbols-outlined !text-[15px]">chevron_right</span>' +
+        '</button>';
+    }
+
     return (
-      '<div class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors" data-ctm-row="' + escapeHtml(row.idWork) + '">' +
+      '<div class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors' + (opts.isSecondaryRow ? ' bg-slate-50/60 pl-8' : '') + '" data-ctm-row="' + escapeHtml(row.idWork) + '">' +
         '<div class="flex items-center gap-2.5 min-w-0 flex-1">' +
           (logo ? WorkspaceCore.iconSpanHtml(logo, '!text-[16px] text-primary shrink-0') : '') +
           '<div class="min-w-0">' +
             '<p class="text-xs font-bold text-slate-700 truncate">' + escapeHtml(row.typeTravail || row.idWork) + '</p>' +
             '<p class="text-[10px] text-slate-400 truncate">' +
-              (sub ? escapeHtml(sub) + ' · ' : '') + escapeHtml(row.typeChamp || '—') + ' · ' + escapeHtml(piecesLabel) +
+              subLabel + ' · ' + escapeHtml(row.typeChamp || '—') + ' · ' + escapeHtml(piecesLabel) + (row.suffix ? ' · ' + escapeHtml(row.suffix) : '') +
             '</p>' +
           '</div>' +
         '</div>' +
-        '<div class="flex items-center gap-1 shrink-0">' +
-          '<button type="button" class="ctm-edit-btn w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light transition-colors" title="Modifier">' +
+        '<div class="flex items-center gap-0.5 shrink-0">' +
+          arrowsHtml +
+          '<button type="button" class="ctm-edit-btn w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light transition-colors ml-1" title="Modifier">' +
             '<span class="material-symbols-outlined !text-[16px]">edit</span>' +
           '</button>' +
           '<button type="button" class="ctm-delete-btn w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors" title="Supprimer">' +
@@ -554,32 +960,86 @@
     );
   }
 
+  // Regrouped by Sous-catégorie 2026-08-26 (spec section 3, position/
+  // hierarchy management) — was grouped by Discipline before. Position
+  // ("Ligne") and the indent-to-secondary gesture are both scoped to "this
+  // poste's siblings within the same Sous-catégorie", which a Discipline-
+  // based grouping could scatter across unrelated visual groups, making
+  // "the item above" ambiguous. Pinned postes (no Sous-catégorie) get
+  // their own section at the top with no position arrows (nothing to
+  // order them by); secondaries render indented under their primary with
+  // only a detach arrow, never their own up/down/indent (their position
+  // is entirely inherited from their primary).
   function ctmBuildListHtml(rows, viewKey) {
     const filtered = (rows || []).filter(function (r) { return normalizeView(r.cible) === viewKey; });
     if (filtered.length === 0) {
       return '<p class="text-xs text-slate-400 italic text-center py-10">Aucun poste de travaux pour cette vue. Cliquez sur « Ajouter » pour en créer un.</p>';
     }
 
-    // Grouped by Discipline, sheet order preserved — same convention as
-    // groupWorkItemsByDiscipline() above (the checklist itself).
-    const groups = [];
-    const index = {};
-    filtered.forEach(function (row) {
-      const key = row.discipline || 'Autres';
-      if (!index[key]) { index[key] = { discipline: key, rows: [] }; groups.push(index[key]); }
-      index[key].rows.push(row);
+    function parseRow(row) {
+      const scParts = String(row.sousCategorie || '').split('|');
+      return {
+        raw: row,
+        idWork: row.idWork,
+        sousCategorieNom: (scParts[0] || '').trim(),
+        sousCategorieLigne: scParts.length > 1 ? (parseFloat(scParts[1]) || 0) : 0,
+        parentId: String(row.parentId || '').trim()
+      };
+    }
+    const parsed = filtered.map(parseRow);
+    const pinned = parsed.filter(function (p) { return !p.sousCategorieNom && !p.parentId; });
+    const secondariesByParent = {};
+    parsed.filter(function (p) { return p.parentId; }).forEach(function (p) {
+      if (!secondariesByParent[p.parentId]) secondariesByParent[p.parentId] = [];
+      secondariesByParent[p.parentId].push(p);
     });
+    const normals = parsed.filter(function (p) { return p.sousCategorieNom && !p.parentId; });
 
-    return groups.map(function (g) {
+    const scGroups = [];
+    const scIndex = {};
+    normals.forEach(function (p) {
+      if (!scIndex[p.sousCategorieNom]) { scIndex[p.sousCategorieNom] = { name: p.sousCategorieNom, items: [] }; scGroups.push(scIndex[p.sousCategorieNom]); }
+      scIndex[p.sousCategorieNom].items.push(p);
+    });
+    scGroups.forEach(function (g) { g.items.sort(function (a, b) { return a.sousCategorieLigne - b.sousCategorieLigne; }); });
+
+    function rowWithSecondariesHtml(p, opts) {
+      const own = ctmBuildRowHtml(p.raw, filtered, opts);
+      const secHtml = (secondariesByParent[p.idWork] || []).map(function (sec) {
+        return ctmBuildRowHtml(sec.raw, filtered, { isSecondaryRow: true });
+      }).join('');
+      return own + secHtml;
+    }
+
+    const pinnedHtml = pinned.length
+      ? '<div class="mb-4">' +
+          '<h4 class="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1.5 px-1">📌 Postes épinglés</h4>' +
+          '<div class="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden bg-white">' +
+            pinned.map(function (p) { return rowWithSecondariesHtml(p, {}); }).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
+    const groupsHtml = scGroups.map(function (g) {
       return (
         '<div class="mb-4 last:mb-0">' +
-          '<h4 class="text-[10px] font-black text-primary uppercase tracking-widest mb-1.5 px-1">' + escapeHtml(g.discipline) + '</h4>' +
+          '<h4 class="text-[10px] font-black text-primary uppercase tracking-widest mb-1.5 px-1">' + escapeHtml(g.name) + '</h4>' +
           '<div class="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden bg-white">' +
-            g.rows.map(ctmBuildRowHtml).join('') +
+            g.items.map(function (p, idx) {
+              return rowWithSecondariesHtml(p, {
+                showArrows: true,
+                canMoveUp: idx > 0,
+                canMoveDown: idx < g.items.length - 1,
+                canIndent: idx > 0,
+                indentTargetId: idx > 0 ? g.items[idx - 1].idWork : null
+              });
+            }).join('') +
           '</div>' +
         '</div>'
       );
     }).join('');
+
+    return pinnedHtml + groupsHtml;
   }
 
   function openTravauxConfigManager(initialView) {
@@ -604,6 +1064,101 @@
       });
     }
 
+    // --- Position/hierarchy actions (2026-08-26, spec section 3) -----
+    // All three reuse the existing saveTravauxConfigRow endpoint (no new
+    // server surface) — a Promise wrapper just makes chaining 1-2
+    // sequential saves cleaner than nested callbacks. renderBody() updates
+    // the list in place afterward rather than closing/reopening the whole
+    // modal (submitTravauxConfigRow's approach), since these are quick,
+    // frequent clicks, not a full form submission.
+    function ctmSaveRowSilently(rowData) {
+      return new Promise(function (resolve, reject) {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)
+          .saveTravauxConfigRow(APP_DATA.token, APP_DATA.projectId, rowData, false);
+      });
+    }
+
+    function ctmApplyRefresh(freshRows) {
+      rawData.travauxConfig = freshRows || [];
+      initTravauxConfigCache(rawData.travauxConfig);
+      if (WorkspaceCore.getActiveLayerId() === 'travaux') WorkspaceCore.refreshActiveLayer();
+      renderBody();
+    }
+
+    function ctmHandleActionError(err, context) {
+      appErrorLog(err, context, {});
+      showModal({ icon: 'error', title: 'Erreur', text: "L'action a échoué : " + (err && err.message) });
+      renderBody(); // re-render from the still-current rawData so a failed action doesn't leave stale arrow states on screen
+    }
+
+    // Rebuilds a row's sousCategorie composite string, changing only the
+    // Nom/Ligne it's asked to change and always preserving whatever Logo
+    // (3rd segment) the row already had.
+    function ctmBuildSousCategorieCell(existingRaw, nom, ligne) {
+      const parts = String(existingRaw || '').split('|');
+      const logo = (parts[2] || '').trim();
+      let out = nom || '';
+      if (ligne !== undefined && ligne !== null && ligne !== '') out += '|' + ligne;
+      else if (logo) out += '|0';
+      if (logo) out += '|' + logo;
+      return out;
+    }
+
+    function ctmMoveLigne(idWork, direction) {
+      const row = currentRows().filter(function (r) { return String(r.idWork) === String(idWork); })[0];
+      if (!row) return;
+      const nom = String(row.sousCategorie || '').split('|')[0].trim();
+      const siblings = currentRows().filter(function (r) {
+        return !String(r.parentId || '').trim() && String(r.sousCategorie || '').split('|')[0].trim() === nom;
+      }).map(function (r) { return { raw: r, ligne: (function () { const p = String(r.sousCategorie || '').split('|'); return p.length > 1 ? (parseFloat(p[1]) || 0) : 0; })() }; })
+        .sort(function (a, b) { return a.ligne - b.ligne; });
+      const idx = siblings.findIndex(function (s) { return String(s.raw.idWork) === String(idWork); });
+      const swapIdx = idx + direction;
+      if (idx === -1 || swapIdx < 0 || swapIdx >= siblings.length) return;
+
+      const a = siblings[idx], b = siblings[swapIdx];
+      const rowA = Object.assign({}, a.raw, { sousCategorie: ctmBuildSousCategorieCell(a.raw.sousCategorie, nom, b.ligne) });
+      const rowB = Object.assign({}, b.raw, { sousCategorie: ctmBuildSousCategorieCell(b.raw.sousCategorie, nom, a.ligne) });
+
+      ctmSaveRowSilently(rowA).then(function () { return ctmSaveRowSilently(rowB); }).then(ctmApplyRefresh).catch(function (err) { ctmHandleActionError(err, 'ctmMoveLigne'); });
+    }
+
+    function ctmIndent(idWork, targetParentId) {
+      const row = currentRows().filter(function (r) { return String(r.idWork) === String(idWork); })[0];
+      if (!row || !targetParentId) return;
+      const updated = Object.assign({}, row, {
+        parentId: targetParentId,
+        sousCategorie: ctmBuildSousCategorieCell(row.sousCategorie, '', undefined) // blank Nom/Ligne, keep Logo
+      });
+      ctmSaveRowSilently(updated).then(ctmApplyRefresh).catch(function (err) { ctmHandleActionError(err, 'ctmIndent'); });
+    }
+
+    function ctmOutdent(idWork) {
+      const row = currentRows().filter(function (r) { return String(r.idWork) === String(idWork); })[0];
+      if (!row) return;
+      const parentId = String(row.parentId || '').trim();
+      const parentRow = parentId ? currentRows().filter(function (r) { return String(r.idWork) === parentId; })[0] : null;
+      const targetNom = parentRow ? String(parentRow.sousCategorie || '').split('|')[0].trim() : '';
+      if (!targetNom) {
+        // Parent itself has no Sous-catégorie (shouldn't normally happen —
+        // a primary always has one) — fall back to the form so the admin
+        // picks one explicitly rather than guessing.
+        openTravauxConfigRowForm(row, state.view);
+        return;
+      }
+      const usedLignes = currentRows()
+        .filter(function (r) { return !String(r.parentId || '').trim() && String(r.sousCategorie || '').split('|')[0].trim() === targetNom; })
+        .map(function (r) { const p = String(r.sousCategorie || '').split('|'); return p.length > 1 ? (parseFloat(p[1]) || 0) : 0; });
+      const nextLigne = (usedLignes.length ? Math.max.apply(null, usedLignes) : 0) + 1;
+      const updated = Object.assign({}, row, {
+        parentId: '',
+        sousCategorie: ctmBuildSousCategorieCell(row.sousCategorie, targetNom, nextLigne)
+      });
+      ctmSaveRowSilently(updated).then(ctmApplyRefresh).catch(function (err) { ctmHandleActionError(err, 'ctmOutdent'); });
+    }
+
     function bindRowEvents() {
       document.querySelectorAll('.ctm-edit-btn').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -618,6 +1173,18 @@
           const row = currentRows().filter(function (r) { return String(r.idWork) === String(idWork); })[0];
           if (row) confirmAndDeleteTravauxConfigRow(row, state.view);
         });
+      });
+      document.querySelectorAll('.ctm-moveup-btn:not([disabled])').forEach(function (btn) {
+        btn.addEventListener('click', function () { ctmMoveLigne(btn.closest('[data-ctm-row]').dataset.ctmRow, -1); });
+      });
+      document.querySelectorAll('.ctm-movedown-btn:not([disabled])').forEach(function (btn) {
+        btn.addEventListener('click', function () { ctmMoveLigne(btn.closest('[data-ctm-row]').dataset.ctmRow, 1); });
+      });
+      document.querySelectorAll('.ctm-indent-btn:not([disabled])').forEach(function (btn) {
+        btn.addEventListener('click', function () { ctmIndent(btn.closest('[data-ctm-row]').dataset.ctmRow, btn.dataset.indentTarget); });
+      });
+      document.querySelectorAll('.ctm-outdent-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { ctmOutdent(btn.closest('[data-ctm-row]').dataset.ctmRow); });
       });
     }
 
@@ -649,13 +1216,26 @@
     const isNew = !existingRow;
     const row = existingRow || {
       idWork: '', cible: ctmCibleForView(defaultViewKey), sousCategorie: '', discipline: '',
-      typeTravail: '', piecesApplicables: '', typeChamp: 'Texte', detailsChamp: '', options: ''
+      typeTravail: '', piecesApplicables: '', typeChamp: 'Texte', options: '', parentId: '', suffix: ''
     };
 
     const scParts = String(row.sousCategorie || '').split('|');
     const scNom = (scParts[0] || '').trim();
     const scLigne = scParts.length > 1 ? scParts[1].trim() : '';
     const scLogo = scParts.length > 2 ? scParts[2].trim() : '';
+    // A brand-new row's default `sousCategorie` is also '' — don't confuse
+    // that with an EXISTING row deliberately left blank, which is either
+    // pinned OR a secondary (both skip Sous-catégorie/Ligne, spec section
+    // 3 — a secondary's placement is entirely inherited from its primary).
+    // Only a genuinely-pinned existing row should pre-check "Poste
+    // épinglé" itself — a secondary's blank Sous-catégorie is explained by
+    // its "Secondaire de" selection instead, so the checkbox stays
+    // unchecked for it even though the Sous-catégorie block still starts
+    // hidden (isSkipScInitially, used for the block's visibility, not the
+    // checkbox). A new row always starts unpinned/unlinked (normal case,
+    // Sous-catégorie required).
+    const isSkipScInitially = !isNew && !scNom;
+    const isPinnedInitially = isSkipScInitially && !row.parentId;
     // What the preview actually shows on open: the real name if it
     // resolves to something (custom or Material Symbols), 'help_outline'
     // (the "?" placeholder) otherwise — same rule the live-typing preview
@@ -728,6 +1308,20 @@
         .map(function (item) { return item.sousCategorieLigne; });
     }
 
+    // Eligible parents for "Secondaire de": same Cible, not itself, and
+    // never a row that's already a secondary (parentId set) — the one-
+    // level-only enforcement lives here, not just as a validation message,
+    // so a secondary is never even offered as a choice in the first place.
+    function ctmEligibleParents(cibleRaw, excludeRow) {
+      const cibleKey = normalizeView(cibleRaw);
+      return travauxConfig.filter(function (item) {
+        if (item.parentId) return false;
+        if (item.cible !== cibleKey) return false;
+        if (excludeRow && String(item.idWork) === String(excludeRow.idWork)) return false;
+        return true;
+      });
+    }
+
     const initialScNames = scOptionsForCible(row.cible);
 
     const html = `
@@ -762,7 +1356,13 @@
             class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30" />
         </div>
 
-        <div class="grid grid-cols-3 gap-3">
+        <label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer">
+          <input id="ctm-pinned" type="checkbox" ${isPinnedInitially ? 'checked' : ''} class="rounded border-slate-300 text-primary focus:ring-primary/30" />
+          <span class="text-xs font-bold text-slate-600">Poste épinglé (en haut de la checklist, hors encadré sous-catégorie)</span>
+        </label>
+        <p class="text-[10px] text-slate-400 -mt-2">Un poste épinglé (Sous-catégorie vide) apparaît en tête de la checklist et de la fiche récap au lieu d'être rangé dans un encadré — ex. « Aide au déplacement des mobiliers ».</p>
+
+        <div id="ctm-souscategorie-wrap" class="grid grid-cols-3 gap-3 ${isSkipScInitially ? 'hidden' : ''}">
           <div class="col-span-2">
             <label class="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Sous-catégorie *</label>
             <select id="ctm-souscategorie-nom" class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30">
@@ -777,8 +1377,8 @@
               class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30 disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed" />
           </div>
         </div>
-        <p id="ctm-ligne-hint" class="text-[10px] text-slate-400 -mt-2">Renseignez d'abord une Sous-catégorie pour pouvoir choisir une Ligne.</p>
-        <p class="text-[10px] text-slate-400 -mt-2">« Sous-catégorie » regroupe ce poste avec les autres du même encadré dans la fiche récap (imprimable) — la liste vient du gestionnaire « Sous-catégories » (nom, couleur, position). « Ligne » choisit la position de CE poste à l'intérieur de son encadré — un nombre entier positif (1, 2, 3…), obligatoire, et deux postes d'une même Sous-catégorie ne peuvent pas partager la même Ligne.</p>
+        <p id="ctm-ligne-hint" class="text-[10px] text-slate-400 -mt-2 ${isSkipScInitially ? 'hidden' : ''}">Renseignez d'abord une Sous-catégorie pour pouvoir choisir une Ligne.</p>
+        <p id="ctm-souscategorie-help" class="text-[10px] text-slate-400 -mt-2 ${isSkipScInitially ? 'hidden' : ''}">« Sous-catégorie » regroupe ce poste avec les autres du même encadré dans la fiche récap (imprimable) — la liste vient du gestionnaire « Sous-catégories » (nom, couleur, position). « Ligne » choisit la position de CE poste à l'intérieur de son encadré — un nombre entier positif (1, 2, 3…), obligatoire, et deux postes d'une même Sous-catégorie ne peuvent pas partager la même Ligne.</p>
 
         <div class="flex items-end gap-3">
           <div class="flex-1 relative">
@@ -833,14 +1433,23 @@
             class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30" />
         </div>
 
-        <details class="mt-1">
-          <summary class="text-[10px] font-black text-slate-400 uppercase tracking-wider cursor-pointer select-none">Champs supplémentaires (avancé)</summary>
-          <div class="mt-2">
-            <input id="ctm-detailschamp" type="text" value="${escapeHtml(row.detailsChamp)}" placeholder="ex: Couleur:Dropdown;Quantité:Nombre"
-              class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30" />
-            <p class="text-[10px] text-slate-400 mt-1">Format : Libellé:Type, plusieurs champs séparés par « ; ». Laisser vide s'il n'y a pas de champ supplémentaire.</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Secondaire de (optionnel)</label>
+            <select id="ctm-parentid" class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30">
+              <option value="">— Poste principal (aucun parent) —</option>
+              ${ctmEligibleParents(row.cible, existingRow).map(function (p) {
+                return '<option value="' + escapeHtml(p.idWork) + '" ' + (p.idWork === (row.parentId || '') ? 'selected' : '') + '>' + escapeHtml(p.typeTravail) + '</option>';
+              }).join('')}
+            </select>
           </div>
-        </details>
+          <div>
+            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Suffixe / Unité (optionnel)</label>
+            <input id="ctm-suffix" type="text" value="${escapeHtml(row.suffix || '')}" placeholder="ex: cm"
+              class="w-full rounded-lg text-sm px-3 py-2 border border-slate-300 focus:border-primary focus:ring focus:ring-primary/30" />
+          </div>
+        </div>
+        <p class="text-[10px] text-slate-400 -mt-2">Un poste « secondaire » s'affiche en plus petit, juste après le titre de son poste principal, dans la checklist et la fiche récap — un seul niveau (un secondaire ne peut pas lui-même avoir de secondaires, la liste ci-dessus n'en propose donc jamais). Le suffixe s'affiche juste après la valeur (ex. « Largeur : 40 cm »).</p>
       </div>
     `;
 
@@ -1010,9 +1619,42 @@
           }
         }
         scNomInput.addEventListener('change', syncLigneState);
-        cibleSelect.addEventListener('change', function () { syncSousCategorieOptions(); syncLigneState(); });
+
+        // Pinned poste toggle AND "Secondaire de" selection (2026-08-26,
+        // spec section 3) both hide the whole Sous-catégorie/Ligne block
+        // rather than just disabling it — a pinned poste has no encadré/
+        // position concept at all, and a secondary's position is entirely
+        // inherited from its primary (rendered inline under it in both the
+        // checklist and the recap).
+        const pinnedInput = document.getElementById('ctm-pinned');
+        const scWrap = document.getElementById('ctm-souscategorie-wrap');
+        function syncPinnedState() {
+          const skip = pinnedInput.checked || !!document.getElementById('ctm-parentid').value;
+          scWrap.classList.toggle('hidden', skip);
+          ligneHint.classList.toggle('hidden', skip);
+          scEmptyHint.classList.toggle('hidden', skip || scOptionsForCible(cibleSelect.value).length > 0);
+          const helpEl = document.getElementById('ctm-souscategorie-help');
+          if (helpEl) helpEl.classList.toggle('hidden', skip);
+        }
+        pinnedInput.addEventListener('change', syncPinnedState);
+
+        // "Secondaire de" list depends on Cible the same way Sous-catégorie
+        // does — refresh it in step.
+        const parentSelect = document.getElementById('ctm-parentid');
+        function syncParentOptions() {
+          const currentVal = parentSelect.value;
+          const eligible = ctmEligibleParents(cibleSelect.value, existingRow);
+          const keepCurrent = eligible.some(function (p) { return p.idWork === currentVal; });
+          parentSelect.innerHTML = '<option value="">— Poste principal (aucun parent) —</option>' +
+            eligible.map(function (p) { return '<option value="' + escapeHtml(p.idWork) + '" ' + (p.idWork === currentVal ? 'selected' : '') + '>' + escapeHtml(p.typeTravail) + '</option>'; }).join('');
+          if (!keepCurrent) parentSelect.value = '';
+        }
+
+        parentSelect.addEventListener('change', syncPinnedState);
+        cibleSelect.addEventListener('change', function () { syncSousCategorieOptions(); syncLigneState(); syncParentOptions(); syncPinnedState(); });
         ligneInput.addEventListener('input', syncLigneState);
         syncLigneState();
+        syncPinnedState();
       },
       preConfirm: () => {
         const idWorkInput = document.getElementById('ctm-idwork').value.trim();
@@ -1020,14 +1662,24 @@
         const discipline = document.getElementById('ctm-discipline').value.trim();
         const cible = document.getElementById('ctm-cible').value;
         const typeChamp = document.getElementById('ctm-typechamp').value;
-        const scNomVal = document.getElementById('ctm-souscategorie-nom').value.trim();
-        const scLigneVal = document.getElementById('ctm-souscategorie-ligne').value.trim();
+        const pinned = document.getElementById('ctm-pinned').checked;
+        const parentIdVal = document.getElementById('ctm-parentid').value.trim();
+        // Pinned OR a secondary (parentId set) = no Sous-catégorie/Ligne at
+        // all (spec section 3) — a secondary's position in the recap is
+        // entirely inherited from its primary (rendered inline under it,
+        // see buildRecapBoxHtml/resolveRecapEntries), so it doesn't need
+        // its own placement any more than a pinned item does. Read as
+        // blank regardless of whatever's left in those now-hidden fields,
+        // rather than trusting their stale DOM value.
+        const skipSousCategorie = pinned || !!parentIdVal;
+        const scNomVal = skipSousCategorie ? '' : document.getElementById('ctm-souscategorie-nom').value.trim();
+        const scLigneVal = skipSousCategorie ? '' : document.getElementById('ctm-souscategorie-ligne').value.trim();
         const scLogoVal = document.getElementById('ctm-souscategorie-logo').value.trim();
         const piecesToutes = document.getElementById('ctm-pieces-toutes').checked;
         const piecesRoomsChecked = Array.from(document.querySelectorAll('.ctm-piece-checkbox:checked')).map(function (el) { return el.value; });
         const pieces = piecesToutes ? 'Toutes' : piecesRoomsChecked.join(', ');
         const primaryOptionsVal = document.getElementById('ctm-options').value.trim();
-        const detailsChampVal = document.getElementById('ctm-detailschamp').value.trim();
+        const suffixVal = document.getElementById('ctm-suffix').value.trim();
 
         if (!typeTravail) {
           Swal.showValidationMessage("Le « Type de Travail » (libellé affiché) est obligatoire.");
@@ -1037,19 +1689,22 @@
           Swal.showValidationMessage("La « Discipline » est obligatoire.");
           return false;
         }
-        if (!scNomVal) {
-          Swal.showValidationMessage("La « Sous-catégorie » est obligatoire.");
-          return false;
-        }
-        const ligneNum = scLigneVal === '' ? NaN : parseFloat(scLigneVal);
-        if (scLigneVal === '' || isNaN(ligneNum) || ligneNum <= 0) {
-          Swal.showValidationMessage("La « Ligne » est obligatoire : un nombre positif supérieur à 0.");
-          return false;
-        }
-        const pairUnchanged = !isNew && scNomVal === scNom && ligneNum === originalLigneNum;
-        if (!pairUnchanged && computeUsedLignes(scNomVal, cible).indexOf(ligneNum) !== -1) {
-          Swal.showValidationMessage('La ligne ' + ligneNum + ' est déjà utilisée dans la sous-catégorie « ' + scNomVal + ' ». Choisissez une autre valeur.');
-          return false;
+        let ligneNum = NaN;
+        if (!skipSousCategorie) {
+          if (!scNomVal) {
+            Swal.showValidationMessage("La « Sous-catégorie » est obligatoire (ou cochez « Poste épinglé », ou choisissez « Secondaire de »).");
+            return false;
+          }
+          ligneNum = scLigneVal === '' ? NaN : parseFloat(scLigneVal);
+          if (scLigneVal === '' || isNaN(ligneNum) || ligneNum <= 0) {
+            Swal.showValidationMessage("La « Ligne » est obligatoire : un nombre positif supérieur à 0.");
+            return false;
+          }
+          const pairUnchanged = !isNew && scNomVal === scNom && ligneNum === originalLigneNum;
+          if (!pairUnchanged && computeUsedLignes(scNomVal, cible).indexOf(ligneNum) !== -1) {
+            Swal.showValidationMessage('La ligne ' + ligneNum + ' est déjà utilisée dans la sous-catégorie « ' + scNomVal + ' ». Choisissez une autre valeur.');
+            return false;
+          }
         }
         if (!piecesToutes && piecesRoomsChecked.length === 0) {
           Swal.showValidationMessage("Sélectionnez au moins une pièce dans « Pièces applicables », ou cochez « Toutes les pièces ».");
@@ -1083,15 +1738,17 @@
           }
         }
 
-        // This form only edits the PRIMARY field's options — preserve any
-        // extra-field option blocks ("Détails de champ") the row already
-        // had, untouched, rather than silently dropping them.
-        const existingOptionBlocks = String((existingRow && existingRow.options) || '').split(';');
-        const extraOptionBlocks = existingOptionBlocks.slice(1);
-        const optionsOut = [primaryOptionsVal].concat(extraOptionBlocks).join(';');
+        // Options is a single flat value now — no more preserving "Détails
+        // de champ" extra-field option blocks (that mechanism is gone
+        // entirely as of 2026-08-26, replaced by parentId below); any
+        // leftover blocks a pre-migration row still had in its Options
+        // cell are intentionally dropped the next time it's saved here.
+        const optionsOut = primaryOptionsVal;
 
-        // Ligne is always present now (validated above), so this always
-        // appends the '|Ligne' segment; the logo, if any, follows it.
+        // Ligne is always present when not pinned (validated above), so
+        // this always appends the '|Ligne' segment in that case; the logo,
+        // if any, follows it. Pinned rows get a blank Nom (isPinnedWorkItem
+        // reads !sousCategorieNom), but can still carry a Logo.
         let sousCategorieOut = scNomVal;
         if (scLigneVal || scLogoVal) sousCategorieOut += '|' + (scLigneVal || '0');
         if (scLogoVal) sousCategorieOut += '|' + scLogoVal;
@@ -1104,8 +1761,9 @@
           typeTravail: typeTravail,
           piecesApplicables: pieces,
           typeChamp: typeChamp,
-          detailsChamp: detailsChampVal,
-          options: optionsOut
+          options: optionsOut,
+          parentId: parentIdVal,
+          suffix: suffixVal
         };
       }
     }).then(function (result) {
@@ -1244,19 +1902,16 @@
 
   function scmBuildBodyHtml(viewKey) {
     const rows = scmRowsForView(viewKey);
-    const hasUnseeded = rows.length === 0 && travauxConfig.some(function (item) { return item.cible === viewKey; });
 
-    const seedHtml = hasUnseeded
-      ? '<button type="button" id="scm-seed-btn" class="w-full flex items-center justify-center gap-1.5 px-3 py-2 mb-3 bg-primary-light text-primary rounded-xl text-[11px] font-black uppercase hover:bg-primary hover:text-white transition-colors">' +
-          '<span class="material-symbols-outlined !text-[16px]">download</span> Importer les sous-catégories existantes' +
-        '</button>'
-      : '';
-
-    const gridHtml = (rows.length === 0 && !hasUnseeded)
+    // "Importer les sous-catégories existantes" removed entirely 2026-08-26
+    // (agents/edl-page-spec.md section 3, "New: remove sous-catégorie
+    // import") — was the hasUnseeded/seedHtml branch + scmSeed* wiring
+    // below + seedSousCategoriesFromExistingConfig on the server.
+    const gridHtml = rows.length === 0
       ? '<p class="text-xs text-slate-400 italic text-center py-8">Aucune sous-catégorie définie pour cette vue. Cliquez sur « Ajouter » pour en créer une.</p>'
       : '<div class="grid grid-cols-3 gap-3">' + [1, 2, 3].map(function (c) { return scmColumnHtml(c, rows); }).join('') + '</div>';
 
-    return seedHtml + gridHtml;
+    return gridHtml;
   }
 
   function scmBuildHeaderHtml(activeViewKey) {
@@ -1362,9 +2017,6 @@
     }
 
     function bindBodyEvents() {
-      const seedBtn = document.getElementById('scm-seed-btn');
-      if (seedBtn) seedBtn.addEventListener('click', function () { seedSousCategories(state.view); });
-
       document.querySelectorAll('.scm-edit-btn').forEach(function (btn) {
         btn.addEventListener('click', function () {
           const rowIdx = parseInt(btn.closest('[data-row-idx]').dataset.rowIdx, 10);
@@ -1391,23 +2043,6 @@
       bodyEl.innerHTML = scmBuildBodyHtml(state.view);
       bindHeaderEvents();
       bindBodyEvents();
-    }
-
-    function seedSousCategories(viewKey) {
-      const cible = ctmCibleForView(viewKey);
-      showLoading('Importation en cours...');
-      google.script.run
-        .withSuccessHandler(function (result) {
-          if (typeof Swal !== 'undefined') Swal.close();
-          rawData.sousCategoriesTravaux = (result && result.rows) || [];
-          showToast('Sous-catégories importées.', 'success');
-          openSousCategoriesManager(viewKey);
-        })
-        .withFailureHandler(function (err) {
-          appErrorLog(err, "seedSousCategoriesFromExistingConfig", { cible: cible });
-          showModal({ icon: 'error', title: 'Erreur', text: "L'importation a échoué : " + err.message });
-        })
-        .seedSousCategoriesFromExistingConfig(APP_DATA.token, APP_DATA.projectId, cible);
     }
 
     Swal.fire({
@@ -1611,111 +2246,96 @@
   // saveAllVisibleRoomsInBackground) is the belt-and-suspenders sweep
   // that re-syncs every badge on exit, covering the same "still mid-edit"
   // edge case that function already exists to save.
-  function formatChecklistFieldValue(isCheckbox, rawValue) {
+  // `suffix` (NEW 2026-08-26, spec section 3) is appended after a non-empty,
+  // non-checkbox value only — "Largeur: 40 cm", never "—  cm" or "Oui cm".
+  function formatChecklistFieldValue(isCheckbox, rawValue, suffix) {
     if (isCheckbox) return (rawValue === true || rawValue === 'true') ? 'Oui' : '—';
     const str = (rawValue == null) ? '' : String(rawValue);
-    return str.trim() ? str : '—';
+    if (!str.trim()) return '—';
+    return suffix ? (str + ' ' + suffix) : str;
   }
 
   function updateFieldDisplayBadge(el) {
     const badge = el.parentElement ? el.parentElement.querySelector('.status-display-badge') : null;
     if (!badge) return;
     const isCheckbox = (el.type === 'checkbox');
-    badge.textContent = formatChecklistFieldValue(isCheckbox, isCheckbox ? el.checked : el.value);
+    badge.textContent = formatChecklistFieldValue(isCheckbox, isCheckbox ? el.checked : el.value, el.dataset.suffix || '');
   }
 
-  // Renders the PRIMARY input for one work item based on "Type de Champ",
-  // plus its read-only ".status-display-badge" sibling — see VIEW-MODE
-  // VALUE DISPLAY above. Anything other than Checkbox / Menu Deroulant
-  // falls back to a text input, so a typo or a not-yet-listed type still
-  // renders something editable instead of silently disappearing.
-  // `savedValue` here is always already-unwrapped (see
-  // buildWorkItemRowHtml) — just the primary value, never the
-  // {_primary, ...} object.
-  function buildWorkItemFieldHtml(item, savedValue) {
+  // Historical saved values from before the primary/secondary migration
+  // (2026-08-26) may still be the old {_primary, <label>: value} shape for
+  // a row that used to have "Détails de champ" extra fields — unwrap so a
+  // pre-migration primary value never renders as "[object Object]". Any
+  // sub-keys beyond _primary are orphaned (no UI reads them anymore,
+  // per the spec's clean-removal intent) but harmless — left in the sheet
+  // cell as-is until that row is next saved, at which point it's
+  // overwritten with the new flat shape.
+  function unwrapLegacyFieldValue(value) {
+    return (value && typeof value === 'object' && '_primary' in value) ? value._primary : value;
+  }
+
+  // Renders the input for one work item (primary OR secondary — the two
+  // are architecturally identical rows now, see buildWorkItemRowHtml)
+  // based on "Type de Champ", plus its read-only ".status-display-badge"
+  // sibling — see VIEW-MODE VALUE DISPLAY above. Anything other than
+  // Checkbox / Menu Deroulant falls back to a text input, so a typo or a
+  // not-yet-listed type still renders something editable instead of
+  // silently disappearing. `size` controls control sizing — 'normal' for a
+  // primary, 'small' for a secondary rendered inline under its primary.
+  function buildWorkItemFieldHtml(item, savedValue, size) {
     const type = item.typeChamp.toLowerCase();
     const idAttr = escapeHtml(item.idWork);
+    const suffixAttr = item.suffix ? ' data-suffix="' + escapeHtml(item.suffix) + '"' : '';
     const isCheckbox = (type === 'checkbox');
+    const isSmall = (size === 'small');
+    const ctrlSize = isSmall
+      ? 'px-2 py-1 rounded-lg text-[11px]'
+      : 'px-3 py-1.5 rounded-lg text-xs';
     let controlHtml;
 
     if (isCheckbox) {
       const checked = (savedValue === true || savedValue === 'true') ? 'checked' : '';
-      controlHtml = '<input type="checkbox" data-work-id="' + idAttr + '" ' + checked +
-             ' class="status-select-input w-5 h-5 rounded border-slate-300 text-primary focus:ring-primary" />';
+      controlHtml = '<input type="checkbox" data-work-id="' + idAttr + '"' + suffixAttr + ' ' + checked +
+             ' class="status-select-input ' + (isSmall ? 'w-4 h-4' : 'w-5 h-5') + ' rounded border-slate-300 text-primary focus:ring-primary" />';
     } else if (type === 'menu deroulant' || type === 'menu déroulant') {
       const options = item.options.map(function (opt) {
         const sel = (savedValue === opt) ? 'selected' : '';
         return '<option value="' + escapeHtml(opt) + '" ' + sel + '>' + escapeHtml(opt) + '</option>';
       }).join('');
-      controlHtml = '<select data-work-id="' + idAttr + '" class="status-select-input w-full px-3 py-1.5 rounded-lg border-slate-200 text-xs font-medium text-slate-700 bg-slate-50 text-center">' +
+      controlHtml = '<select data-work-id="' + idAttr + '"' + suffixAttr + ' class="status-select-input w-full ' + ctrlSize + ' border-slate-200 font-medium text-slate-700 bg-slate-50 text-center">' +
                '<option value="">—</option>' + options +
              '</select>';
     } else {
       // "Texte" and any unrecognized type
-      controlHtml = '<input type="text" data-work-id="' + idAttr + '" value="' + escapeHtml(savedValue || '') + '" ' +
-           'class="status-select-input w-full px-3 py-1.5 rounded-lg border-slate-200 text-xs font-medium text-slate-700 bg-slate-50 text-center" placeholder="—" />';
+      controlHtml = '<input type="text" data-work-id="' + idAttr + '"' + suffixAttr + ' value="' + escapeHtml(savedValue || '') + '" ' +
+           'class="status-select-input w-full ' + ctrlSize + ' border-slate-200 font-medium text-slate-700 bg-slate-50 text-center" placeholder="—" />';
     }
 
-    const badgeHtml = '<span class="status-display-badge w-full px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-slate-50 border border-slate-100 truncate text-center block">' +
-      escapeHtml(formatChecklistFieldValue(isCheckbox, savedValue)) + '</span>';
+    const badgeHtml = '<span class="status-display-badge w-full ' + ctrlSize + ' font-semibold text-slate-700 bg-slate-50 border border-slate-100 truncate text-center block">' +
+      escapeHtml(formatChecklistFieldValue(isCheckbox, savedValue, item.suffix)) + '</span>';
 
     return controlHtml + badgeHtml;
   }
 
-  // Renders ONE extra field (from "Détails de champ"), plus its
-  // ".status-display-badge" sibling — same pairing as
-  // buildWorkItemFieldHtml above, just at the smaller size the extra-field
-  // row already used. Mirrors buildWorkItemFieldHtml's checkbox/dropdown/
-  // text branching, and is tagged with data-field-key so
-  // collectWorkItemValues() knows this input belongs to item.idWork's
-  // sub-object rather than being its own top-level value.
-  function buildExtraFieldHtml(item, field, index, savedValue) {
-    const idAttr = escapeHtml(item.idWork);
-    const keyAttr = escapeHtml(field.label);
-    const type = field.type;
-    const isCheckbox = (type === 'checkbox');
-    let controlHtml;
+  // One work item's row — primary, with any of its secondaries (spec
+  // section 3, replacing the old "Détails de champ" extra-fields
+  // mechanism) rendered inline underneath, smaller, per spec: "a secondary
+  // ... follow[s] inline where the primary's title ends." Each secondary
+  // is a full, independent catalog row (its own idWork/typeChamp/options),
+  // not a sub-field of the primary — savedValues is the WHOLE room's
+  // saved-value map so each secondary looks up its own entry by its own
+  // idWork, exactly like a primary does.
+  function buildWorkItemRowHtml(item, savedValues) {
+    const primaryValue = unwrapLegacyFieldValue(savedValues[item.idWork]);
+    const secondaries = getSecondariesOf(item.idWork);
 
-    if (isCheckbox) {
-      const checked = (savedValue === true || savedValue === 'true') ? 'checked' : '';
-      controlHtml = '<input type="checkbox" data-work-id="' + idAttr + '" data-field-key="' + keyAttr + '" ' + checked +
-             ' class="status-select-input w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary" />';
-    } else if (type === 'dropdown' || type === 'menu deroulant' || type === 'menu déroulant') {
-      const opts = (item.extraOptions[index] || []).map(function (opt) {
-        const sel = (savedValue === opt) ? 'selected' : '';
-        return '<option value="' + escapeHtml(opt) + '" ' + sel + '>' + escapeHtml(opt) + '</option>';
-      }).join('');
-      controlHtml = '<select data-work-id="' + idAttr + '" data-field-key="' + keyAttr + '" class="status-select-input w-full px-2 py-1 rounded-lg border-slate-200 text-[11px] font-medium text-slate-700 bg-slate-50">' +
-               '<option value="">—</option>' + opts +
-             '</select>';
-    } else {
-      const inputType = (type === 'nombre') ? 'number' : 'text';
-      controlHtml = '<input type="' + inputType + '" data-work-id="' + idAttr + '" data-field-key="' + keyAttr + '" value="' + escapeHtml(savedValue == null ? '' : savedValue) + '" ' +
-           'class="status-select-input w-full px-2 py-1 rounded-lg border-slate-200 text-[11px] font-medium text-slate-700 bg-slate-50" placeholder="—" />';
-    }
-
-    const badgeHtml = '<span class="status-display-badge w-full px-2 py-1 rounded-lg text-[11px] font-semibold text-slate-700 bg-slate-50 border border-slate-100 truncate">' +
-      escapeHtml(formatChecklistFieldValue(isCheckbox, savedValue)) + '</span>';
-
-    return controlHtml + badgeHtml;
-  }
-
-  function buildWorkItemRowHtml(item, savedValue) {
-    const hasExtra = item.extraFields.length > 0;
-    const savedIsObject = savedValue && typeof savedValue === 'object';
-    // When a row has extra fields, a saved value (once anything's been
-    // entered) is the {_primary, <label>: value, ...} object collectWorkItemValues()
-    // produces below — unwrap the primary here so buildWorkItemFieldHtml
-    // always just sees "the primary value" either way.
-    const primaryValue = hasExtra && savedIsObject ? savedValue._primary : savedValue;
-
-    const extraHtml = hasExtra
-      ? '<div class="mt-2 pl-3 border-l-2 border-slate-100 space-y-1.5">' +
-          item.extraFields.map(function (field, i) {
-            const fv = savedIsObject ? savedValue[field.label] : undefined;
+    const secondariesHtml = secondaries.length
+      ? '<div class="mt-1.5 pl-3 border-l-2 border-slate-100 space-y-1.5">' +
+          secondaries.map(function (sec) {
+            const secValue = unwrapLegacyFieldValue(savedValues[sec.idWork]);
             return '<div class="flex items-center justify-between gap-2">' +
-                     '<label class="text-[10px] font-semibold text-slate-400">' + escapeHtml(field.label) + '</label>' +
-                     '<div class="w-28 shrink-0">' + buildExtraFieldHtml(item, field, i, fv) + '</div>' +
+                     '<label class="text-[10px] font-semibold text-slate-400">' + escapeHtml(sec.typeTravail) + '</label>' +
+                     '<div class="w-28 shrink-0">' + buildWorkItemFieldHtml(sec, secValue, 'small') + '</div>' +
                    '</div>';
           }).join('') +
         '</div>'
@@ -1725,56 +2345,59 @@
       '<div class="flex items-center justify-between gap-3 py-2 border-b border-slate-100 last:border-b-0">' +
         '<div class="flex-1 min-w-0 pr-3">' +
           '<p class="text-xs font-bold text-slate-700">' + escapeHtml(item.typeTravail) + '</p>' +
-          extraHtml +
+          secondariesHtml +
         '</div>' +
-        '<div class="w-36 shrink-0 text-center">' + buildWorkItemFieldHtml(item, primaryValue) + '</div>' +
+        '<div class="w-36 shrink-0 text-center">' + buildWorkItemFieldHtml(item, primaryValue, 'normal') + '</div>' +
       '</div>'
     );
   }
 
+  // Pinned (blank sous-catégorie) postes render in their own section at
+  // the very top, Locataires-view only (spec section 3) — ahead of the
+  // normal per-Discipline groups. A pinned poste can itself have
+  // secondaries; buildWorkItemRowHtml handles that the same as any other
+  // row.
   function buildWorkItemsChecklistHtml(ctx, roomName, savedValues) {
     const items = getApplicableWorkItems(ctx, roomName);
     if (items.length === 0) {
       return '<p class="text-xs text-slate-400 italic">Aucun poste de travaux applicable pour cette sélection.</p>';
     }
 
-    const groups = groupWorkItemsByDiscipline(items);
-    return groups.map(function (group) {
+    const pinned = ctx.currentView === 'locataires' ? items.filter(isPinnedWorkItem) : [];
+    const rest = items.filter(function (item) { return !pinned.includes(item); });
+
+    const pinnedHtml = pinned.length
+      ? '<div class="mb-4 pb-3 border-b-2 border-dashed border-slate-200">' +
+          pinned.map(function (item) { return buildWorkItemRowHtml(item, savedValues); }).join('') +
+        '</div>'
+      : '';
+
+    const groups = groupWorkItemsByDiscipline(rest);
+    const groupsHtml = groups.map(function (group) {
       return (
         '<div class="mb-4 last:mb-0">' +
           '<h4 class="text-[10px] font-black text-primary uppercase tracking-widest mb-1">' + escapeHtml(group.discipline) + '</h4>' +
-          group.items.map(function (item) { return buildWorkItemRowHtml(item, savedValues[item.idWork]); }).join('') +
+          group.items.map(function (item) { return buildWorkItemRowHtml(item, savedValues); }).join('') +
         '</div>'
       );
     }).join('');
+
+    return pinnedHtml + groupsHtml;
   }
 
   // Reads every checklist input currently in the DOM *for one room's card*
-  // into a { idWork: value } map, folding any data-field-key inputs into
-  // that work item's {_primary, <label>: value, ...} object instead of
-  // overwriting the primary value. Order-independent: works whether the
-  // primary or an extra field is encountered first in DOM order. Scoped to
-  // a single [data-room-worklist] element now that every room renders (and
-  // is editable) at once — each room card has its own independent set of
-  // data-work-id inputs, so this can no longer just read the whole panel.
+  // into a flat { idWork: value } map — primaries and secondaries alike,
+  // each independently keyed by its own idWork (secondaries stopped being
+  // sub-fields of their primary 2026-08-26, see buildWorkItemRowHtml).
+  // Scoped to a single [data-room-worklist] element since every room
+  // renders (and is editable) at once, each with its own independent set
+  // of data-work-id inputs.
   function collectWorkItemValues(scopeEl) {
     const values = {};
     if (!scopeEl) return values;
 
     scopeEl.querySelectorAll('[data-work-id]').forEach(function (el) {
-      const id = el.dataset.workId;
-      const raw = (el.type === 'checkbox') ? el.checked : el.value;
-
-      if (el.dataset.fieldKey) {
-        if (typeof values[id] !== 'object' || values[id] === null) {
-          values[id] = { _primary: values[id] !== undefined ? values[id] : null };
-        }
-        values[id][el.dataset.fieldKey] = raw;
-      } else if (typeof values[id] === 'object' && values[id] !== null) {
-        values[id]._primary = raw; // an extra field for this id was already processed first
-      } else {
-        values[id] = raw;
-      }
+      values[el.dataset.workId] = (el.type === 'checkbox') ? el.checked : el.value;
     });
     return values;
   }
@@ -2003,23 +2626,23 @@
   // etc.), so they keep the original flat list (renderPlanPanelLegacy).
 
   // Turns a raw saved value into a small display object for the recap:
-  // { primary: 'Oui' | 'Non' | '—' | <string>, extras: [{label, value}] }.
-  // Always returns something to show (never null/skips) — every configured
-  // line prints, OUI/NON/— included, matching the paper Fiche de Travaux
-  // instead of only showing lines with an actual answer.
+  // { primary: 'Oui' | 'Non' | '—' | <string> }. Always returns something
+  // to show (never null/skips) — every configured line prints, OUI/NON/—
+  // included, matching the paper Fiche de Travaux instead of only showing
+  // lines with an actual answer. `extras` (per-item "Détails de champ" sub-
+  // values) removed 2026-08-26 along with that mechanism — see
+  // buildWorkItemRowHtml's secondaries handling for its replacement, which
+  // the recap box renderer (buildRecapBoxHtml below) now also draws on
+  // directly rather than through this function. Still unwraps the legacy
+  // {_primary, ...} shape (unwrapLegacyFieldValue) so a value saved before
+  // that migration doesn't render as "[object Object]".
   function formatRecapValue(item, value) {
-    if (value === undefined || value === null || value === '') return { primary: '—', extras: [] };
-    if (value === true) return { primary: 'Oui', extras: [] };
-    if (value === false) return { primary: 'Non', extras: [] };
-    if (typeof value === 'object') {
-      const p = value._primary;
-      const primary = p === true ? 'Oui' : p === false ? 'Non' : (p || p === 0) ? String(p) : '—';
-      const extras = (item.extraFields || [])
-        .filter(function (f) { return value[f.label] !== undefined && value[f.label] !== null && value[f.label] !== ''; })
-        .map(function (f) { return { label: f.label, value: value[f.label] }; });
-      return { primary: primary, extras: extras };
-    }
-    return { primary: String(value), extras: [] };
+    const unwrapped = unwrapLegacyFieldValue(value);
+    if (unwrapped === undefined || unwrapped === null || unwrapped === '') return { primary: '—' };
+    if (unwrapped === true) return { primary: 'Oui' };
+    if (unwrapped === false) return { primary: 'Non' };
+    const str = String(unwrapped);
+    return { primary: item.suffix ? (str + ' ' + item.suffix) : str };
   }
 
   // Resolves one config item into the recap row(s) it produces:
@@ -2071,7 +2694,14 @@
     const groups = [];
     const index = {};
     travauxConfig
-      .filter(function (item) { return item.cible === ctx.currentView; })
+      // Pinned postes (blank Sous-catégorie, spec section 3) are excluded
+      // from every sous-catégorie box — they render in the header instead
+      // (buildRecapHeaderHtml's AIDE_DEPLACEMENT_ID_WORK lookup) and at the
+      // top of the right-panel checklist (buildWorkItemsChecklistHtml).
+      // Secondaries (parentId set) are also excluded here — they render
+      // inline under their primary's own row instead (buildRecapBoxHtml),
+      // not as independent boxes/rows.
+      .filter(function (item) { return item.cible === ctx.currentView && !isPinnedWorkItem(item) && !item.parentId; })
       .forEach(function (item) {
         const key = item.sousCategorieNom;
         if (!index[key]) { index[key] = { name: key, items: [] }; groups.push(index[key]); }
@@ -2110,11 +2740,26 @@
   // One Sous-catégorie group -> one card. Consecutive rows sharing a Logo
   // are grouped under one shared icon block (mirrors adjacent lines
   // sharing one pictogram on the paper form).
+  //
+  // Secondaries (2026-08-26, spec section 3) render inline under their
+  // primary's row, smaller — mirroring buildWorkItemRowHtml's checklist
+  // rendering. Only attached when the primary resolves to exactly ONE
+  // recap row (piecesApplicables.length === 0, i.e. a whole-apartment
+  // item) — a secondary is a single additional value, not a per-room one,
+  // so a room-scoped primary (which resolves to one row PER ROOM) has
+  // nowhere sensible to attach it; its secondaries are a known,
+  // deliberately unhandled gap for now rather than guessed at.
   function buildRecapBoxHtml(group, activeId, existingRooms) {
     const rows = [];
     group.items.forEach(function (item) {
-      resolveRecapEntries(item, activeId, existingRooms).forEach(function (entry) {
-        rows.push({ label: entry.label, value: entry.value, logo: item.logo });
+      const entries = resolveRecapEntries(item, activeId, existingRooms);
+      const secondaries = (entries.length === 1) ? getSecondariesOf(item.idWork) : [];
+      const secondaryRows = secondaries.map(function (sec) {
+        const secSaved = getSavedWorkValuesForRoom(activeId, 'Général')[sec.idWork];
+        return { label: sec.typeTravail, value: formatRecapValue(sec, secSaved) };
+      });
+      entries.forEach(function (entry) {
+        rows.push({ label: entry.label, value: entry.value, logo: item.logo, secondaryRows: secondaryRows });
       });
     });
 
@@ -2132,15 +2777,31 @@
     const boxColor = group.couleur || '#0d59f2';
 
     const bodyHtml = blocks.map(function (block) {
+      // "extras" (per-item Détails de champ sub-values) removed 2026-08-26
+      // along with that mechanism, replaced by secondaryRows (inline,
+      // smaller, under the primary's own row — see buildRecapBoxHtml
+      // above for what's attached and what's still a known gap).
+      // Single-line rendering, 2026-08-26 (spec section 3): a row itself
+      // never wraps into a label-above-value-below stack (no flex-wrap on
+      // the row) — only the title's own span may wrap internally onto
+      // multiple lines (flex-1 min-w-0, ordinary text wrap) if it's long;
+      // the value chip stays pinned on the first line via shrink-0. Same
+      // rule applies to each secondary's own row.
       const rowsHtml = block.rows.map(function (r) {
-        const extrasHtml = r.value.extras.map(function (e) {
-          return '<span class="text-[10px] font-medium text-slate-400 whitespace-nowrap">' + escapeHtml(e.label) + ' : <span class="text-slate-600 font-bold">' + escapeHtml(e.value) + '</span></span>';
+        const secondariesHtml = (r.secondaryRows || []).map(function (sec) {
+          return (
+            '<div class="flex items-baseline justify-between gap-3 pl-3 mt-0.5">' +
+              '<span class="text-[10px] font-semibold text-slate-400 flex-1 min-w-0">' + escapeHtml(sec.label) + '</span>' +
+              '<div class="flex items-baseline gap-2 shrink-0">' + recapValueChipHtml(sec.value.primary) + '</div>' +
+            '</div>'
+          );
         }).join('');
         return (
-          '<div class="flex items-baseline justify-between gap-3 flex-wrap">' +
-            '<span class="text-xs font-semibold text-slate-700">' + escapeHtml(r.label) + '</span>' +
-            '<div class="flex items-baseline gap-2 shrink-0">' + extrasHtml + recapValueChipHtml(r.value.primary) + '</div>' +
-          '</div>'
+          '<div class="flex items-baseline justify-between gap-3">' +
+            '<span class="text-xs font-semibold text-slate-700 flex-1 min-w-0">' + escapeHtml(r.label) + '</span>' +
+            '<div class="flex items-baseline gap-2 shrink-0">' + recapValueChipHtml(r.value.primary) + '</div>' +
+          '</div>' +
+          secondariesHtml
         );
       }).join('<div class="h-1.5"></div>');
 
@@ -2156,6 +2817,11 @@
       );
     }).join('');
 
+    // Manual note space, 2026-08-26 (spec section 3) — not a data field,
+    // just a reserved blank area sized for someone to write on by hand
+    // after printing. No editing UI, no save/load, no new column.
+    const manualNoteSpaceHtml = '<div class="mt-2 pt-2 border-t border-dashed border-slate-200" style="min-height: 2.5rem;"></div>';
+
     return (
       '<div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm break-inside-avoid" style="border-top: 3px solid ' + escapeHtml(boxColor) + ';">' +
         '<h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-1 pb-3 border-b border-slate-100 flex items-center gap-2">' +
@@ -2163,61 +2829,74 @@
           ' ' + escapeHtml(group.name) +
         '</h3>' +
         bodyHtml +
+        manualNoteSpaceHtml +
       '</div>'
     );
   }
 
-  // Header info-bar: project branding strip + the Fiche's identity fields.
-  // "Référence", "Date des travaux" and "Aide au déplacement des
-  // mobiliers" don't have a wired source yet (Référence isn't available
-  // anywhere in the app's data today; Date des travaux is coming from the
-  // planning sheet and Aide au déplacement from EDL — both later, per
-  // plan). Left as "—" on purpose for now rather than guessed/hardcoded.
+  // Reserved idWork identifying the ONE "Aide au déplacement des
+  // mobiliers" poste, per spec section 3's own note that the header needs
+  // "a stable way to identify this specific poste" — a reserved ID rather
+  // than name-matching (an admin could rename the label; the ID stays
+  // fixed). To wire this up, an admin must create that poste (Locataires,
+  // "Poste épinglé" checked, Menu déroulant field type with Oui/Non
+  // options) with this EXACT ID Work value typed into the "ID Work" field
+  // — it is NOT auto-detected by label/wording. Until that poste exists,
+  // the header simply shows "—" (see aideDeplacementValue below).
+  const AIDE_DEPLACEMENT_ID_WORK = 'aide_deplacement_mobiliers';
+
+  // Header redesign, 2026-08-26 (spec section 3) — 4 compact rows,
+  // replacing the previous branding-strip + title-row + 7-field-grid
+  // layout. "Référence" now resolves to the apartment's own ID (it didn't
+  // have a source before this redesign); "Aide au déplacement" resolves
+  // via the reserved-ID poste above, read the same way any other
+  // no-room-restriction item's value is read elsewhere in this file
+  // (getSavedWorkValuesForRoom(activeId, 'Général') — see
+  // resolveRecapEntries's matching comment). "Date des travaux" still has
+  // no wired source anywhere in the app's data — left as "—", not
+  // guessed/hardcoded, same reasoning as before.
   function buildRecapHeaderHtml(ctx) {
     const item = ctx.activeItem || {};
     const nom = [item.nom, item.prenom].filter(Boolean).join(' ') || '—';
     const typeLogement = item.typeLog ? ('T' + item.typeLog) : '—';
+    const logementLocator = [item.batiment, item.hall].filter(Boolean).join('') + (item.porte ? ('-' + item.porte) : '');
 
-    const brandingHtml =
-      '<div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">' +
-        '<span class="text-[11px] font-bold text-slate-500">' + escapeHtml(typeof projectName !== 'undefined' ? projectName : '') + '</span>' +
-        (rawData.companyLogoId
-          ? '<img src="https://lh3.googleusercontent.com/d/' + encodeURIComponent(rawData.companyLogoId) + '" alt="' + escapeHtml(rawData.companyName || '') + '" class="h-6 w-auto object-contain" />'
-          : (rawData.companyName ? '<span class="text-[11px] font-bold text-slate-500">' + escapeHtml(rawData.companyName) + '</span>' : '')) +
-      '</div>';
+    const aideItem = travauxConfig.filter(function (i) { return i.idWork === AIDE_DEPLACEMENT_ID_WORK; })[0];
+    const aideValue = aideItem
+      ? formatRecapValue(aideItem, getSavedWorkValuesForRoom(ctx.activeId, 'Général')[aideItem.idWork]).primary
+      : '—';
 
-    const fields = [
-      { label: 'Logement N°', value: ctx.activeId },
-      { label: 'Type logement', value: typeLogement },
-      { label: 'Référence', value: '—' },
-      { label: 'Date des travaux', value: '—' },
-      { label: 'Locataire', value: nom, span: true },
-      { label: 'Pièces concernées', value: 'Tout le logement' },
-      { label: 'Aide au déplacement des mobiliers', value: '—' }
-    ];
-
-    const fieldsHtml = fields.map(function (f) {
-      return (
-        '<div class="' + (f.span ? 'col-span-2' : '') + '">' +
-          '<span class="block text-[9px] font-black text-slate-400 uppercase tracking-wide">' + escapeHtml(f.label) + '</span>' +
-          '<span class="font-bold text-slate-800 text-sm">' + escapeHtml(f.value) + '</span>' +
-        '</div>'
-      );
-    }).join('');
+    function row(leftLabel, leftValue, rightLabel, rightValue) {
+      const leftHtml = '<div><span class="text-[9px] font-black text-slate-400 uppercase tracking-wide">' + escapeHtml(leftLabel) + ' </span><span class="font-bold text-slate-800 text-xs">' + escapeHtml(leftValue) + '</span></div>';
+      const rightHtml = rightLabel
+        ? '<div class="text-right"><span class="text-[9px] font-black text-slate-400 uppercase tracking-wide">' + escapeHtml(rightLabel) + ' </span><span class="font-bold text-slate-800 text-xs">' + escapeHtml(rightValue) + '</span></div>'
+        : '';
+      return '<div class="flex items-center justify-between gap-3 py-1">' + leftHtml + rightHtml + '</div>';
+    }
 
     return (
-      '<div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm mb-5">' +
-        brandingHtml +
-        '<div class="flex items-center justify-between mb-4 pb-3 border-b-2 border-slate-800">' +
-          '<div>' +
-            '<p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Récapitulatif des travaux</p>' +
-            '<p class="text-sm font-black text-slate-800">Fiche de travaux</p>' +
+      '<div class="bg-white border border-slate-200 rounded-2xl px-5 py-3 shadow-sm mb-4">' +
+        // Row 1: project name (capped width, wraps up to 2 lines) — "Fiche
+        // Travaux" — company logo — Imprimer (kept reachable here since
+        // the redesigned 4-row layout has no separate title row for it).
+        '<div class="flex items-start justify-between gap-3 pb-2 mb-2 border-b-2 border-slate-800">' +
+          '<span class="text-[11px] font-bold text-slate-500 max-w-[45%] line-clamp-2 leading-tight">' + escapeHtml(typeof projectName !== 'undefined' ? projectName : '') + '</span>' +
+          '<span class="text-xs font-black text-slate-800 uppercase tracking-widest shrink-0">Fiche Travaux</span>' +
+          '<div class="flex items-center gap-2 shrink-0">' +
+            (rawData.companyLogoId
+              ? '<img src="https://lh3.googleusercontent.com/d/' + encodeURIComponent(rawData.companyLogoId) + '" alt="' + escapeHtml(rawData.companyName || '') + '" class="h-5 w-auto object-contain" />'
+              : (rawData.companyName ? '<span class="text-[11px] font-bold text-slate-500">' + escapeHtml(rawData.companyName) + '</span>' : '')) +
+            '<button onclick="window.print()" class="flex items-center justify-center w-6 h-6 bg-primary-light text-primary rounded-lg hover:bg-primary hover:text-white transition-colors" title="Imprimer">' +
+              '<span class="material-symbols-outlined !text-[14px]">print</span>' +
+            '</button>' +
           '</div>' +
-          '<button onclick="window.print()" class="flex items-center gap-1 px-3 py-1.5 bg-primary-light text-primary rounded-lg text-[10px] font-black uppercase hover:bg-primary hover:text-white transition-colors">' +
-            '<span class="material-symbols-outlined !text-[16px]">print</span> Imprimer' +
-          '</button>' +
         '</div>' +
-        '<div class="grid grid-cols-2 gap-x-4 gap-y-3">' + fieldsHtml + '</div>' +
+        // Row 2: Logement N. (bâtiment+hall-porte) | Aide au déplacement
+        row('Logement N.', logementLocator || '—', 'Aide au déplacement des mobiliers', aideValue) +
+        // Row 3: Type logement | Référence (the apartment's own ID)
+        row('Type logement', typeLogement, 'Référence', ctx.activeId || '—') +
+        // Row 4: NOM
+        row('NOM', nom, '', '') +
       '</div>'
     );
   }
@@ -2230,26 +2909,60 @@
   // boxes stacked in Position order. Same markup on screen (~40%-wide
   // panel) and on the printed PDF (#print-root fills an A4 page — see the
   // @page rule in Workspace.html) — no separate screen/print layouts.
+  // Fixed, system-added QR-code sous-catégorie, 2026-08-26 (spec section
+  // 3) — always appears last on the recap. Content/purpose of the QR code
+  // itself is explicitly "not defined yet" per spec — this is the reserved
+  // slot only, a placeholder/TODO, not a real generated QR code.
+  function buildQrPlaceholderBoxHtml() {
+    return (
+      '<div class="bg-white border border-dashed border-slate-300 rounded-2xl p-5 shadow-sm break-inside-avoid flex flex-col items-center justify-center text-center gap-2" style="min-height: 8rem;">' +
+        '<span class="material-symbols-outlined !text-3xl text-slate-300">qr_code_2</span>' +
+        '<p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">QR Code</p>' +
+        '<p class="text-[9px] text-slate-400">Contenu à définir</p>' +
+      '</div>'
+    );
+  }
+
   function renderPlanPanelLocataires(ctx, wrapperEl) {
     const existingRooms = getRoomsForCurrentSelection(ctx); // rooms that actually exist for THIS apartment (Config Logement, via #room-select)
     const groups = groupConfigForRecap(ctx); // already sorted by (colonne, position) — see groupConfigForRecap
 
     let boxesHtml;
     if (groups.length === 0) {
-      boxesHtml = '<p class="text-xs text-slate-400 italic text-center py-8">Aucun poste de travaux configuré pour les logements.</p>';
+      boxesHtml =
+        '<p class="text-xs text-slate-400 italic text-center py-8">Aucun poste de travaux configuré pour les logements.</p>' +
+        '<div class="max-w-xs mx-auto">' + buildQrPlaceholderBoxHtml() + '</div>';
     } else {
       const columnsHtml = [1, 2, 3].map(function (colIdx) {
         const colGroups = groups.filter(function (g) { return g.colonne === colIdx; });
+        // The QR placeholder always appears last overall — appended to
+        // column 3 specifically (the last-read column in a left-to-right
+        // 3-column layout), regardless of how many real boxes it holds.
+        const qrHtml = (colIdx === 3) ? buildQrPlaceholderBoxHtml() : '';
         return '<div class="flex flex-col gap-4">' +
           colGroups.map(function (g) { return buildRecapBoxHtml(g, ctx.activeId, existingRooms); }).join('') +
+          qrHtml +
         '</div>';
       }).join('');
       boxesHtml = '<div class="grid grid-cols-3 gap-4">' + columnsHtml + '</div>';
     }
 
+    // A4 fixed-ratio canvas, 2026-08-26 (spec section 3) — locked to the
+    // true 210:297 ratio via CSS aspect-ratio (sized to fit the available
+    // space: height:100% with max-width:100% as the tie-breaker when the
+    // panel is wider than it is tall relative to A4), no scroll (overflow
+    // hidden — content beyond one page's worth is clipped rather than
+    // scrollable, matching "what's on screen is exactly what prints on one
+    // page"; multi-page print modes are a separate, explicitly deferred
+    // item). Zoom/pan is the shared mechanism every other layer's plan
+    // photo already uses (#apartment-plan-visual's wheel/drag listeners
+    // apply a transform to this exact wrapperEl — see
+    // Workspace_Core_Scripts.html's initGlobalZoomPan) — nothing new to
+    // wire up here beyond un-hiding the zoom controls (renderPlanPanel
+    // above) and resetting to fit-to-view on every render.
     wrapperEl.innerHTML =
-      '<div class="w-full h-full overflow-y-auto p-6 bg-white">' +
-        '<div id="print-root">' +
+      '<div class="w-full h-full flex items-center justify-center">' +
+        '<div id="print-root" class="bg-white shadow-lg overflow-hidden p-6" style="aspect-ratio: 210 / 297; height: 100%; max-width: 100%;">' +
           buildRecapHeaderHtml(ctx) +
           boxesHtml +
         '</div>' +
@@ -2275,11 +2988,9 @@
 
         Object.keys(parsed).forEach(function (roomKey) {
           const formatted = formatRecapValue(item, parsed[roomKey]);
-          if (formatted.primary === '—' && formatted.extras.length === 0) return; // legacy behavior: skip blanks entirely
+          if (formatted.primary === '—') return; // legacy behavior: skip blanks entirely
 
-          const bits = [formatted.primary];
-          formatted.extras.forEach(function (e) { bits.push(e.label + ' : ' + e.value); });
-          const display = bits.join(' — ');
+          const display = formatted.primary;
 
           const groupKey = item.sousCategorieNom;
           if (!groups[groupKey]) {
@@ -2341,7 +3052,14 @@
   // Workspace_Core_Scripts.html).
   function renderPlanPanel(ctx, wrapperEl) {
     const zoomControls = document.getElementById('plan-zoom-controls');
-    if (zoomControls) zoomControls.classList.add('hidden'); // meaningless over a text summary, not a photo
+    // Zoom re-enabled for the Locataires recap 2026-08-26 (spec section 3,
+    // "New: left panel becomes a fixed-ratio, zoomable A4 canvas") — it
+    // used to be unconditionally hidden here ("meaningless over a text
+    // summary, not a photo"). Legacy (Communs/Façades) keeps the original
+    // flat scrolling list untouched, so zoom stays hidden for that case.
+    const showZoom = !!(ctx.activeId && ctx.currentView === 'locataires');
+    if (zoomControls) zoomControls.classList.toggle('hidden', !showZoom);
+    if (showZoom) resetZoomPanState(); // fit-to-view default, not whatever zoom/pan a previous layer/photo left behind
 
     if (!ctx.activeId) {
       wrapperEl.innerHTML =

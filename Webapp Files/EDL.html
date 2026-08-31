@@ -229,8 +229,23 @@
             </button>
           </div>
 
+          <!-- Moved here 2026-08-26 (agents/edl-page-spec.md section 4,
+               "New: layout fix") — was inside the ml-auto group below,
+               where it wrapped onto its own line under the Réserves filter
+               bar once the row got too wide. Sitting right after the
+               filters keeps it on the same line as them. This is one
+               global button shared by every layer, so this also nudges its
+               position slightly for non-Réserves layers (a bit further
+               left than before, no longer ml-auto-pushed) — a deliberate,
+               low-risk tradeoff over building layer-conditional DOM
+               relocation for a layout tweak; worth a quick visual check. -->
+          <button id="mode-toggle-btn" class="px-4 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl text-[11px] font-black uppercase transition-all shadow-sm flex items-center gap-1">
+            <span class="material-symbols-outlined !text-[16px]">edit_document</span>
+            <span id="mode-toggle-text">Mode Édition</span>
+          </button>
+
           <div class="flex items-center gap-3 ml-auto">
-            <div id="pageExtensionZone"></div> 
+            <div id="pageExtensionZone"></div>
 
             <!-- Populated per-layer by WorkspaceCore via the active layer's
                  getEditToolsHtml()/bindEditTools() — see EDL_Scripts.html for
@@ -261,11 +276,6 @@
             <button id="admin-config-travaux-btn" class="hidden px-4 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-[11px] font-black uppercase transition-all shadow-sm flex items-center gap-1" title="Gérer la liste des postes de travaux (Config Travaux)">
               <span class="material-symbols-outlined !text-[16px]">tune</span>
               <span>Config Travaux</span>
-            </button>
-
-            <button id="mode-toggle-btn" class="px-4 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl text-[11px] font-black uppercase transition-all shadow-sm flex items-center gap-1">
-              <span class="material-symbols-outlined !text-[16px]">edit_document</span>
-              <span id="mode-toggle-text">Mode Édition</span>
             </button>
           </div>
         </div>

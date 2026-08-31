@@ -1,49 +1,16 @@
 /**
- * ==========================================
- * 0. API BRIDGE DISPATCHERS
- * ==========================================
- *
- * These three functions are the client-callable surface for the Locataires
- * page (google.script.run.<name> from Locataires_Scripts.html /
- * LocatairesMobile.html). Each does the SAME auth check as before, then
- * routes to either the external API (callApi_, see ApiClient.js) or the
- * original Google-Sheets implementation (*_sheets_, unchanged, further
- * down), based on the Script Property:
- *
- *   USE_API_LOCATAIRES = 'true'  -> API (Postgres)
- *   anything else (unset/'false') -> Google Sheets  [current default]
- *
- * Instant rollback = set USE_API_LOCATAIRES back to 'false'. No redeploy.
- * A verbatim pre-refactor copy is in backups/Locataires_Code.pre-api.js.
+ * ===========================================================================
+ * BACKUP — verbatim pre-API-bridge copy of Webapp Files/Locataires_Code.js
+ * (2026-08-31). Restore path if the API migration misbehaves: copy this back
+ * over Webapp Files/Locataires_Code.js then `clasp push`. Or just set Script
+ * Property USE_API_LOCATAIRES=false to fall back to the in-file *_sheets_
+ * copies with no redeploy.
+ * ===========================================================================
  */
-
-function useApiLocataires_() {
-  return PropertiesService.getScriptProperties().getProperty('USE_API_LOCATAIRES') === 'true';
-}
-
-function getLocatairesPageData(token, projectId) {
-  const user = getSession_(token);
-  if (!user) throw new Error("Sécurité : Session expirée.");
-  if (useApiLocataires_()) return callApi_('getLocatairesPageData', [token, projectId]);
-  return getLocatairesPageData_sheets_(token, projectId);
-}
-
-function updateLocataireData(token, projectId, payload) {
-  assertCanEdit_(token, projectId);
-  if (useApiLocataires_()) return callApi_('updateLocataireData', [token, projectId, payload]);
-  return updateLocataireData_sheets_(token, projectId, payload);
-}
-
-function updatePlanningOnlyData(token, projectId, view, payload) {
-  assertCanEdit_(token, projectId);
-  if (useApiLocataires_()) return callApi_('updatePlanningOnlyData', [token, projectId, view, payload]);
-  return updatePlanningOnlyData_sheets_(token, projectId, view, payload);
-}
-
 
 /**
  * ==========================================
- * 1. DATA FETCHING LOGIC  (Google Sheets implementation)
+ * 1. DATA FETCHING LOGIC
  * ==========================================
  */
 
@@ -52,7 +19,7 @@ function updatePlanningOnlyData(token, projectId, view, payload) {
  * @param {string} token     - Session token from the client.
  * @param {string} projectId - Passed through for context/logging but not used for auth.
  */
-function getLocatairesPageData_sheets_(token, projectId) {
+function getLocatairesPageData(token, projectId) {
   const user = getSession_(token);
   if (!user) throw new Error("Sécurité : Session expirée.");
 
@@ -221,7 +188,7 @@ function fetchSheetData(sheetName) {
  *   2. User role is authorized (admin / directeur / collaborateur)
  *   3. Project status is 'Active' (fetched from DB — not trusted from client)
  */
-function updateLocataireData_sheets_(token, projectId, payload) {
+function updateLocataireData(token, projectId, payload) {
   const user = assertCanEdit_(token, projectId);
   // assertCanEdit_ throws on failure, so reaching here means the user is authorized.
 
@@ -259,7 +226,7 @@ function updateLocataireData_sheets_(token, projectId, payload) {
  * Updates only the planning entry (status, notes) for Communs and Facades.
  * Maps the target sheet explicitly based on the front-end active view context.
  */
-function updatePlanningOnlyData_sheets_(token, projectId, view, payload) {
+function updatePlanningOnlyData(token, projectId, view, payload) {
   const user = assertCanEdit_(token, projectId);
 
   // Map the view explicitly to the correct spreadsheet sheet tab

@@ -3,9 +3,31 @@
  * LOGGING — UNIVERSAL & ERROR
  * =================================================================
  *
- * Structure des colonnes :
- *   A=Log_ID, B=Timestamp, C=Entity_ID, D=Visibility,
- *   E=Type, F=User, G=Action, H=Payload
+ * Canonical columns for a freshly-created Logs_<module> sheet (order
+ * doesn't matter for existing sheets — both read and write sides look up
+ * each column by name via _findLogCol(), not position, so a sheet with
+ * extra/reordered/migrated columns still works):
+ *   Log_ID, Timestamp, Entity_ID, Visibility, Type, User, Role, Action,
+ *   Payload
+ *
+ * "Field changed / old value / new value" (agents/edl-page-spec.md section
+ * 1.6) is deliberately NOT a set of dedicated columns here — that
+ * requirement is already met by an existing convention: a `details` entry
+ * shaped like `{ "Ancien": x, "Nouveau": y }` (2 keys, before/after) is
+ * auto-detected and rendered as a struck-through→bold diff by
+ * ClientLib.html's _detectBeforeAfter()/_renderDetailRow(). Building flat
+ * OldValue/NewValue columns on top of that would itself be the kind of
+ * parallel logging mechanism this system is supposed to avoid (decided
+ * 2026-08-26, see agents/edl-todo.md's "Resolved" section) — one entry can
+ * already carry several such before/after pairs (one per changed field),
+ * which flat columns couldn't represent anyway. Use that `details` shape
+ * for any new "what changed" logging rather than inventing another one.
+ *
+ * BUG FIXED 2026-08-26: the read side (gsGetUniversalLog) used to look for
+ * headers on row 4 / data from row 5, while the write side has always put
+ * headers on row 1 / data from row 2 — a real, longstanding read/write
+ * mismatch (unrelated to the Role-column addition below). Both now agree
+ * on row 1 / row 2.
  */
 
 /**
@@ -20,6 +42,31 @@
 function _resolveLogSheetName(module) {
   const clean = String(module || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
   return clean ? "Logs_" + clean : "Logs_system";
+}
+
+// Canonical header set for a brand-new sheet, and the full set
+// _ensureLogSheetHeaders() below guarantees exists (in some order,
+// anywhere) on every sheet before a write.
+const LOG_HEADERS = ["Log_ID", "Timestamp", "Entity_ID", "Visibility", "Type", "User", "Role", "Action", "Payload"];
+
+/**
+ * Appends any header from LOG_HEADERS that isn't already present (matched
+ * name-insensitively via _findLogCol, same normalization as everywhere
+ * else in this file) to the right of a sheet's current last column. Never
+ * touches/reorders an existing header — old rows stay valid under
+ * whatever positions they were originally written at. Migrates an
+ * old-schema sheet (pre-Role) forward the first time it's written to
+ * again; a no-op on an already-current sheet.
+ */
+function _ensureLogSheetHeaders(sheet) {
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const existing = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const missing = LOG_HEADERS.filter(h => _findLogCol(existing, [h]) === -1);
+  if (missing.length) {
+    const range = sheet.getRange(1, lastCol + 1, 1, missing.length);
+    range.setValues([missing]);
+    range.setFontWeight("bold").setBackground("#e2e8f0");
+  }
 }
 
 /**
@@ -47,13 +94,34 @@ function gsWriteUniversalLog(token, payload) {
 
     let sheet = ss.getSheetByName(sheetName);
 
-    // Auto-create the sheet with headers if it doesn't exist yet
+    // Auto-create the sheet with headers if it doesn't exist yet; migrate
+    // an already-existing sheet forward if it predates a header that's
+    // since been added (e.g. Role, 2026-08-26).
     if (!sheet) {
       sheet = ss.insertSheet(sheetName);
-      sheet.appendRow(["Log_ID", "Timestamp", "Entity_ID", "Visibility", "Type", "User", "Action", "Payload"]);
-      sheet.getRange("A1:H1").setFontWeight("bold").setBackground("#e2e8f0");
+      sheet.appendRow(LOG_HEADERS);
+      sheet.getRange(1, 1, 1, LOG_HEADERS.length).setFontWeight("bold").setBackground("#e2e8f0");
       sheet.setFrozenRows(1);
+    } else {
+      _ensureLogSheetHeaders(sheet);
     }
+
+    // Column-name lookup, not fixed positions — so a sheet whose columns
+    // ended up in a different order (e.g. Role appended after Payload on
+    // an old sheet, instead of between User and Action like a fresh
+    // sheet's) still gets every value written to the right place.
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const col = {
+      logId:      _findLogCol(headers, ['log_id', 'logid']),
+      timestamp:  _findLogCol(headers, ['timestamp', 'date', 'horodatage']),
+      entityId:   _findLogCol(headers, ['entity_id', 'entityid']),
+      visibility: _findLogCol(headers, ['visibility', 'visibilite', 'visibilité']),
+      type:       _findLogCol(headers, ['type']),
+      userEmail:  _findLogCol(headers, ['user', 'useremail', 'user email', 'email', 'utilisateur']),
+      role:       _findLogCol(headers, ['role']),
+      action:     _findLogCol(headers, ['action']),
+      payload:    _findLogCol(headers, ['payload', 'details', 'détails'])
+    };
 
     const logId      = Utilities.getUuid();
     const timestamp  = new Date();
@@ -61,6 +129,10 @@ function gsWriteUniversalLog(token, payload) {
     const visibility = payload.visibility || "Private";
     const type       = payload.type || "Detail";
     const logUser    = payload.userEmail || Session.getActiveUser().getEmail() || "Inconnu";
+    // Derived from the already-validated session, not the client-supplied
+    // payload — a role can't be spoofed this way, and every existing
+    // appLog() call site gets it for free with no changes on their end.
+    const logRole    = user.role || "Inconnu";
     const logAction  = payload.action || "SANS_ACTION";
 
     let detailsStr = "{}";
@@ -70,7 +142,19 @@ function gsWriteUniversalLog(token, payload) {
         : String(payload.details);
     }
 
-    sheet.appendRow([logId, timestamp, entityId, visibility, type, logUser, logAction, detailsStr]);
+    const row = new Array(headers.length).fill("");
+    const set = (idx, val) => { if (idx !== -1) row[idx] = val; };
+    set(col.logId, logId);
+    set(col.timestamp, timestamp);
+    set(col.entityId, entityId);
+    set(col.visibility, visibility);
+    set(col.type, type);
+    set(col.userEmail, logUser);
+    set(col.role, logRole);
+    set(col.action, logAction);
+    set(col.payload, detailsStr);
+
+    sheet.appendRow(row);
 
   } catch (e) {
     gsWriteErrorLog(
@@ -264,7 +348,7 @@ function _stripPrivateDetailsDeep(value) {
  *   gsGetUniversalLog(token, projectId, 'edl', 'LOT-014')
  *
  * Returns: [{ id, module, entityId, action, visibility, type, details,
- *             userEmail, timestamp }, ...]. For a client session, Private
+ *             userEmail, role, timestamp }, ...]. For a client session, Private
  * entries are omitted entirely (A) and any private field inside `details`
  * is stripped, however deeply nested (B). `type` is always present (C) and
  * is never filtered on here — Milestone and Detail entries both come back
@@ -293,7 +377,7 @@ function gsGetUniversalLog(token, projectId, module, entityId) {
   if (lastRow < 2) return [];
 
   const data = sheet.getDataRange().getValues();
-  const headers = data[3]; // row 4 — header row
+  const headers = data[0]; // row 1 — header row (matches gsWriteUniversalLog; was row 4, fixed 2026-08-26)
 
   const col = {
     logId:      _findLogCol(headers, ['log_id', 'logid']),
@@ -302,6 +386,7 @@ function gsGetUniversalLog(token, projectId, module, entityId) {
     visibility: _findLogCol(headers, ['visibility', 'visibilite', 'visibilité']),
     type:       _findLogCol(headers, ['type']),
     userEmail:  _findLogCol(headers, ['user', 'useremail', 'user email', 'email', 'utilisateur']),
+    role:       _findLogCol(headers, ['role']),
     action:     _findLogCol(headers, ['action']),
     payload:    _findLogCol(headers, ['payload', 'details', 'détails'])
   };
@@ -313,7 +398,7 @@ function gsGetUniversalLog(token, projectId, module, entityId) {
   const targetId = String(entityId).trim();
   const results = [];
 
-  for (let i = 4; i < data.length; i++) {
+  for (let i = 1; i < data.length; i++) { // data starts row 2 (was row 5, fixed 2026-08-26)
     const row = data[i];
     if (String(row[col.entityId]).trim() !== targetId) continue;
 
@@ -345,6 +430,7 @@ function gsGetUniversalLog(token, projectId, module, entityId) {
       type:       (col.type !== -1 && String(row[col.type]).trim()) || 'Milestone', // C — always extracted
       details:    details,
       userEmail:  col.userEmail !== -1 ? String(row[col.userEmail]).trim() : '',
+      role:       col.role !== -1 ? String(row[col.role]).trim() : '',
       timestamp:  timestamp
     });
     // D — no type filtering: Milestone and Detail entries both included above.

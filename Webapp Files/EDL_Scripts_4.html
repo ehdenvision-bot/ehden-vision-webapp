@@ -3,123 +3,1078 @@
   'use strict';
 
   // =========================================================
-  // ÉLEC LAYER  —  registers itself as layer id 'elec'
-  // =========================================================
-  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html.
-  // layoutMode is 'drawing' here (60% plan / 40% panel, and the Pièce selector
-  // hides itself automatically — see the CSS in Workspace.html), matching
-  // this layer's original data-target-mode. That's the only reason this file
-  // differs from Travaux_Scripts.html at the moment.
-
-  function mount(container) {
-    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
-    container.innerHTML = `
-      <span class="material-symbols-outlined !text-4xl opacity-50">electric_bolt</span>
-      <p class="text-xs font-bold uppercase tracking-widest">Couche "Élec." — à venir</p>
-    `;
-  }
-
-  function render(ctx) {
-    // TODO: populate the Élec panel for ctx.activeId / ctx.roomName.
-  }
-
-  WorkspaceCore.registerLayer('elec', {
-    label: 'Élec.',
-    layoutMode: 'drawing',
-
-    mount: mount,
-    render: render
-  });
-
-})();
-
-
-
-
-(function () {
-  'use strict';
-
-  // =========================================================
-  // SANIT. LAYER  —  registers itself as layer id 'sanit'
-  // =========================================================
-  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html.
-  // layoutMode is 'drawing', matching this layer's original data-target-mode.
-
-  function mount(container) {
-    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
-    container.innerHTML = `
-      <span class="material-symbols-outlined !text-4xl opacity-50">plumbing</span>
-      <p class="text-xs font-bold uppercase tracking-widest">Couche "Sanit." — à venir</p>
-    `;
-  }
-
-  function render(ctx) {
-    // TODO: populate the Sanit. panel for ctx.activeId / ctx.roomName.
-  }
-
-  WorkspaceCore.registerLayer('sanit', {
-    label: 'Sanit.',
-    layoutMode: 'drawing',
-
-    mount: mount,
-    render: render
-  });
-
-})();
-
-
-
-
-
-(function () {
-  'use strict';
-
-  // =========================================================
-  // FORMULAIRES LAYER (NEW, 6th layer)  —  registers itself as layer id 'formulaires'
-  // =========================================================
-  // Not built yet — ready-to-fill scaffold, same shape as Travaux_Scripts.html,
-  // PLUS one thing the other 5 layers don't need: resolveAsset(). Per your
-  // spec, this is the one layer where the plan-container shows "another
-  // photo" instead of the shared plan — resolveAsset() is exactly that hook.
+  // PLAN EDITOR — shared engine for Élec. and Sanit. (spec sections 5+6,
+  // 2026-08-26). ONE factory (createPlanEditorLayer), instantiated twice
+  // below with a different `catalogue` ('elec'|'sanit') — the spec itself
+  // confirms these two layers are architecturally identical, only the
+  // catalog CONTENT differs, so sharing one implementation is the whole
+  // point, not just convenient.
   //
-  // layoutMode defaults to 'data-entry' below — an assumption on my part
-  // (forms felt closer to EDL/Travaux/Réserves than to the drawing-heavy
-  // Élec/Sanit split). Flip it to 'drawing' any time, it's a one-word change.
+  // Interaction model matches Réserves' toolbar (EDL_Scripts_3.html):
+  // click-based tool-arming (pick an item type from the palette → pick its
+  // room → click the plan to place it), not free mouse-drag — same
+  // rationale as there (uniform, far less code than mixing drag with
+  // click-arming, no existing free-2D-drag precedent in this codebase).
+  // Rotation is buttons only (90° steps), per spec — no drag-to-rotate.
+  //
+  // Room tagging is explicit, never position-inferred (spec section 5) —
+  // a room picker is part of the placement flow itself, not a property
+  // set afterward.
+
+  function createPlanEditorLayer(catalogue, label, iconName) {
+    let itemTypes = [];               // this catalogue's Item Types
+    let instancesCache = {};          // idLot -> [instance, ...]
+    let templatesCache = [];          // this catalogue's Templates
+    let armedItemTypeId = null;       // palette tool armed, awaiting room+plan click
+    let armedRoom = null;
+    let selectedInstanceId = null;    // for the highlight ring, cosmetic only
+    let onboardingChecked = {};       // idLot -> true, once we've asked/decided about onboarding for it
+
+    function findItemType(id) { return itemTypes.filter(function (t) { return t.id === id; })[0]; }
+
+    function parsePropertiesSchema(raw) {
+      const str = String(raw || '').trim();
+      if (!str) return [];
+      return str.split(';').map(function (part) {
+        const idx = part.indexOf(':');
+        if (idx === -1) return { label: part.trim(), type: 'nombre' };
+        return { label: part.slice(0, idx).trim(), type: part.slice(idx + 1).trim().toLowerCase() };
+      }).filter(function (f) { return f.label; });
+    }
+
+    // --- constraint evaluation ---------------------------------------
+
+    function evalCondition(cond, activeItem) {
+      const str = String(cond || '').trim();
+      if (!str) return true; // blank = always applies
+      const m = str.match(/^([a-zA-Z0-9_]+)\s*(>=|<=|>|<|==|!=)\s*(.+)$/);
+      if (!m) return true; // unparsable condition — fail open rather than silently blocking everything
+      const attr = parseFloat((activeItem || {})[m[1]]);
+      const val = parseFloat(m[3]);
+      if (isNaN(attr) || isNaN(val)) return true;
+      switch (m[2]) {
+        case '>=': return attr >= val;
+        case '<=': return attr <= val;
+        case '>': return attr > val;
+        case '<': return attr < val;
+        case '==': return attr === val;
+        case '!=': return attr !== val;
+        default: return true;
+      }
+    }
+
+    // One constraint per (room,itemType) — spec says constraints are
+    // per-template; when several default template items share a
+    // (room,itemType) pair, the first non-blank constraint found for that
+    // pair wins (documented admin-discipline assumption, see EDL_Code.js).
+    function constraintsForTemplate(templateItems, activeItem) {
+      const byKey = {};
+      templateItems.forEach(function (ti) {
+        if (!evalCondition(ti.condition, activeItem)) return;
+        const key = ti.room + '||' + ti.itemTypeId;
+        if (!byKey[key] && (ti.minCount !== '' || ti.maxCount !== '')) {
+          byKey[key] = { room: ti.room, itemTypeId: ti.itemTypeId, min: ti.minCount === '' ? null : parseFloat(ti.minCount), max: ti.maxCount === '' ? null : parseFloat(ti.maxCount), enforcement: ti.enforcement || 'blocking' };
+        }
+      });
+      return byKey;
+    }
+
+    // --- view-mode right panel: per-room counts + constraint check -----
+
+    function buildRightPanelHtml(ctx, instances, constraintsByKey) {
+      const byRoom = {};
+      instances.forEach(function (inst) {
+        if (!byRoom[inst.room]) byRoom[inst.room] = {};
+        byRoom[inst.room][inst.itemTypeId] = (byRoom[inst.room][inst.itemTypeId] || 0) + 1;
+      });
+      const rooms = Object.keys(byRoom);
+      // Also surface rooms that have a constraint but zero placed items yet.
+      Object.keys(constraintsByKey).forEach(function (key) {
+        const room = constraintsByKey[key].room;
+        if (rooms.indexOf(room) === -1) rooms.push(room);
+      });
+      if (!rooms.length) return '<p class="text-xs text-slate-400 italic">Aucun élément placé pour cette sélection.</p>';
+
+      return rooms.map(function (room) {
+        const counts = byRoom[room] || {};
+        const typeIds = Object.keys(counts);
+        Object.keys(constraintsByKey).forEach(function (key) {
+          const c = constraintsByKey[key];
+          if (c.room === room && typeIds.indexOf(c.itemTypeId) === -1) typeIds.push(c.itemTypeId);
+        });
+        const rowsHtml = typeIds.map(function (typeId) {
+          const t = findItemType(typeId);
+          const count = counts[typeId] || 0;
+          const c = constraintsByKey[room + '||' + typeId];
+          let flagHtml = '';
+          if (c) {
+            const belowMin = c.min !== null && count < c.min;
+            const aboveMax = c.max !== null && count > c.max;
+            if (belowMin || aboveMax) {
+              const cls = c.enforcement === 'warning' ? 'text-amber-600' : 'text-rose-600';
+              flagHtml = '<span class="' + cls + ' text-[10px] font-black ml-1">' + (belowMin ? '(min ' + c.min + ')' : '(max ' + c.max + ')') + '</span>';
+            }
+          }
+          return '<div class="flex items-center justify-between text-xs py-0.5">' +
+            '<span class="flex items-center gap-1.5 text-slate-600">' + (t ? WorkspaceCore.iconSpanHtml(t.icon, '!text-[14px] text-primary') : '') + (t ? escapeHtmlPE(t.label) : typeId) + '</span>' +
+            '<span class="font-bold text-slate-700">' + count + flagHtml + '</span>' +
+          '</div>';
+        }).join('');
+        return '<div class="mb-3 last:mb-0"><p class="text-[10px] font-black text-primary uppercase tracking-widest mb-1">' + escapeHtmlPE(room) + '</p>' + rowsHtml + '</div>';
+      }).join('');
+    }
+
+    function escapeHtmlPE(str) {
+      return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function refreshRightPanel(ctx) {
+      const panel = document.getElementById('pe-right-panel-' + catalogue);
+      if (!panel || !ctx.activeId) return;
+      const instances = instancesCache[ctx.activeId] || [];
+      resolveTemplateForConstraints(ctx, function (templateId) {
+        if (!templateId) { panel.innerHTML = buildRightPanelHtml(ctx, instances, {}); return; }
+        google.script.run
+          .withSuccessHandler(function (templateItems) {
+            panel.innerHTML = buildRightPanelHtml(ctx, instances, constraintsForTemplate(templateItems, ctx.activeItem));
+          })
+          .withFailureHandler(function () { panel.innerHTML = buildRightPanelHtml(ctx, instances, {}); })
+          .gsGetPlanEditorTemplateItems(APP_DATA.token, catalogue, templateId);
+      });
+    }
+
+    // No stored "which template does this ID currently use" — templates
+    // are copy-on-first-touch (spec: instances are a COPY, never a live
+    // link), so there's no ongoing template association to look up after
+    // onboarding. Constraint-checking therefore falls back to whichever
+    // template matches this ID's type/Commun (same resolution the
+    // onboarding prompt itself uses) rather than a remembered choice —
+    // if several templates exist for the same type, the first one found
+    // is used for constraint-checking purposes only (display, not data).
+    function resolveTemplateForConstraints(ctx, cb) {
+      const scopeValue = ctx.currentView === 'locataires' ? (ctx.activeItem && ctx.activeItem.configLogement) : ctx.activeId;
+      const scope = ctx.currentView === 'locataires' ? 'type' : 'commun';
+      google.script.run
+        .withSuccessHandler(function (templates) {
+          const match = (templates || []).filter(function (t) { return t.scope === scope && String(t.scopeValue) === String(scopeValue); })[0];
+          cb(match ? match.id : null);
+        })
+        .withFailureHandler(function () { cb(null); })
+        .gsGetPlanEditorTemplates(APP_DATA.token, catalogue);
+    }
+
+    // --- overlay markers (view + edit mode) -----------------------------
+
+    function renderMarkers(ctx) {
+      const overlay = document.getElementById('plan-markers-overlay');
+      if (!overlay) return;
+      overlay.querySelectorAll('.pe-marker').forEach(function (el) { el.remove(); });
+      const instances = instancesCache[ctx.activeId] || [];
+      const editing = document.getElementById('workspace-screen').getAttribute('data-edit-state') === 'edit';
+      instances.forEach(function (inst) {
+        const t = findItemType(inst.itemTypeId);
+        const propsText = t ? parsePropertiesSchema(t.propertiesSchema).map(function (f) {
+          return (inst.properties && inst.properties[f.label] != null && inst.properties[f.label] !== '') ? (inst.properties[f.label] + (f.unit || '')) : '';
+        }).filter(Boolean).join(' ') : '';
+        const el = document.createElement('div');
+        el.className = 'pe-marker plan-tag layer-overlay absolute flex flex-col items-center pointer-events-auto cursor-pointer';
+        el.style.left = inst.x + '%';
+        el.style.top = inst.y + '%';
+        el.style.transform = 'translate(-50%, -50%) rotate(' + (inst.rotation || 0) + 'deg)';
+        el.innerHTML = '<div class="w-7 h-7 rounded-full bg-white border-2 border-primary text-primary flex items-center justify-center shadow">' + (t ? WorkspaceCore.iconSpanHtml(t.icon, '!text-[15px]') : '?') + '</div>' +
+          (propsText ? '<span class="text-[8px] font-bold text-slate-700 bg-white/90 px-1 rounded mt-0.5" style="transform: rotate(' + (-(inst.rotation || 0)) + 'deg)">' + escapeHtmlPE(propsText) + '</span>' : '');
+        el.addEventListener('click', function (evt) {
+          evt.stopPropagation();
+          if (editing) openInstanceEditor(ctx, inst);
+        });
+        overlay.appendChild(el);
+      });
+    }
+
+    // --- placement (add new instance) -----------------------------------
+
+    function planClickToPercentPE(evt) {
+      const img = document.getElementById('interactive-plan-img');
+      const target = img || document.getElementById('plan-wrapper');
+      if (!target) return null;
+      const rect = target.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: Math.max(0, Math.min(100, ((evt.clientX - rect.left) / rect.width) * 100)).toFixed(2),
+        y: Math.max(0, Math.min(100, ((evt.clientY - rect.top) / rect.height) * 100)).toFixed(2)
+      };
+    }
+
+    function roomOptionsForCtx(ctx) {
+      const roomSelect = document.getElementById('room-select');
+      if (!roomSelect) return [];
+      return Array.from(roomSelect.options).map(function (o) { return o.value; }).filter(function (v) { return v && v !== 'all'; });
+    }
+
+    function armPlacement(itemTypeId) {
+      const ctx = WorkspaceCore.buildContext();
+      const rooms = roomOptionsForCtx(ctx);
+      if (!rooms.length) { showModal({ icon: 'info', title: 'Aucune pièce', text: "Aucune pièce connue pour cet élément (Config Logement vide)." }); return; }
+      const options = rooms.map(function (r) { return '<option value="' + escapeHtmlPE(r) + '">' + escapeHtmlPE(r) + '</option>'; }).join('');
+      Swal.fire({
+        title: 'Choisir la pièce',
+        html: '<select id="pe-room-pick" class="w-full rounded-lg border-slate-300 text-sm">' + options + '</select><p class="text-[10px] text-slate-400 mt-2 text-left">Cliquez ensuite sur le plan pour placer l’élément.</p>',
+        showCancelButton: true, confirmButtonText: 'Continuer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+        preConfirm: function () { return document.getElementById('pe-room-pick').value; }
+      }).then(function (result) {
+        if (!result.isConfirmed) return;
+        armedItemTypeId = itemTypeId;
+        armedRoom = result.value;
+        showToast('Cliquez sur le plan pour placer l’élément.', 'info', '', 2500);
+      });
+    }
+
+    function handlePlanClickPE(evt) {
+      if (!armedItemTypeId || !armedRoom) return;
+      if (evt.target.closest && evt.target.closest('.pe-marker')) return;
+      const ctx = WorkspaceCore.buildContext();
+      if (!ctx.activeId) return;
+      const pt = planClickToPercentPE(evt);
+      if (!pt) return;
+      const itemTypeId = armedItemTypeId, room = armedRoom;
+      armedItemTypeId = null; armedRoom = null;
+      google.script.run
+        .withSuccessHandler(function (newInst) {
+          if (!instancesCache[ctx.activeId]) instancesCache[ctx.activeId] = [];
+          instancesCache[ctx.activeId].push(newInst);
+          renderMarkers(ctx);
+          refreshRightPanel(ctx);
+          showToast('Élément placé.', 'success');
+          appLog(catalogue, newInst.id, 'Placement élément', 'Private', 'Detail', { Type: itemTypeId, Pièce: room });
+        })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsSavePlanEditorInstance', { itemTypeId: itemTypeId }); showModal({ icon: 'error', title: 'Erreur', text: "Impossible de placer l'élément." }); })
+        .gsSavePlanEditorInstance(APP_DATA.token, APP_DATA.projectId, catalogue, { idLot: ctx.activeId, itemTypeId: itemTypeId, room: room, x: pt.x, y: pt.y, rotation: 0, properties: {} }, true);
+    }
+
+    // --- editing an existing instance (rotate/properties/duplicate/delete) --
+
+    function openInstanceEditor(ctx, inst) {
+      const t = findItemType(inst.itemTypeId);
+      const schema = t ? parsePropertiesSchema(t.propertiesSchema) : [];
+      const fieldsHtml = schema.map(function (f, i) {
+        const val = (inst.properties && inst.properties[f.label] != null) ? inst.properties[f.label] : '';
+        return '<div class="mb-2"><label class="block text-[10px] font-black text-slate-400 uppercase mb-1">' + escapeHtmlPE(f.label) + '</label>' +
+          '<input id="pe-prop-' + i + '" data-label="' + escapeHtmlPE(f.label) + '" type="' + (f.type === 'texte' ? 'text' : 'number') + '" value="' + escapeHtmlPE(val) + '" class="w-full rounded-lg border-slate-300 text-sm" /></div>';
+      }).join('');
+
+      Swal.fire({
+        title: (t ? t.label : inst.itemTypeId) + ' — ' + inst.room,
+        html: '<div class="text-left">' +
+          '<div class="mb-3"><label class="block text-[10px] font-black text-slate-400 uppercase mb-1">Rotation</label>' +
+          '<div class="flex gap-1">' + [0, 90, 180, 270].map(function (deg) {
+            return '<button type="button" data-rot="' + deg + '" class="pe-rot-btn flex-1 py-1.5 rounded-lg text-xs font-bold border ' + (inst.rotation === deg ? 'bg-primary text-white border-primary' : 'bg-slate-50 text-slate-600 border-slate-200') + '">' + deg + '°</button>';
+          }).join('') + '</div></div>' +
+          fieldsHtml +
+          '</div>',
+        showCancelButton: true, showDenyButton: true,
+        confirmButtonText: 'Enregistrer', denyButtonText: 'Supprimer', cancelButtonText: 'Annuler',
+        confirmButtonColor: '#0d59f2', denyButtonColor: '#dc2626',
+        footer: '<button type="button" id="pe-duplicate-btn" class="text-xs font-bold text-primary hover:underline">Dupliquer cet élément</button>',
+        didOpen: function () {
+          let currentRotation = inst.rotation || 0;
+          document.querySelectorAll('.pe-rot-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              currentRotation = parseInt(btn.dataset.rot, 10);
+              document.querySelectorAll('.pe-rot-btn').forEach(function (b) { b.classList.remove('bg-primary', 'text-white', 'border-primary'); b.classList.add('bg-slate-50', 'text-slate-600', 'border-slate-200'); });
+              btn.classList.add('bg-primary', 'text-white', 'border-primary'); btn.classList.remove('bg-slate-50', 'text-slate-600', 'border-slate-200');
+            });
+          });
+          document.getElementById('pe-duplicate-btn').addEventListener('click', function () {
+            Swal.close();
+            armedItemTypeId = inst.itemTypeId;
+            armedRoom = inst.room;
+            showToast('Cliquez sur le plan pour placer la copie.', 'info', '', 2500);
+          });
+          Swal.getPopup()._peGetRotation = function () { return currentRotation; };
+        },
+        preConfirm: function () {
+          const properties = {};
+          schema.forEach(function (f, i) { properties[f.label] = document.getElementById('pe-prop-' + i).value; });
+          return { rotation: Swal.getPopup()._peGetRotation ? Swal.getPopup()._peGetRotation() : inst.rotation, properties: properties };
+        }
+      }).then(function (result) {
+        if (result.isDenied) {
+          google.script.run
+            .withSuccessHandler(function () {
+              instancesCache[ctx.activeId] = (instancesCache[ctx.activeId] || []).filter(function (x) { return x.id !== inst.id; });
+              renderMarkers(ctx); refreshRightPanel(ctx);
+              showToast('Élément supprimé.', 'success');
+              appLog(catalogue, inst.id, 'Suppression élément', 'Private', 'Detail', {});
+            })
+            .withFailureHandler(function (err) { appErrorLog(err, 'gsDeletePlanEditorInstance', { id: inst.id }); showModal({ icon: 'error', title: 'Erreur', text: "Impossible de supprimer." }); })
+            .gsDeletePlanEditorInstance(APP_DATA.token, APP_DATA.projectId, catalogue, inst.id);
+          return;
+        }
+        if (!result.isConfirmed) return;
+        const updated = Object.assign({}, inst, { rotation: result.value.rotation, properties: result.value.properties });
+        google.script.run
+          .withSuccessHandler(function (saved) {
+            const arr = instancesCache[ctx.activeId] || [];
+            const idx = arr.findIndex(function (x) { return x.id === inst.id; });
+            if (idx !== -1) arr[idx] = saved;
+            renderMarkers(ctx); refreshRightPanel(ctx);
+            showToast('Élément mis à jour.', 'success');
+            appLog(catalogue, inst.id, 'Modification élément', 'Private', 'Detail', updated.properties);
+          })
+          .withFailureHandler(function (err) { appErrorLog(err, 'gsSavePlanEditorInstance', { id: inst.id }); showModal({ icon: 'error', title: 'Erreur', text: "Impossible d'enregistrer." }); })
+          .gsSavePlanEditorInstance(APP_DATA.token, APP_DATA.projectId, catalogue, updated, false);
+      });
+    }
+
+    // --- onboarding (apply template / duplicate ID) ---------------------
+
+    function maybeOffachOnboarding(ctx) {
+      if (!ctx.activeId || onboardingChecked[ctx.activeId]) return;
+      onboardingChecked[ctx.activeId] = true;
+      const cached = instancesCache[ctx.activeId];
+      if (cached && cached.length > 0) return;
+
+      google.script.run
+        .withSuccessHandler(function (instances) {
+          instancesCache[ctx.activeId] = instances || [];
+          renderMarkers(ctx); refreshRightPanel(ctx);
+          if ((instances || []).length > 0) return;
+          offerOnboarding(ctx);
+        })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetPlanEditorInstances', {}); })
+        .gsGetPlanEditorInstances(APP_DATA.token, catalogue, ctx.activeId);
+    }
+
+    function offerOnboarding(ctx) {
+      const editing = document.getElementById('workspace-screen').getAttribute('data-edit-state') === 'edit';
+      if (!editing) return; // don't interrupt a view-mode visit with a setup prompt
+      const scope = ctx.currentView === 'locataires' ? 'type' : 'commun';
+      const scopeValue = ctx.currentView === 'locataires' ? (ctx.activeItem && ctx.activeItem.configLogement) : ctx.activeId;
+
+      google.script.run
+        .withSuccessHandler(function (templates) {
+          const matching = (templates || []).filter(function (t) { return t.scope === scope && String(t.scopeValue) === String(scopeValue); });
+          const tplOptions = matching.map(function (t) { return '<option value="' + t.id + '">' + escapeHtmlPE(t.name) + '</option>'; }).join('');
+          Swal.fire({
+            title: 'Aucun élément placé',
+            html: '<div class="text-left text-xs text-slate-500 mb-3">Appliquez un modèle enregistré, ou dupliquez les éléments d’un autre identifiant.</div>' +
+              (matching.length ? '<label class="block text-[10px] font-black text-slate-400 uppercase mb-1">Modèle</label><select id="pe-onboard-template" class="w-full rounded-lg border-slate-300 text-sm mb-3">' + tplOptions + '</select>' : '<p class="text-[11px] text-slate-400 italic mb-3">Aucun modèle disponible pour ce type.</p>') +
+              '<label class="block text-[10px] font-black text-slate-400 uppercase mb-1">Ou dupliquer depuis un autre ID</label>' +
+              '<input id="pe-onboard-source" class="w-full rounded-lg border-slate-300 text-sm" placeholder="ex: L-014" />',
+            showCancelButton: true, confirmButtonText: matching.length ? 'Appliquer le modèle' : 'Dupliquer', cancelButtonText: 'Commencer à vide',
+            confirmButtonColor: '#0d59f2',
+            preConfirm: function () {
+              const sourceInput = document.getElementById('pe-onboard-source').value.trim();
+              if (sourceInput) return { kind: 'duplicate', id: sourceInput };
+              const tplSel = document.getElementById('pe-onboard-template');
+              if (tplSel && tplSel.value) return { kind: 'template', id: tplSel.value };
+              Swal.showValidationMessage('Choisissez un modèle ou un ID à dupliquer.');
+              return false;
+            }
+          }).then(function (result) {
+            if (!result.isConfirmed) return;
+            google.script.run
+              .withSuccessHandler(function (instances) {
+                instancesCache[ctx.activeId] = instances || [];
+                renderMarkers(ctx); refreshRightPanel(ctx);
+                showToast('Éléments initialisés (' + (instances || []).length + ').', 'success');
+              })
+              .withFailureHandler(function (err) { appErrorLog(err, 'gsSeedPlanEditorInstances', {}); showModal({ icon: 'error', title: 'Erreur', text: err.message }); })
+              .gsSeedPlanEditorInstances(APP_DATA.token, APP_DATA.projectId, catalogue, ctx.activeId, result.value.kind, result.value.id);
+          });
+        })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetPlanEditorTemplates', {}); })
+        .gsGetPlanEditorTemplates(APP_DATA.token, catalogue);
+    }
+
+    // --- admin: item type catalog (simple list CRUD, Travaux's pattern) --
+
+    function openItemTypeManager() {
+      function renderList() {
+        google.script.run
+          .withSuccessHandler(function (types) {
+            itemTypes = types || [];
+            const rowsHtml = itemTypes.map(function (t) {
+              return '<div class="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">' +
+                '<span class="text-xs font-bold text-slate-700 flex items-center gap-2">' + WorkspaceCore.iconSpanHtml(t.icon, '!text-[16px] text-primary') + escapeHtmlPE(t.label) + '</span>' +
+                '<div class="flex gap-1">' +
+                '<button data-edit="' + t.id + '" class="pe-type-edit w-7 h-7 rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light"><span class="material-symbols-outlined !text-[16px]">edit</span></button>' +
+                '<button data-del="' + t.id + '" class="pe-type-del w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><span class="material-symbols-outlined !text-[16px]">delete</span></button>' +
+                '</div></div>';
+            }).join('') || '<p class="text-xs text-slate-400 italic text-center py-6">Aucun type d’élément.</p>';
+            document.getElementById('pe-type-list').innerHTML = rowsHtml;
+            document.querySelectorAll('.pe-type-edit').forEach(function (b) { b.addEventListener('click', function () { openItemTypeForm(itemTypes.filter(function (t) { return t.id === b.dataset.edit; })[0]); }); });
+            document.querySelectorAll('.pe-type-del').forEach(function (b) {
+              b.addEventListener('click', function () {
+                google.script.run.withSuccessHandler(renderList).withFailureHandler(function (err) { appErrorLog(err, 'gsDeletePlanEditorItemType', {}); }).gsDeletePlanEditorItemType(APP_DATA.token, APP_DATA.projectId, catalogue, b.dataset.del);
+              });
+            });
+          })
+          .gsGetPlanEditorItemTypes(APP_DATA.token, catalogue);
+      }
+      Swal.fire({
+        title: 'Types d’éléments — ' + label,
+        html: '<div id="pe-type-list" class="text-left max-h-[45vh] overflow-y-auto border border-slate-200 rounded-xl mb-3"></div><button id="pe-type-add" class="w-full py-2 bg-primary-light text-primary rounded-xl text-xs font-black uppercase">+ Ajouter un type</button>',
+        width: '480px', showConfirmButton: false, showCloseButton: true,
+        didOpen: function () { renderList(); document.getElementById('pe-type-add').addEventListener('click', function () { openItemTypeForm(null); }); }
+      });
+
+      function openItemTypeForm(existing) {
+        const isNew = !existing;
+        Swal.fire({
+          title: isNew ? 'Ajouter un type' : 'Modifier « ' + existing.label + ' »',
+          html: '<div class="text-left flex flex-col gap-2">' +
+            '<input id="pe-type-id" value="' + (existing ? existing.id : '') + '" placeholder="ID (ex: prise_elec)" ' + (isNew ? '' : 'readonly') + ' class="w-full rounded-lg border-slate-300 text-sm ' + (isNew ? '' : 'bg-slate-50 text-slate-400') + '" />' +
+            '<input id="pe-type-label" value="' + (existing ? escapeHtmlPE(existing.label) : '') + '" placeholder="Libellé (ex: Prise électrique)" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-type-icon" value="' + (existing ? escapeHtmlPE(existing.icon) : '') + '" placeholder="Icône (ex: power)" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-type-schema" value="' + (existing ? escapeHtmlPE(existing.propertiesSchema) : '') + '" placeholder="Propriétés (ex: Hauteur:Nombre;Couleur:Texte)" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '</div>',
+          showCancelButton: true, confirmButtonText: 'Enregistrer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+          preConfirm: function () {
+            const id = document.getElementById('pe-type-id').value.trim();
+            const lbl = document.getElementById('pe-type-label').value.trim();
+            if (!id || !lbl) { Swal.showValidationMessage('ID et libellé sont obligatoires.'); return false; }
+            return { id: id, label: lbl, icon: document.getElementById('pe-type-icon').value.trim(), propertiesSchema: document.getElementById('pe-type-schema').value.trim() };
+          }
+        }).then(function (result) {
+          if (!result.isConfirmed) return;
+          google.script.run.withSuccessHandler(function () { renderList(); openItemTypeManager(); }).withFailureHandler(function (err) { showModal({ icon: 'error', title: 'Erreur', text: err.message }); }).gsSavePlanEditorItemType(APP_DATA.token, APP_DATA.projectId, catalogue, result.value, isNew);
+        });
+      }
+    }
+
+    // --- admin: templates + their default items (list/form CRUD, not a
+    // visual placer — SCOPE CUT under time pressure: instance editing on a
+    // real apartment is fully visual/click-based (the everyday-use
+    // surface), but authoring a template's default x/y here is manual
+    // number entry. Functional, not as elegant as reusing the instance
+    // engine in "template mode" would have been; flagged, not hidden. ---
+
+    function openTemplateManager() {
+      function renderList() {
+        google.script.run
+          .withSuccessHandler(function (templates) {
+            const rowsHtml = templates.map(function (t) {
+              return '<div class="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">' +
+                '<span class="text-xs font-bold text-slate-700">' + escapeHtmlPE(t.name) + ' <span class="text-[10px] text-slate-400 font-normal">(' + (t.scope === 'type' ? 'Type ' : 'Commun ') + escapeHtmlPE(t.scopeValue) + ')</span></span>' +
+                '<div class="flex gap-1">' +
+                '<button data-items="' + t.id + '" class="pe-tpl-items w-7 h-7 rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light" title="Éléments"><span class="material-symbols-outlined !text-[16px]">list_alt</span></button>' +
+                '<button data-edit="' + t.id + '" class="pe-tpl-edit w-7 h-7 rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light"><span class="material-symbols-outlined !text-[16px]">edit</span></button>' +
+                '<button data-del="' + t.id + '" class="pe-tpl-del w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><span class="material-symbols-outlined !text-[16px]">delete</span></button>' +
+                '</div></div>';
+            }).join('') || '<p class="text-xs text-slate-400 italic text-center py-6">Aucun modèle.</p>';
+            document.getElementById('pe-tpl-list').innerHTML = rowsHtml;
+            document.querySelectorAll('.pe-tpl-items').forEach(function (b) { b.addEventListener('click', function () { openTemplateItemsManager(templates.filter(function (x) { return x.id === b.dataset.items; })[0]); }); });
+            document.querySelectorAll('.pe-tpl-edit').forEach(function (b) { b.addEventListener('click', function () { openTemplateForm(templates.filter(function (x) { return x.id === b.dataset.edit; })[0]); }); });
+            document.querySelectorAll('.pe-tpl-del').forEach(function (b) { b.addEventListener('click', function () { google.script.run.withSuccessHandler(renderList).gsDeletePlanEditorTemplate(APP_DATA.token, APP_DATA.projectId, catalogue, b.dataset.del); }); });
+          })
+          .gsGetPlanEditorTemplates(APP_DATA.token, catalogue);
+      }
+      Swal.fire({
+        title: 'Modèles — ' + label,
+        html: '<div id="pe-tpl-list" class="text-left max-h-[45vh] overflow-y-auto border border-slate-200 rounded-xl mb-3"></div><button id="pe-tpl-add" class="w-full py-2 bg-primary-light text-primary rounded-xl text-xs font-black uppercase">+ Ajouter un modèle</button>',
+        width: '480px', showConfirmButton: false, showCloseButton: true,
+        didOpen: function () { renderList(); document.getElementById('pe-tpl-add').addEventListener('click', function () { openTemplateForm(null); }); }
+      });
+
+      function openTemplateForm(existing) {
+        const isNew = !existing;
+        Swal.fire({
+          title: isNew ? 'Ajouter un modèle' : 'Modifier « ' + existing.name + ' »',
+          html: '<div class="text-left flex flex-col gap-2">' +
+            '<input id="pe-tpl-name" value="' + (existing ? escapeHtmlPE(existing.name) : '') + '" placeholder="Nom du modèle" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<select id="pe-tpl-scope" class="w-full rounded-lg border-slate-300 text-sm">' +
+              '<option value="type" ' + (existing && existing.scope === 'type' ? 'selected' : '') + '>Type de logement</option>' +
+              '<option value="commun" ' + (existing && existing.scope === 'commun' ? 'selected' : '') + '>Commun / Façade (ID spécifique)</option>' +
+            '</select>' +
+            '<input id="pe-tpl-scopevalue" value="' + (existing ? escapeHtmlPE(existing.scopeValue) : '') + '" placeholder="Valeur (ex: T3, ou COM-014)" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '</div>',
+          showCancelButton: true, confirmButtonText: 'Enregistrer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+          preConfirm: function () {
+            const name = document.getElementById('pe-tpl-name').value.trim();
+            const scopeValue = document.getElementById('pe-tpl-scopevalue').value.trim();
+            if (!name || !scopeValue) { Swal.showValidationMessage('Nom et valeur sont obligatoires.'); return false; }
+            return { id: existing ? existing.id : null, name: name, scope: document.getElementById('pe-tpl-scope').value, scopeValue: scopeValue };
+          }
+        }).then(function (result) {
+          if (!result.isConfirmed) return;
+          google.script.run.withSuccessHandler(function () { openTemplateManager(); }).withFailureHandler(function (err) { showModal({ icon: 'error', title: 'Erreur', text: err.message }); }).gsSavePlanEditorTemplate(APP_DATA.token, APP_DATA.projectId, catalogue, result.value, isNew);
+        });
+      }
+    }
+
+    function openTemplateItemsManager(template) {
+      function renderList() {
+        google.script.run
+          .withSuccessHandler(function (items) {
+            const rowsHtml = items.map(function (ti) {
+              const t = findItemType(ti.itemTypeId);
+              return '<div class="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">' +
+                '<span class="text-xs font-bold text-slate-700">' + (t ? escapeHtmlPE(t.label) : ti.itemTypeId) + ' <span class="text-[10px] text-slate-400 font-normal">(' + escapeHtmlPE(ti.room) + ', min ' + (ti.minCount === '' ? '—' : ti.minCount) + ' / max ' + (ti.maxCount === '' ? '—' : ti.maxCount) + ')</span></span>' +
+                '<div class="flex gap-1">' +
+                '<button data-edit="' + ti.id + '" class="pe-ti-edit w-7 h-7 rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light"><span class="material-symbols-outlined !text-[16px]">edit</span></button>' +
+                '<button data-del="' + ti.id + '" class="pe-ti-del w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><span class="material-symbols-outlined !text-[16px]">delete</span></button>' +
+                '</div></div>';
+            }).join('') || '<p class="text-xs text-slate-400 italic text-center py-6">Aucun élément dans ce modèle.</p>';
+            document.getElementById('pe-ti-list').innerHTML = rowsHtml;
+            document.querySelectorAll('.pe-ti-edit').forEach(function (b) { b.addEventListener('click', function () { openTemplateItemForm(items.filter(function (x) { return x.id === b.dataset.edit; })[0]); }); });
+            document.querySelectorAll('.pe-ti-del').forEach(function (b) { b.addEventListener('click', function () { google.script.run.withSuccessHandler(renderList).gsDeletePlanEditorTemplateItem(APP_DATA.token, APP_DATA.projectId, catalogue, b.dataset.del, template.id); }); });
+          })
+          .gsGetPlanEditorTemplateItems(APP_DATA.token, catalogue, template.id);
+      }
+      Swal.fire({
+        title: 'Éléments du modèle « ' + escapeHtmlPE(template.name) + ' »',
+        html: '<div id="pe-ti-list" class="text-left max-h-[40vh] overflow-y-auto border border-slate-200 rounded-xl mb-3"></div><button id="pe-ti-add" class="w-full py-2 bg-primary-light text-primary rounded-xl text-xs font-black uppercase">+ Ajouter un élément</button>',
+        width: '520px', showConfirmButton: false, showCloseButton: true,
+        didOpen: function () { renderList(); document.getElementById('pe-ti-add').addEventListener('click', function () { openTemplateItemForm(null); }); }
+      });
+
+      function openTemplateItemForm(existing) {
+        const isNew = !existing;
+        if (!itemTypes.length) { showModal({ icon: 'info', title: 'Aucun type', text: "Créez d'abord au moins un type d'élément." }); return; }
+        const typeOptions = itemTypes.map(function (t) { return '<option value="' + t.id + '" ' + (existing && existing.itemTypeId === t.id ? 'selected' : '') + '>' + escapeHtmlPE(t.label) + '</option>'; }).join('');
+        Swal.fire({
+          title: isNew ? 'Ajouter un élément par défaut' : 'Modifier',
+          html: '<div class="text-left grid grid-cols-2 gap-2">' +
+            '<select id="pe-ti-type" class="col-span-2 w-full rounded-lg border-slate-300 text-sm">' + typeOptions + '</select>' +
+            '<input id="pe-ti-room" value="' + (existing ? escapeHtmlPE(existing.room) : '') + '" placeholder="Pièce (ex: Salon)" class="col-span-2 w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-ti-x" type="number" step="0.1" value="' + (existing ? existing.x : '50') + '" placeholder="X %" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-ti-y" type="number" step="0.1" value="' + (existing ? existing.y : '50') + '" placeholder="Y %" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-ti-rotation" type="number" step="90" value="' + (existing ? existing.rotation : '0') + '" placeholder="Rotation" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<span></span>' +
+            '<input id="pe-ti-min" value="' + (existing ? existing.minCount : '') + '" placeholder="Min" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-ti-max" value="' + (existing ? existing.maxCount : '') + '" placeholder="Max" class="w-full rounded-lg border-slate-300 text-sm" />' +
+            '<input id="pe-ti-condition" value="' + (existing ? escapeHtmlPE(existing.condition) : '') + '" placeholder="Condition (ex: surface>=50)" class="col-span-2 w-full rounded-lg border-slate-300 text-sm" />' +
+            '<select id="pe-ti-enforcement" class="col-span-2 w-full rounded-lg border-slate-300 text-sm">' +
+              '<option value="blocking" ' + (!existing || existing.enforcement === 'blocking' ? 'selected' : '') + '>Bloquant</option>' +
+              '<option value="warning" ' + (existing && existing.enforcement === 'warning' ? 'selected' : '') + '>Avertissement</option>' +
+            '</select>' +
+            '</div>',
+          showCancelButton: true, confirmButtonText: 'Enregistrer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+          preConfirm: function () {
+            return {
+              id: existing ? existing.id : null, templateId: template.id,
+              itemTypeId: document.getElementById('pe-ti-type').value,
+              room: document.getElementById('pe-ti-room').value.trim(),
+              x: parseFloat(document.getElementById('pe-ti-x').value) || 0,
+              y: parseFloat(document.getElementById('pe-ti-y').value) || 0,
+              rotation: parseFloat(document.getElementById('pe-ti-rotation').value) || 0,
+              minCount: document.getElementById('pe-ti-min').value.trim(),
+              maxCount: document.getElementById('pe-ti-max').value.trim(),
+              condition: document.getElementById('pe-ti-condition').value.trim(),
+              enforcement: document.getElementById('pe-ti-enforcement').value
+            };
+          }
+        }).then(function (result) {
+          if (!result.isConfirmed) return;
+          google.script.run.withSuccessHandler(renderList).withFailureHandler(function (err) { showModal({ icon: 'error', title: 'Erreur', text: err.message }); }).gsSavePlanEditorTemplateItem(APP_DATA.token, APP_DATA.projectId, catalogue, result.value, isNew);
+        });
+      }
+    }
+
+    // --- WorkspaceCore layer hooks ---------------------------------------
+
+    function buildToolbarHtml(clientMode) {
+      if (!itemTypes.length) return '<span class="text-[10px] text-slate-400 italic">Aucun type d’élément défini.</span>';
+      return itemTypes.map(function (t) {
+        const active = armedItemTypeId === t.id;
+        return '<button type="button" data-pe-place="' + t.id + '" title="Placer : ' + escapeHtmlPE(t.label) + '" class="w-8 h-8 flex items-center justify-center rounded-lg border transition-colors ' + (active ? 'bg-primary text-white border-primary' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-primary hover:text-white') + '">' + WorkspaceCore.iconSpanHtml(t.icon, '!text-[16px]') + '</button>';
+      }).join('') + (clientMode ? '' :
+        '<button type="button" id="pe-manage-types-' + catalogue + '" title="Gérer les types" class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-primary hover:text-white ml-1"><span class="material-symbols-outlined !text-[16px]">settings</span></button>' +
+        '<button type="button" id="pe-manage-templates-' + catalogue + '" title="Gérer les modèles" class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-primary hover:text-white"><span class="material-symbols-outlined !text-[16px]">dashboard_customize</span></button>');
+    }
+
+    function bindToolbarButtons(root) {
+      if (!root) return;
+      root.querySelectorAll('[data-pe-place]').forEach(function (btn) { btn.addEventListener('click', function () { armPlacement(btn.getAttribute('data-pe-place')); }); });
+      const manageTypesBtn = root.querySelector('#pe-manage-types-' + catalogue);
+      if (manageTypesBtn) manageTypesBtn.addEventListener('click', function () { if (isAdmin) openItemTypeManager(); });
+      const manageTplBtn = root.querySelector('#pe-manage-templates-' + catalogue);
+      if (manageTplBtn) manageTplBtn.addEventListener('click', function () { if (isAdmin) openTemplateManager(); });
+    }
+
+    let planClickBound = false;
+    function bindPlanClick() {
+      if (planClickBound) return;
+      const viewport = document.getElementById('apartment-plan-visual');
+      if (!viewport) return;
+      viewport.addEventListener('click', function (evt) {
+        if (WorkspaceCore.getActiveLayerId() !== catalogue) return;
+        handlePlanClickPE(evt);
+      });
+      planClickBound = true;
+    }
+
+    function mount(container, ctx) {
+      container.innerHTML = '<div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">' +
+        '<h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-4 flex items-center gap-2">' +
+        '<span class="material-symbols-outlined text-primary !text-[18px]">' + iconName + '</span> ' + label + ' — éléments par pièce</h3>' +
+        '<div id="pe-right-panel-' + catalogue + '"><p class="text-xs text-slate-400 italic">Sélectionnez un élément.</p></div></div>';
+      bindPlanClick();
+    }
+
+    function render(ctx) {
+      armedItemTypeId = null; armedRoom = null;
+      renderMarkers(ctx);
+      refreshRightPanel(ctx);
+      maybeOffachOnboarding(ctx);
+    }
+
+    function getEditToolsHtml(ctx) {
+      const effectiveClient = ctx.isClient || ctx.isClientViewActive;
+      return effectiveClient ? '' : buildToolbarHtml(false);
+    }
+
+    function bindEditTools(container, ctx) {
+      bindToolbarButtons(container);
+      const effectiveClient = ctx.isClient || ctx.isClientViewActive;
+      let clientEl = document.getElementById('pe-client-toolbar-' + catalogue);
+      if (effectiveClient) {
+        if (!clientEl) {
+          clientEl = document.createElement('div');
+          clientEl.id = 'pe-client-toolbar-' + catalogue;
+          clientEl.className = 'layer-overlay flex items-center gap-2 mr-2 pr-4 border-r border-slate-200';
+          const anchor = document.getElementById('edit-tools-container');
+          if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(clientEl, anchor);
+        }
+        clientEl.innerHTML = buildToolbarHtml(true);
+        bindToolbarButtons(clientEl);
+      } else if (clientEl) {
+        clientEl.remove();
+      }
+    }
+
+    return {
+      label: label,
+      layoutMode: 'drawing',
+      mount: mount,
+      render: render,
+      getEditToolsHtml: getEditToolsHtml,
+      bindEditTools: bindEditTools,
+      onAssetLoaded: function (ctx) { renderMarkers(ctx); },
+      onBaseDataLoaded: function () {
+        google.script.run.withSuccessHandler(function (types) { itemTypes = types || []; }).withFailureHandler(function (err) { appErrorLog(err, 'gsGetPlanEditorItemTypes', { catalogue: catalogue }); }).gsGetPlanEditorItemTypes(APP_DATA.token, catalogue);
+      }
+    };
+  }
+
+  WorkspaceCore.registerLayer('elec', createPlanEditorLayer('elec', 'Élec.', 'electric_bolt'));
+  WorkspaceCore.registerLayer('sanit', createPlanEditorLayer('sanit', 'Sanit.', 'plumbing'));
+
+})();
+
+
+(function () {
+  'use strict';
+
+  // =========================================================
+  // FORMULAIRES LAYER (NEW, 6th layer) — spec section 7, 2026-08-26
+  // =========================================================
+  // Document generation reuses Travaux's already-proven #print-root/@page
+  // pattern (EDL_Scripts_2.html's buildRecapHeaderHtml/renderPlanPanel)
+  // instead of the spec's *suggested* Google-Docs-merge mechanism — the
+  // spec explicitly says to use whatever fits the existing codebase best,
+  // and this is exactly that: a working, already-shipped "structured
+  // document, printed to A4" pattern, not a second one. Implements
+  // renderPlanPanel() (checked before resolveAsset by Core — see
+  // EDL_Scripts_1.html:1330ish — so this layer's original resolveAsset
+  // stub is now unused/removed, not both wired up).
+  //
+  // Clients are STRICTLY read-only here (spec section 7 — unlike Réserves/
+  // Élec/Sanit, there is no client-independent-of-edit-mode toolbar at
+  // all: clients get zero write capability in this layer, so the pattern
+  // used everywhere else this session doesn't apply). Every mutating
+  // action (create instance, send email, upload signed scan, manage
+  // templates) is staff-only; view/print/download stays open to everyone.
+
+  let formTemplates = [];       // admin catalog, loaded once
+  let formDocsCache = {};       // idLot -> [document, ...]
+  let selectedPreview = null;   // { kind: 'template'|'document', data } | null
+
+  function escapeHtmlF(str) {
+    return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function resolveMergeTokens(bodyHtml, ctx) {
+    const item = ctx.activeItem || {};
+    const nom = [item.nom, item.prenom].filter(Boolean).join(' ') || '—';
+    const tokens = {
+      occupant_name: nom,
+      apartment_id: ctx.activeId || '—',
+      apartment_reference: ctx.activeId || '—',
+      date: new Date().toLocaleDateString('fr-FR')
+    };
+    let out = String(bodyHtml || '');
+    Object.keys(tokens).forEach(function (key) {
+      out = out.split('{{' + key + '}}').join(escapeHtmlF(tokens[key]));
+    });
+    return out;
+  }
+
+  function buildFixedHeaderHtml(ctx) {
+    const item = ctx.activeItem || {};
+    const nom = [item.nom, item.prenom].filter(Boolean).join(' ') || '—';
+    return '<div class="grid grid-cols-2 gap-x-4 gap-y-1 mb-4 pb-4 border-b border-slate-200 text-xs">' +
+      '<div><span class="font-black text-slate-400 uppercase text-[9px] block">Occupant</span>' + escapeHtmlF(nom) + '</div>' +
+      '<div><span class="font-black text-slate-400 uppercase text-[9px] block">Référence</span>' + escapeHtmlF(ctx.activeId) + '</div>' +
+      '<div><span class="font-black text-slate-400 uppercase text-[9px] block">ID Appartement</span>' + escapeHtmlF(ctx.activeId) + '</div>' +
+      '<div><span class="font-black text-slate-400 uppercase text-[9px] block">Date</span>' + new Date().toLocaleDateString('fr-FR') + '</div>' +
+      '</div>';
+  }
+
+  function buildSignatureBlockHtml(doc) {
+    return '<div class="grid grid-cols-2 gap-6 mt-8 pt-4">' +
+      '<div><p class="text-[10px] font-black text-slate-400 uppercase mb-8">Signature du propriétaire — ' + escapeHtmlF(doc.ownerSignerName || '') + '</p><div class="border-t border-slate-400"></div></div>' +
+      '<div><p class="text-[10px] font-black text-slate-400 uppercase mb-8">Signature (' + APP_DATA.user.name.split(' ')[0] + ') — ' + escapeHtmlF(doc.staffSignerName || '') + '</p><div class="border-t border-slate-400"></div></div>' +
+      '</div>';
+  }
+
+  function statusBadgeHtml(status) {
+    const map = { 'Signé': 'bg-emerald-100 text-emerald-700', 'Envoyé': 'bg-blue-100 text-blue-700', 'Non signé': 'bg-slate-100 text-slate-500' };
+    return '<span class="px-2 py-0.5 rounded-md text-[9px] font-black uppercase ' + (map[status] || map['Non signé']) + '">' + escapeHtmlF(status || 'Non signé') + '</span>';
+  }
+
+  // --- right panel: template list (no ID) or documents list (ID selected) --
+
+  function buildRightPanelHtml(ctx) {
+    if (!ctx.activeId) {
+      if (!formTemplates.length) return '<p class="text-xs text-slate-400 italic">Aucun modèle de formulaire. ' + (isAdmin ? 'Utilisez « Gérer les modèles ».' : '') + '</p>';
+      return formTemplates.filter(function (t) { return t.active; }).map(function (t) {
+        return '<div data-tpl="' + t.id + '" class="fdoc-tpl-row cursor-pointer flex items-center justify-between px-3 py-2 border border-slate-200 rounded-xl mb-1.5 hover:border-primary transition-colors' + (selectedPreview && selectedPreview.kind === 'template' && selectedPreview.data.id === t.id ? ' border-primary bg-primary-light/30' : '') + '">' +
+          '<span class="text-xs font-bold text-slate-700">' + escapeHtmlF(t.name) + '</span>' +
+          '<span class="text-[9px] font-black uppercase text-slate-400">' + (t.bodyType === 'manuel' ? 'Manuel' : 'Auto') + '</span>' +
+          '</div>';
+      }).join('');
+    }
+    const docs = formDocsCache[ctx.activeId] || [];
+    const docsHtml = docs.map(function (d) {
+      return '<div data-doc="' + d.id + '" class="fdoc-doc-row cursor-pointer flex items-center justify-between px-3 py-2 border border-slate-200 rounded-xl mb-1.5 hover:border-primary transition-colors' + (selectedPreview && selectedPreview.kind === 'document' && selectedPreview.data.id === d.id ? ' border-primary bg-primary-light/30' : '') + '">' +
+        '<span class="text-xs font-bold text-slate-700 truncate">' + escapeHtmlF(d.title) + '</span>' +
+        statusBadgeHtml(d.status) +
+        '</div>';
+    }).join('') || '<p class="text-xs text-slate-400 italic mb-3">Aucun formulaire pour cet appartement.</p>';
+    const addBtnHtml = isClient ? '' : '<button id="fdoc-add-btn" class="edit-only-ui w-full py-2 mt-2 bg-primary-light text-primary rounded-xl text-xs font-black uppercase hover:bg-primary hover:text-white transition-colors">+ Ajouter un formulaire</button>';
+    return docsHtml + addBtnHtml;
+  }
+
+  function bindRightPanel(ctx) {
+    document.querySelectorAll('.fdoc-tpl-row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        const t = formTemplates.filter(function (x) { return x.id === el.dataset.tpl; })[0];
+        selectedPreview = { kind: 'template', data: t };
+        renderAll(ctx);
+      });
+    });
+    document.querySelectorAll('.fdoc-doc-row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        const d = (formDocsCache[ctx.activeId] || []).filter(function (x) { return x.id === el.dataset.doc; })[0];
+        selectedPreview = { kind: 'document', data: d };
+        renderAll(ctx);
+      });
+    });
+    const addBtn = document.getElementById('fdoc-add-btn');
+    if (addBtn) addBtn.addEventListener('click', function () { openAddFormulaireFlow(ctx); });
+  }
+
+  function renderAll(ctx) {
+    const panel = document.getElementById('fdoc-right-panel');
+    if (panel) { panel.innerHTML = buildRightPanelHtml(ctx); bindRightPanel(ctx); }
+    renderPreview(ctx);
+  }
+
+  // --- add flow: pick a template (Auto merges immediately, Manuel asks for
+  // corps text) or start a fully custom ad hoc statement ------------------
+
+  function openAddFormulaireFlow(ctx) {
+    const tplOptions = formTemplates.filter(function (t) { return t.active; }).map(function (t) { return '<option value="' + t.id + '">' + escapeHtmlF(t.name) + '</option>'; }).join('');
+    Swal.fire({
+      title: 'Ajouter un formulaire',
+      html: '<div class="text-left flex flex-col gap-2">' +
+        '<select id="fdoc-add-tpl" class="w-full rounded-lg border-slate-300 text-sm"><option value="">— Statement personnalisé (sans modèle) —</option>' + tplOptions + '</select>' +
+        '<input id="fdoc-add-title" placeholder="Titre du document" class="w-full rounded-lg border-slate-300 text-sm" />' +
+        '</div>',
+      showCancelButton: true, confirmButtonText: 'Continuer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+      preConfirm: function () {
+        const title = document.getElementById('fdoc-add-title').value.trim();
+        if (!title) { Swal.showValidationMessage('Le titre est obligatoire.'); return false; }
+        return { templateId: document.getElementById('fdoc-add-tpl').value, title: title };
+      }
+    }).then(function (result) {
+      if (!result.isConfirmed) return;
+      const tpl = result.value.templateId ? formTemplates.filter(function (t) { return t.id === result.value.templateId; })[0] : null;
+      const isManuel = !tpl || tpl.bodyType === 'manuel';
+      if (isManuel) {
+        Swal.fire({
+          title: 'Corps du document',
+          html: '<textarea id="fdoc-add-body" rows="8" class="w-full rounded-lg border-slate-300 text-sm" placeholder="Texte du formulaire..."></textarea>',
+          showCancelButton: true, confirmButtonText: 'Créer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+          preConfirm: function () { return document.getElementById('fdoc-add-body').value; }
+        }).then(function (bodyResult) {
+          if (!bodyResult.isConfirmed) return;
+          createFormDocument(ctx, tpl, result.value.title, bodyResult.value);
+        });
+      } else {
+        createFormDocument(ctx, tpl, result.value.title, resolveMergeTokens(tpl.bodyHtml, ctx));
+      }
+    });
+  }
+
+  function createFormDocument(ctx, tpl, title, bodyHtml) {
+    const item = ctx.activeItem || {};
+    const ownerName = [item.nom, item.prenom].filter(Boolean).join(' ') || '';
+    const staffName = (APP_DATA.user && APP_DATA.user.name) || '';
+    google.script.run
+      .withSuccessHandler(function (doc) {
+        if (!formDocsCache[ctx.activeId]) formDocsCache[ctx.activeId] = [];
+        formDocsCache[ctx.activeId].push(doc);
+        selectedPreview = { kind: 'document', data: doc };
+        renderAll(ctx);
+        showToast('Formulaire créé.', 'success');
+        appLog('formulaires', doc.id, 'Création formulaire', 'Private', 'Milestone', { Titre: title, Modèle: tpl ? tpl.name : '(personnalisé)' });
+      })
+      .withFailureHandler(function (err) { appErrorLog(err, 'gsCreateFormDocument', {}); showModal({ icon: 'error', title: 'Erreur', text: "Impossible de créer le formulaire." }); })
+      .gsCreateFormDocument(APP_DATA.token, APP_DATA.projectId, { idLot: ctx.activeId, templateId: tpl ? tpl.id : '', title: title, bodyHtml: bodyHtml, ownerSignerName: ownerName, staffSignerName: staffName });
+  }
+
+  // --- left panel preview (renderPlanPanel) --------------------------------
+
+  function renderPreview(ctx) {
+    const wrapperEl = document.getElementById('plan-wrapper');
+    if (!wrapperEl) return;
+    if (!selectedPreview) {
+      wrapperEl.innerHTML = '<div class="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-2"><span class="material-symbols-outlined !text-4xl opacity-50">description</span><p class="text-xs font-bold uppercase tracking-widest">Sélectionnez un modèle ou un formulaire</p></div>';
+      return;
+    }
+    if (selectedPreview.kind === 'template') {
+      const t = selectedPreview.data;
+      const useBtnHtml = (ctx.activeId && !isClient) ? '<button onclick="window.__fdocUseTemplateFromPreview()" class="edit-only-ui px-3 py-1.5 bg-primary text-white rounded-lg text-[10px] font-black uppercase">Utiliser ce modèle</button>' : '';
+      wrapperEl.innerHTML = '<div class="w-full h-full overflow-y-auto p-6 bg-white">' +
+        '<div class="flex items-center justify-between mb-3"><span class="text-xs font-black text-slate-800 uppercase">' + escapeHtmlF(t.name) + ' (aperçu modèle)</span>' + useBtnHtml + '</div>' +
+        '<div id="print-root" class="p-6 border border-slate-200 rounded-xl">' + buildFixedHeaderHtml(ctx) + '<div class="text-sm text-slate-700 whitespace-pre-wrap">' + (t.bodyType === 'manuel' ? '<em class="text-slate-400">(corps rempli manuellement à la création)</em>' : resolveMergeTokens(t.bodyHtml, ctx)) + '</div></div>' +
+        '</div>';
+      window.__fdocUseTemplateFromPreview = function () { openAddFormulaireFlow(ctx); };
+      return;
+    }
+
+    const doc = selectedPreview.data;
+    if (doc.status === 'Signé' && doc.signedDriveId) {
+      wrapperEl.innerHTML = '<div class="w-full h-full flex flex-col items-center justify-center p-6 gap-3">' +
+        '<img src="https://lh3.googleusercontent.com/d/' + doc.signedDriveId + '" class="max-w-full max-h-[80%] object-contain shadow-lg rounded-lg" />' +
+        '<span class="text-[10px] font-black uppercase text-emerald-600">Document signé</span></div>';
+      return;
+    }
+
+    const actionsHtml = isClient ? '' :
+      '<div class="edit-only-ui flex gap-2">' +
+        '<button onclick="window.print()" class="px-3 py-1.5 bg-primary-light text-primary rounded-lg text-[10px] font-black uppercase">Imprimer</button>' +
+        '<button onclick="window.__fdocSendEmail(\'' + doc.id + '\')" class="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase">Envoyer par e-mail</button>' +
+        '<button onclick="window.__fdocUploadSigned(\'' + doc.id + '\')" class="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-black uppercase">Téléverser signé</button>' +
+      '</div>';
+    const printOnlyHtml = isClient ? '<button onclick="window.print()" class="px-3 py-1.5 bg-primary-light text-primary rounded-lg text-[10px] font-black uppercase">Imprimer</button>' : '';
+
+    wrapperEl.innerHTML = '<div class="w-full h-full overflow-y-auto p-6 bg-white">' +
+      '<div class="flex items-center justify-between mb-3"><span class="text-xs font-black text-slate-800 uppercase flex items-center gap-2">' + escapeHtmlF(doc.title) + statusBadgeHtml(doc.status) + '</span>' + actionsHtml + printOnlyHtml + '</div>' +
+      '<div id="print-root" class="p-6 border border-slate-200 rounded-xl">' + buildFixedHeaderHtml(ctx) + '<div class="text-sm text-slate-700 whitespace-pre-wrap">' + doc.bodyHtml + '</div>' + buildSignatureBlockHtml(doc) + '</div>' +
+      '</div>';
+
+    window.__fdocSendEmail = function (docId) {
+      const item = ctx.activeItem || {};
+      const defaultEmail = item.email || item.mail || '';
+      Swal.fire({
+        title: 'Envoyer par e-mail',
+        html: '<input id="fdoc-email-to" value="' + escapeHtmlF(defaultEmail) + '" placeholder="Adresse du propriétaire" class="w-full rounded-lg border-slate-300 text-sm mb-2" />' +
+          '<input id="fdoc-email-subject" value="' + escapeHtmlF(doc.title) + '" placeholder="Objet" class="w-full rounded-lg border-slate-300 text-sm" />' +
+          (defaultEmail ? '' : '<p class="text-[10px] text-amber-600 mt-1 text-left">Aucune adresse trouvée sur la fiche — vérifiez avant d\'envoyer.</p>'),
+        showCancelButton: true, confirmButtonText: 'Envoyer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+        preConfirm: function () {
+          const to = document.getElementById('fdoc-email-to').value.trim();
+          if (!to) { Swal.showValidationMessage('Adresse e-mail requise.'); return false; }
+          return { to: to, subject: document.getElementById('fdoc-email-subject').value.trim() };
+        }
+      }).then(function (result) {
+        if (!result.isConfirmed) return;
+        google.script.run
+          .withSuccessHandler(function () {
+            doc.status = 'Envoyé';
+            showToast('E-mail envoyé.', 'success');
+            appLog('formulaires', docId, 'Envoi par e-mail', 'Private', 'Milestone', { Destinataire: result.value.to });
+            renderAll(ctx);
+          })
+          .withFailureHandler(function (err) { appErrorLog(err, 'gsSendFormulaireEmail', {}); showModal({ icon: 'error', title: 'Erreur', text: "Impossible d'envoyer l'e-mail." }); })
+          .gsSendFormulaireEmail(APP_DATA.token, APP_DATA.projectId, docId, result.value.to, result.value.subject, document.getElementById('print-root').innerHTML);
+      });
+    };
+
+    window.__fdocUploadSigned = function (docId) {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'image/png, image/jpeg, application/pdf';
+      input.addEventListener('change', function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function (evt) {
+          const base64 = evt.target.result.split(',')[1];
+          google.script.run
+            .withSuccessHandler(function (result) {
+              doc.status = result.status; doc.signedDriveId = result.signedDriveId;
+              showToast('Document signé téléversé.', 'success');
+              appLog('formulaires', docId, 'Téléversement signature', 'Private', 'Milestone', {});
+              renderAll(ctx);
+            })
+            .withFailureHandler(function (err) { appErrorLog(err, 'gsUploadSignedFormDocument', {}); showModal({ icon: 'error', title: 'Erreur', text: "Échec du téléversement." }); })
+            .gsUploadSignedFormDocument(APP_DATA.token, APP_DATA.projectId, docId, file.name, base64, file.type);
+        };
+        reader.readAsDataURL(file);
+      });
+      input.click();
+    };
+  }
+
+  // --- admin: template manager (same list-CRUD pattern as Plan Editor) ----
+
+  function openTemplateManager() {
+    function renderList() {
+      google.script.run
+        .withSuccessHandler(function (templates) {
+          formTemplates = templates || [];
+          const rowsHtml = formTemplates.map(function (t) {
+            return '<div class="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">' +
+              '<span class="text-xs font-bold text-slate-700">' + escapeHtmlF(t.name) + ' <span class="text-[10px] text-slate-400 font-normal">(' + (t.bodyType === 'manuel' ? 'Manuel' : 'Auto') + (t.active ? '' : ', inactif') + ')</span></span>' +
+              '<div class="flex gap-1">' +
+              '<button data-edit="' + t.id + '" class="ftpl-edit w-7 h-7 rounded-lg text-slate-400 hover:text-primary hover:bg-primary-light"><span class="material-symbols-outlined !text-[16px]">edit</span></button>' +
+              '<button data-del="' + t.id + '" class="ftpl-del w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><span class="material-symbols-outlined !text-[16px]">delete</span></button>' +
+              '</div></div>';
+          }).join('') || '<p class="text-xs text-slate-400 italic text-center py-6">Aucun modèle.</p>';
+          document.getElementById('ftpl-list').innerHTML = rowsHtml;
+          document.querySelectorAll('.ftpl-edit').forEach(function (b) { b.addEventListener('click', function () { openTemplateForm(formTemplates.filter(function (t) { return t.id === b.dataset.edit; })[0]); }); });
+          document.querySelectorAll('.ftpl-del').forEach(function (b) { b.addEventListener('click', function () { google.script.run.withSuccessHandler(renderList).gsDeleteFormTemplate(APP_DATA.token, APP_DATA.projectId, b.dataset.del); }); });
+        })
+        .gsGetFormTemplates(APP_DATA.token, APP_DATA.projectId);
+    }
+    Swal.fire({
+      title: 'Modèles de formulaires',
+      html: '<div id="ftpl-list" class="text-left max-h-[45vh] overflow-y-auto border border-slate-200 rounded-xl mb-3"></div><button id="ftpl-add" class="w-full py-2 bg-primary-light text-primary rounded-xl text-xs font-black uppercase">+ Ajouter un modèle</button>',
+      width: '520px', showConfirmButton: false, showCloseButton: true,
+      didOpen: function () { renderList(); document.getElementById('ftpl-add').addEventListener('click', function () { openTemplateForm(null); }); }
+    });
+
+    function openTemplateForm(existing) {
+      const isNew = !existing;
+      Swal.fire({
+        title: isNew ? 'Ajouter un modèle' : 'Modifier « ' + existing.name + ' »',
+        html: '<div class="text-left flex flex-col gap-2">' +
+          '<input id="ftpl-name" value="' + (existing ? escapeHtmlF(existing.name) : '') + '" placeholder="Nom du modèle" class="w-full rounded-lg border-slate-300 text-sm" />' +
+          '<select id="ftpl-bodytype" class="w-full rounded-lg border-slate-300 text-sm"><option value="auto" ' + (!existing || existing.bodyType === 'auto' ? 'selected' : '') + '>Auto (texte fixe + jetons)</option><option value="manuel" ' + (existing && existing.bodyType === 'manuel' ? 'selected' : '') + '>Manuel (rempli à la création)</option></select>' +
+          '<textarea id="ftpl-body" rows="6" placeholder="Texte (jetons: {{occupant_name}} {{apartment_id}} {{apartment_reference}} {{date}})" class="w-full rounded-lg border-slate-300 text-sm">' + (existing ? escapeHtmlF(existing.bodyHtml) : '') + '</textarea>' +
+          '<label class="flex items-center gap-2 text-xs"><input id="ftpl-active" type="checkbox" ' + (!existing || existing.active ? 'checked' : '') + ' /> Actif (visible dans la liste)</label>' +
+          '</div>',
+        showCancelButton: true, confirmButtonText: 'Enregistrer', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+        preConfirm: function () {
+          const name = document.getElementById('ftpl-name').value.trim();
+          if (!name) { Swal.showValidationMessage('Le nom est obligatoire.'); return false; }
+          return { id: existing ? existing.id : null, name: name, bodyType: document.getElementById('ftpl-bodytype').value, bodyHtml: document.getElementById('ftpl-body').value, active: document.getElementById('ftpl-active').checked };
+        }
+      }).then(function (result) {
+        if (!result.isConfirmed) return;
+        google.script.run.withSuccessHandler(function () { openTemplateManager(); }).withFailureHandler(function (err) { showModal({ icon: 'error', title: 'Erreur', text: err.message }); }).gsSaveFormTemplate(APP_DATA.token, APP_DATA.projectId, result.value, isNew);
+      });
+    }
+  }
+
+  // --- WorkspaceCore layer hooks --------------------------------------------
+
+  // WorkspaceCore.refreshActiveLayer() (EDL_Scripts_1.html) only calls
+  // layer.render() when a selection exists — with none, it hides
+  // #layer-panel-root entirely and shows a generic #empty-state-placeholder
+  // instead (setDynamicPanelState()). Every other layer wants exactly that
+  // (nothing useful to show with no apartment picked), but the spec
+  // explicitly wants Formulaires to show the template BROWSER in that
+  // exact state. Rather than touch shared core (would affect every other
+  // layer) or duplicate the whole panel into the generic empty-state
+  // element (breaks layer independence the other way), a small
+  // MutationObserver on #layer-panel-root's class list re-asserts this
+  // layer's own visibility/content whenever core hides it while
+  // Formulaires is the active layer — reacts to being hidden by ANY
+  // trigger (initial mount with no selection, or clearing an existing
+  // selection while already on this layer), not just a one-time timing fix.
+  let fdocPanelObserver = null;
+  function ensurePanelVisibilityOverride() {
+    if (fdocPanelObserver) return;
+    const panelRoot = document.getElementById('layer-panel-root');
+    const emptyState = document.getElementById('empty-state-placeholder');
+    if (!panelRoot) return;
+    fdocPanelObserver = new MutationObserver(function () {
+      if (WorkspaceCore.getActiveLayerId() !== 'formulaires') return;
+      if (panelRoot.classList.contains('hidden')) {
+        panelRoot.classList.remove('hidden');
+        if (emptyState) emptyState.classList.add('hidden');
+        if (!document.getElementById('fdoc-right-panel')) mountPanelHtml();
+        renderAll(WorkspaceCore.buildContext());
+      }
+    });
+    fdocPanelObserver.observe(panelRoot, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  function mountPanelHtml() {
+    const panelRoot = document.getElementById('layer-panel-root');
+    if (!panelRoot) return;
+    panelRoot.innerHTML = '<div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">' +
+      '<h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-4 flex items-center gap-2">' +
+      '<span class="material-symbols-outlined text-primary !text-[18px]">description</span> Formulaires</h3>' +
+      '<div id="fdoc-right-panel"><p class="text-xs text-slate-400 italic">Chargement…</p></div></div>';
+  }
 
   function mount(container) {
-    container.classList.add('flex', 'flex-col', 'items-center', 'justify-center', 'h-full', 'text-center', 'text-slate-400', 'gap-2');
-    container.innerHTML = `
-      <span class="material-symbols-outlined !text-4xl opacity-50">description</span>
-      <p class="text-xs font-bold uppercase tracking-widest">Couche "Formulaires" — à venir</p>
-    `;
+    if (window.unlockRoomDropdown) window.unlockRoomDropdown();
+    const roomDropdown = document.getElementById('room-select');
+    if (roomDropdown) { roomDropdown.disabled = true; roomDropdown.classList.add('opacity-50', 'cursor-not-allowed'); }
+    container.innerHTML = '<div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">' +
+      '<h3 class="text-xs font-black text-slate-800 uppercase tracking-widest mb-4 flex items-center gap-2">' +
+      '<span class="material-symbols-outlined text-primary !text-[18px]">description</span> Formulaires</h3>' +
+      '<div id="fdoc-right-panel"><p class="text-xs text-slate-400 italic">Chargement…</p></div></div>';
+    ensurePanelVisibilityOverride();
   }
 
   function render(ctx) {
-    // TODO: populate the Formulaires panel for ctx.activeId / ctx.roomName.
+    if (ctx.activeId && !formDocsCache[ctx.activeId]) {
+      google.script.run
+        .withSuccessHandler(function (docs) { formDocsCache[ctx.activeId] = docs || []; renderAll(ctx); })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetFormDocumentsByLot', {}); })
+        .gsGetFormDocumentsByLot(APP_DATA.token, ctx.activeId);
+      return;
+    }
+    renderAll(ctx);
   }
 
-  function resolveAsset(ctx) {
-    // TODO: decide how this layer picks its "photo" (one per lot? uploaded
-    // ad hoc? a fixed document scan?). Once you know, return a filename
-    // string here and it's loaded into the plan-container exactly like the
-    // shared plan is for the other 5 layers — same fetchPlanAssetAsBase64
-    // server call, no other plumbing needed. Example, following the same
-    // token-prefix convention as generatePlanFilename() in Core:
-    //
-    //   return `formulaire_${ctx.activeId}`;
-    //
-    // Returning null/undefined (as below) falls back to the shared plan
-    // asset for now, so the layer still works while this is unimplemented.
-    return null;
+  function renderPlanPanel(ctx, wrapperEl) {
+    renderPreview(ctx); // wrapperEl === #plan-wrapper, same element renderPreview already targets
+  }
+
+  function getEditToolsHtml() {
+    return isAdmin ? '<button id="fdoc-manage-templates" title="Gérer les modèles" class="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-primary hover:text-white"><span class="material-symbols-outlined !text-[16px]">dashboard_customize</span></button>' : '';
+  }
+
+  function bindEditTools(container) {
+    const btn = container.querySelector('#fdoc-manage-templates');
+    if (btn) btn.addEventListener('click', openTemplateManager);
   }
 
   WorkspaceCore.registerLayer('formulaires', {
     label: 'Formulaires',
-    layoutMode: 'data-entry', // assumption — see note above
+    layoutMode: 'data-entry',
 
     mount: mount,
     render: render,
-    resolveAsset: resolveAsset
+    renderPlanPanel: renderPlanPanel,
+    getEditToolsHtml: getEditToolsHtml,
+    bindEditTools: bindEditTools,
+
+    onBaseDataLoaded: function () {
+      google.script.run
+        .withSuccessHandler(function (templates) { formTemplates = templates || []; })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetFormTemplates', {}); })
+        .gsGetFormTemplates(APP_DATA.token, APP_DATA.projectId);
+    }
   });
 
 })();

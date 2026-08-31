@@ -8,6 +8,7 @@
 
   let interventionsCache = [];
   let interventionsCacheForId = null;
+  let reservesPhotosCache = []; // all Réserves photos for the project, loaded once (mirrors EDL's getEDLPhotosData pattern), filtered client-side per intervention
   let interventionsRequestSeq = 0;
 
   // État global des filtres
@@ -90,14 +91,39 @@
           <span class="material-symbols-outlined !text-[16px]">check_circle</span> Valider
         </button>`;
 
+      // Photos gallery entry point — added 2026-08-26 (spec section 4);
+      // window.viewInterventionPhotos() used to be a stub with no caller.
+      const photosBtnHtml = `
+        <button onclick="event.stopPropagation(); window.viewInterventionPhotos('${idReserve}')" class="bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm">
+          <span class="material-symbols-outlined !text-[16px]">photo_library</span> Photos
+        </button>`;
+
+      // Unused badge + reactivate affordance (autocontrôles only,
+      // spec section 4's "Supprimer" — mark-in-place, reversible). The
+      // toolbar's Supprimer tool only marks unused (a fresh click always
+      // means "remove this one"); reactivating needs its own entry point,
+      // which the toolbar gesture alone can't disambiguate from marking a
+      // different autocontrôle unused.
+      const isAutocontroleRow = String(idReserve).startsWith('A-');
+      const unusedBadgeHtml = reserve.unused
+        ? `<span class="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide bg-slate-700 text-white" title="${reserve.unusedReason ? escapeHtmlR(reserve.unusedReason) : ''}">Supprimé</span>`
+        : '';
+      const reactivateBtnHtml = (isAutocontroleRow && reserve.unused && !isClient)
+        ? `<button onclick="event.stopPropagation(); window.reservesMarkAutocontroleUnused('${idReserve}', false)" class="bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-sm">
+             <span class="material-symbols-outlined !text-[16px]">visibility</span> Réactiver
+           </button>` : '';
+
       html += `
-        <div class="intervention-card plan-tag-target bg-white border border-slate-200 hover:shadow-md cursor-pointer rounded-xl p-3 shadow-sm mb-3 flex flex-col gap-2 transition-all" data-tag-id="${idReserve}" onclick="window.toggleHighlight('${idReserve}')">
+        <div class="intervention-card plan-tag-target bg-white border border-slate-200 hover:shadow-md cursor-pointer rounded-xl p-3 shadow-sm mb-3 flex flex-col gap-2 transition-all${reserve.unused ? ' opacity-70' : ''}" data-tag-id="${idReserve}" onclick="window.toggleHighlight('${idReserve}')">
           <div class="flex justify-between items-start">
             <div class="flex flex-col">
               <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${idReserve} ${idLogement ? '• Logement ' + idLogement : ''}</span>
               <h3 class="text-sm font-bold text-slate-800 mt-0.5">${discipline || 'Intervention'}</h3>
             </div>
-            <span class="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-widest ${getBadgeColor(primaryStatut)}">${primaryStatut || 'N/A'}</span>
+            <div class="flex items-center gap-1.5">
+              ${unusedBadgeHtml}
+              <span class="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-widest ${getBadgeColor(primaryStatut)}">${primaryStatut || 'N/A'}</span>
+            </div>
           </div>
           <div class="flex flex-col gap-1">
             <div class="text-xs text-slate-700 font-medium leading-relaxed">${pubText}</div>
@@ -109,7 +135,7 @@
             <div><span class="font-bold text-slate-700">Échéance:</span> <span class="${dueDate ? 'text-rose-600 font-semibold' : ''}">${dueDate || '-'}</span></div>
           </div>
           <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            ${warningBtnHtml} ${historyBtnHtml} ${editerBtnHtml} ${corrigerBtnHtml} ${planifierBtnHtml} ${validerBtnHtml}
+            ${warningBtnHtml} ${historyBtnHtml} ${editerBtnHtml} ${corrigerBtnHtml} ${planifierBtnHtml} ${validerBtnHtml} ${photosBtnHtml} ${reactivateBtnHtml}
           </div>
         </div>
       `;
@@ -1848,8 +1874,94 @@ function submitReferenceCorrection(data) {
      fetchAndDrawIntervention(selectEl.value);
   };
 
-  window.viewInterventionPhotos = function(interId) {
-    showToast(`Ouverture de la galerie...`, 'info', '(Fonctionnalité en cours de développement)', 2000);
+  // Replaces the previous stub toast ("Fonctionnalité en cours de
+  // développement") — 2026-08-26 (spec section 4). Groups photos by phase
+  // (Signalement vs. Correction), and Correction photos further by
+  // correctionRef (one group per validation/fix event) rather than one
+  // flat list, per spec: "must not display mixed together."
+  window.viewInterventionPhotos = function (interId) {
+    const photos = reservesPhotosCache.filter(function (p) { return p.interventionId === interId; });
+    // Effective-client check (real client OR staff previewing as one) —
+    // matches the toolbar's own convention (renderReservesToolbars) rather
+    // than the bare module-level isClient alone, so a staff member using
+    // "Vue Client" to preview doesn't still see mark-unused controls a
+    // real client wouldn't get.
+    const isStaff = !(isClient || (typeof window !== 'undefined' && window.isClientViewActive));
+
+    function photoCardHtml(p) {
+      const imgUrl = 'https://lh3.googleusercontent.com/d/' + p.driveId;
+      return (
+        '<div class="relative group aspect-square bg-slate-100 rounded-lg overflow-hidden border border-slate-200' + (p.unused ? ' opacity-60' : '') + '">' +
+          '<img src="' + imgUrl + '" class="w-full h-full object-cover" />' +
+          (p.unused ? '<span class="absolute top-1 left-1 bg-slate-800/90 text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded">Non utilisée</span>' : '') +
+          (isStaff ? (
+            '<button onclick="window.__reservesTogglePhotoUnused(\'' + p.photoId + '\', ' + (!p.unused) + ', \'' + interId + '\')" title="' + (p.unused ? 'Réactiver' : 'Marquer inutilisée') + '" ' +
+              'class="absolute top-1 right-1 bg-white/90 text-slate-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">' +
+              '<span class="material-symbols-outlined !text-[14px]">' + (p.unused ? 'visibility' : 'visibility_off') + '</span>' +
+            '</button>'
+          ) : '') +
+        '</div>'
+      );
+    }
+
+    const signalement = photos.filter(function (p) { return p.phase !== 'Correction'; });
+    const correctionGroups = {};
+    const correctionOrder = [];
+    photos.filter(function (p) { return p.phase === 'Correction'; }).forEach(function (p) {
+      const key = p.correctionRef || '(sans référence)';
+      if (!correctionGroups[key]) { correctionGroups[key] = []; correctionOrder.push(key); }
+      correctionGroups[key].push(p);
+    });
+
+    let bodyHtml = '';
+    if (signalement.length) {
+      bodyHtml += '<p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Signalement</p>' +
+        '<div class="grid grid-cols-3 gap-2 mb-4">' + signalement.map(photoCardHtml).join('') + '</div>';
+    }
+    correctionOrder.forEach(function (key, idx) {
+      const label = 'Correction' + (correctionOrder.length > 1 ? ' — round ' + (idx + 1) : '');
+      bodyHtml += '<p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">' + label + '</p>' +
+        '<div class="grid grid-cols-3 gap-2 mb-4">' + correctionGroups[key].map(photoCardHtml).join('') + '</div>';
+    });
+    if (!bodyHtml) bodyHtml = '<p class="text-xs text-slate-400 italic text-center py-6">Aucune photo pour cette intervention.</p>';
+
+    Swal.fire({
+      title: '<div class="text-sm font-black text-slate-800 text-left">Photos — ' + interId + '</div>',
+      html: '<div class="text-left max-h-[60vh] overflow-y-auto pr-1">' + bodyHtml + '</div>',
+      width: '480px',
+      showConfirmButton: false,
+      showCloseButton: true,
+      customClass: { popup: 'rounded-2xl border border-slate-200 shadow-2xl' }
+    });
+  };
+
+  window.__reservesTogglePhotoUnused = function (photoId, makeUnused, interId) {
+    (async function () {
+      let reason = '';
+      if (makeUnused) {
+        const { isConfirmed, value } = await Swal.fire({
+          title: 'Marquer cette photo comme inutilisée',
+          html: '<textarea id="rp-unused-reason" rows="2" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="Raison (optionnel)"></textarea>',
+          showCancelButton: true, confirmButtonText: 'Marquer inutilisée', cancelButtonText: 'Annuler', confirmButtonColor: '#0d59f2',
+          focusConfirm: false, preConfirm: function () { return document.getElementById('rp-unused-reason').value.trim(); }
+        });
+        if (!isConfirmed) return;
+        reason = value || '';
+      }
+      google.script.run
+        .withSuccessHandler(function () {
+          const p = reservesPhotosCache.filter(function (x) { return x.photoId === photoId; })[0];
+          if (p) { p.unused = makeUnused; p.unusedReason = makeUnused ? reason : ''; }
+          showToast(makeUnused ? 'Photo marquée inutilisée.' : 'Photo réactivée.', 'success');
+          appLog(window.currentView || 'locataires', photoId, makeUnused ? 'Photo marquée inutilisée' : 'Photo réactivée', 'Private', 'Detail', { Raison: reason || '(aucune)' });
+          window.viewInterventionPhotos(interId); // re-render the still-open gallery with the fresh state
+        })
+        .withFailureHandler(function (err) {
+          appErrorLog(err, 'gsSetReservesPhotoUnused', { photoId: photoId });
+          showModal({ icon: 'error', title: 'Erreur', text: "Impossible de mettre à jour la photo." });
+        })
+        .gsSetReservesPhotoUnused(APP_DATA.token, APP_DATA.projectId, photoId, makeUnused, reason);
+    })();
   };
 
   window.viewInterventionPlan = function(interId) {
@@ -1895,7 +2007,11 @@ function submitReferenceCorrection(data) {
   function drawInterventionUI(data, interId, logId) {
     const content = document.getElementById('sidebar-content');
     const isReserve = interId.startsWith('R-');
-    const isProjectActive = (typeof projectStatus !== 'undefined' && projectStatus === 'active');
+    // isProjectActive now comes from the real top-level const declared in
+    // EDL_Scripts_1.html (BUG FIX 2026-08-26 — this used to check a
+    // `projectStatus` global that was never declared anywhere on the EDL
+    // page, so isProjectActive was always false and these fields were
+    // unconditionally disabled for everyone; see the fix's comment there).
     const canEditTechnical = !isClient && isAuthorized && isProjectActive;
     const canEditStatus = (isAuthorized || isClient) && isProjectActive;
 
@@ -2261,6 +2377,315 @@ function submitReferenceCorrection(data) {
   // WORKSPACE CORE REGISTRATION
   // =========================================================
 
+  // =========================================================
+  // TOOLBAR — plan-editing tools (2026-08-26, spec section 4)
+  // =========================================================
+  // Deliberate interaction-model choice: every tool here is CLICK-based
+  // (arm a tool, then click a marker and/or a plan point to complete it),
+  // not literal mouse-drag — including Move ("drag an existing marker")
+  // and the line/rectangle annotations ("click-drag on the plan"). A
+  // uniform click model is substantially less code than mixing true HTML5/
+  // manual drag tracking with click-arming elsewhere, and this codebase
+  // has no existing free-2D-drag precedent to build on (the sous-
+  // catégories manager's drag-and-drop is native HTML5 list reordering, a
+  // different problem). Functionally equivalent outcome, less fluid UX —
+  // a documented tradeoff, not an oversight.
+  //
+  // Two separate render targets, per spec section 4's visibility rules:
+  //   - #edit-tools-container (existing shared slot, already carries
+  //     .edit-only-ui in EDL.html's static shell) — the FULL toolbar,
+  //     staff-only, auto-hidden outside Mode Édition by that class alone.
+  //   - #reserves-client-toolbar (new, created here, tagged .layer-overlay
+  //     so the shared clearPlanOverlays() sweep removes it on every layer
+  //     switch) — the CLIENT-ALLOWED subset (excludes "Ajouter
+  //     autocontrôle" and "Supprimer"), independent of Mode Édition, per
+  //     WorkspaceCore.isClientActionEnabled()'s pattern. isClientViewActive
+  //     (staff previewing as client) uses this same variant, matching the
+  //     effectiveClient convention this file's own dead sidebar code
+  //     already established (ctx.isClient || ctx.isClientViewActive).
+  // Only one of the two ever actually renders content for a given session
+  // (a session is either staff or client, never both), so the shared
+  // button ids below never collide in the live DOM.
+  let armedReservesTool = null; // one of TOOL_DEFS[].id, or null
+  let moveSourceId = null;      // 'move': marker clicked first, awaiting destination click
+  let duplicateSourceId = null; // 'duplicate': marker clicked first, awaiting destination click
+  let annotationStart = null;   // 'line'/'rect': first point clicked, awaiting second
+  // Copy/Paste clipboard — module-scope, survives selection changes within
+  // this page load (confirmed sufficient: switching Bâtiment/Hall/Étage/
+  // Porte never triggers a real page navigation, only navToWithParams
+  // between different PAGES does, and Copy/Paste never crosses a page).
+  let reservesClipboard = null; // { sourceId, view } | null
+
+  // INFERENCE, not explicit in the spec (flagging per CLAUDE.md — genuine
+  // ambiguity, not guessed silently): "Tracer une liaison" was already an
+  // existing button name (spec's "Current state") with zero implementation
+  // behind it anywhere in the codebase (confirmed by investigation) and no
+  // further elaboration of what a "liaison" is. The spec's separate "New:
+  // line/rectangle annotations" section describes a freeform line/
+  // rectangle drawing tool with color+visibility — read here as the same
+  // feature: "Tracer une liaison" IS the line-drawing entry point that
+  // section formalizes, with a Rectangle variant added alongside it as its
+  // second shape option. If "liaison" was meant to be something else
+  // (e.g. a connector drawn specifically BETWEEN two réserve markers,
+  // rather than a freeform line anywhere on the plan), this pairing is
+  // wrong and the two should be split apart again.
+  const RESERVES_TOOL_DEFS = [
+    { id: 'add-reserve', icon: 'add_location_alt', title: 'Ajouter une réserve — cliquez ensuite sur le plan', staffOnly: false },
+    { id: 'add-autocontrole', icon: 'fact_check', title: 'Ajouter un autocontrôle — cliquez ensuite sur le plan', staffOnly: true },
+    { id: 'line', icon: 'draw', title: 'Tracer une liaison — cliquez un point, puis un second', staffOnly: false },
+    { id: 'rect', icon: 'crop_5_4', title: 'Tracer un rectangle — cliquez un coin, puis le coin opposé', staffOnly: false },
+    { id: 'move', icon: 'open_with', title: 'Déplacer — cliquez un repère, puis sa nouvelle position', staffOnly: false },
+    { id: 'duplicate', icon: 'content_copy', title: 'Dupliquer (même logement) — cliquez un repère, puis la position de la copie', staffOnly: false },
+    { id: 'copy', icon: 'copy_all', title: 'Copier — cliquez un repère à copier', staffOnly: false },
+    { id: 'paste', icon: 'content_paste', title: 'Coller — cliquez où placer la copie', staffOnly: false },
+    { id: 'supprimer', icon: 'visibility_off', title: 'Supprimer (autocontrôles uniquement) — cliquez un repère d’autocontrôle', staffOnly: true }
+  ];
+
+  function buildReservesToolbarHtml(clientMode) {
+    const defs = clientMode ? RESERVES_TOOL_DEFS.filter(function (t) { return !t.staffOnly; }) : RESERVES_TOOL_DEFS;
+    return defs.map(function (t) {
+      const active = armedReservesTool === t.id;
+      const disabled = (t.id === 'paste' && !reservesClipboard);
+      return '<button type="button" data-reserves-tool="' + t.id + '" title="' + escapeHtmlR(t.title) + '" ' + (disabled ? 'disabled' : '') +
+        ' class="w-8 h-8 flex items-center justify-center rounded-lg border transition-colors ' +
+        (active ? 'bg-primary text-white border-primary' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-primary hover:text-white') +
+        (disabled ? ' opacity-30 cursor-not-allowed' : '') + '">' +
+        '<span class="material-symbols-outlined !text-[18px]">' + t.icon + '</span></button>';
+    }).join('');
+  }
+
+  // Local escape helper — this file doesn't already define one (unlike
+  // EDL_Scripts_2.html's escapeHtml), scoped with an R suffix to avoid any
+  // future collision if one's added at the top level later.
+  function escapeHtmlR(str) {
+    return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderReservesToolbars(ctx) {
+    const effectiveClient = ctx.isClient || ctx.isClientViewActive;
+
+    const staffEl = document.getElementById('edit-tools-container');
+    if (staffEl) staffEl.innerHTML = effectiveClient ? '' : buildReservesToolbarHtml(false);
+
+    let clientEl = document.getElementById('reserves-client-toolbar');
+    if (effectiveClient) {
+      if (!clientEl) {
+        clientEl = document.createElement('div');
+        clientEl.id = 'reserves-client-toolbar';
+        clientEl.className = 'layer-overlay flex items-center gap-2 mr-2 pr-4 border-r border-slate-200';
+        const anchor = document.getElementById('edit-tools-container');
+        if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(clientEl, anchor);
+      }
+      clientEl.innerHTML = buildReservesToolbarHtml(true);
+    } else if (clientEl) {
+      clientEl.remove();
+    }
+
+    [staffEl, clientEl].forEach(function (root) { bindReservesToolbarButtons(root); });
+  }
+
+  function bindReservesToolbarButtons(rootEl) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('[data-reserves-tool]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const tool = btn.dataset.reservesTool;
+        if (tool === 'paste' && !reservesClipboard) return;
+        armedReservesTool = (armedReservesTool === tool) ? null : tool;
+        moveSourceId = null; duplicateSourceId = null; annotationStart = null;
+        renderReservesToolbars(WorkspaceCore.buildContext());
+        if (armedReservesTool) {
+          const def = RESERVES_TOOL_DEFS.filter(function (t) { return t.id === tool; })[0];
+          showToast(def ? def.title : 'Outil actif', 'info', '', 2200);
+        }
+      });
+    });
+  }
+
+  function disarmReservesTool() {
+    armedReservesTool = null; moveSourceId = null; duplicateSourceId = null; annotationStart = null;
+    renderReservesToolbars(WorkspaceCore.buildContext());
+  }
+
+  // Converts a plan click event into an {x,y} percentage-of-image-bounds
+  // pair — matches the existing storage convention (renderOverlayTags'
+  // left/top %, "Coordonnées" = "x,y" percent string). getBoundingClientRect()
+  // already reflects the current zoom/pan CSS transform on #plan-wrapper,
+  // so no manual transform math is needed here.
+  function planClickToPercent(evt) {
+    const img = document.getElementById('interactive-plan-img');
+    const target = img || document.getElementById('plan-wrapper');
+    if (!target) return null;
+    const rect = target.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = ((evt.clientX - rect.left) / rect.width) * 100;
+    const y = ((evt.clientY - rect.top) / rect.height) * 100;
+    return { x: Math.max(0, Math.min(100, x)).toFixed(2), y: Math.max(0, Math.min(100, y)).toFixed(2) };
+  }
+
+  function reservesToolbarActionsPending() {
+    return !!armedReservesTool;
+  }
+
+  // Marker click (capture phase, fires before the shared toggleHighlight)
+  // — only intercepts when a tool that needs an existing marker as its
+  // source is armed (move/duplicate/copy/supprimer); otherwise lets the
+  // default highlight-toggle behavior proceed untouched.
+  function handleReservesMarkerClick(evt) {
+    if (!armedReservesTool) return;
+    const tagEl = evt.target.closest ? evt.target.closest('.plan-tag') : null;
+    if (!tagEl || !tagEl.dataset || !tagEl.dataset.tagId) return;
+    const interId = tagEl.dataset.tagId;
+    const isAutocontrole = interId.startsWith('A-');
+
+    if (armedReservesTool === 'move') {
+      evt.stopPropagation();
+      moveSourceId = interId;
+      showToast('Repère sélectionné — cliquez sa nouvelle position.', 'info', '', 2200);
+    } else if (armedReservesTool === 'duplicate') {
+      evt.stopPropagation();
+      duplicateSourceId = interId;
+      showToast('Repère sélectionné — cliquez où placer la copie.', 'info', '', 2200);
+    } else if (armedReservesTool === 'copy') {
+      evt.stopPropagation();
+      reservesClipboard = { sourceId: interId, view: window.currentView || 'locataires' };
+      showToast('Copié — sélectionnez (ou restez sur) un logement puis « Coller ».', 'success', '', 2500);
+      disarmReservesTool();
+    } else if (armedReservesTool === 'supprimer') {
+      evt.stopPropagation();
+      if (!isAutocontrole) {
+        showModal({ icon: 'info', title: 'Action impossible', text: "« Supprimer » ne s'applique qu'aux autocontrôles — une réserve se corrige (statut) mais ne se retire pas." });
+        return;
+      }
+      window.reservesMarkAutocontroleUnused(interId, true);
+      disarmReservesTool();
+    }
+  }
+
+  // Plan (blank-area) click — handles the "then click the plan" half of
+  // add-reserve/add-autocontrole/move/duplicate/paste, and both points of
+  // line/rect annotations. Ignores clicks that landed on a marker (handled
+  // above) — checked via the same .plan-tag ancestor test.
+  function handleReservesPlanClick(evt) {
+    if (!armedReservesTool) return;
+    if (evt.target.closest && evt.target.closest('.plan-tag')) return;
+    const ctx = WorkspaceCore.buildContext();
+    if (!ctx.activeId) return;
+    const pt = planClickToPercent(evt);
+    if (!pt) return;
+    const coordonnees = pt.x + ',' + pt.y;
+
+    if (armedReservesTool === 'add-reserve' || armedReservesTool === 'add-autocontrole') {
+      reservesCreateAt(ctx, armedReservesTool === 'add-autocontrole', coordonnees);
+      disarmReservesTool();
+    } else if (armedReservesTool === 'move') {
+      if (!moveSourceId) { showToast('Cliquez d’abord sur le repère à déplacer.', 'info', '', 2000); return; }
+      reservesMoveTo(ctx, moveSourceId, coordonnees);
+      disarmReservesTool();
+    } else if (armedReservesTool === 'duplicate') {
+      if (!duplicateSourceId) { showToast('Cliquez d’abord sur le repère à dupliquer.', 'info', '', 2000); return; }
+      reservesDuplicateTo(ctx, duplicateSourceId, ctx.activeId, coordonnees, false);
+      disarmReservesTool();
+    } else if (armedReservesTool === 'paste') {
+      if (!reservesClipboard) return;
+      reservesDuplicateTo(ctx, reservesClipboard.sourceId, ctx.activeId, coordonnees, false);
+      disarmReservesTool();
+    } else if (armedReservesTool === 'line' || armedReservesTool === 'rect') {
+      if (!annotationStart) {
+        annotationStart = pt;
+        showToast('Premier point placé — cliquez le second.', 'info', '', 2000);
+      } else {
+        reservesCreateAnnotation(ctx, armedReservesTool, annotationStart, pt);
+        disarmReservesTool();
+      }
+    }
+  }
+
+  // --- server round-trips for the toolbar actions ------------------------
+
+  function reservesCreateAt(ctx, isAutocontrole, coordonnees) {
+    google.script.run
+      .withSuccessHandler(function (newInter) {
+        interventionsCache.push(newInter);
+        renderInterventionsList(interventionsCache, ctx);
+        showToast((isAutocontrole ? 'Autocontrôle' : 'Réserve') + ' ' + newInter.id + ' créé(e).', 'success');
+        appLog(ctx.currentView, newInter.id, isAutocontrole ? 'Création autocontrôle' : 'Création réserve', isAutocontrole ? 'Private' : 'Public', 'Milestone', { Emplacement: coordonnees });
+      })
+      .withFailureHandler(function (err) {
+        appErrorLog(err, 'gsCreateReservesIntervention', { coordonnees: coordonnees });
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de créer l'intervention." });
+      })
+      .gsCreateReservesIntervention(APP_DATA.token, APP_DATA.projectId, { view: ctx.currentView, idLot: ctx.activeId, coordonnees: coordonnees, isAutocontrole: isAutocontrole });
+  }
+
+  function reservesMoveTo(ctx, interventionId, coordonnees) {
+    google.script.run
+      .withSuccessHandler(function () {
+        const item = interventionsCache.filter(function (i) { return i.id === interventionId; })[0];
+        if (item) item.coordonnees = coordonnees;
+        renderInterventionsList(interventionsCache, ctx);
+        showToast('Repère déplacé.', 'success');
+        appLog(ctx.currentView, interventionId, 'Déplacement repère', 'Private', 'Detail', { 'Nouvel emplacement': coordonnees });
+      })
+      .withFailureHandler(function (err) {
+        appErrorLog(err, 'gsMoveReservesIntervention', { interventionId: interventionId });
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de déplacer ce repère." });
+      })
+      .gsMoveReservesIntervention(APP_DATA.token, APP_DATA.projectId, { view: ctx.currentView, interventionId: interventionId, coordonnees: coordonnees });
+  }
+
+  function reservesDuplicateTo(ctx, sourceId, targetIdLot, coordonnees, fromPaste) {
+    google.script.run
+      .withSuccessHandler(function (newInter) {
+        interventionsCache.push(newInter);
+        renderInterventionsList(interventionsCache, ctx);
+        showToast((fromPaste ? 'Collé' : 'Dupliqué') + ' — ' + newInter.id + ' créé(e).', 'success');
+        appLog(ctx.currentView, newInter.id, fromPaste ? 'Collage (paste)' : 'Duplication', 'Private', 'Milestone', { Source: sourceId, Cible: targetIdLot });
+      })
+      .withFailureHandler(function (err) {
+        appErrorLog(err, 'gsDuplicateReservesIntervention', { sourceId: sourceId, targetIdLot: targetIdLot });
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible de dupliquer cette intervention." });
+      })
+      .gsDuplicateReservesIntervention(APP_DATA.token, APP_DATA.projectId, {
+        view: ctx.currentView, sourceId: sourceId, targetIdLot: targetIdLot, coordonnees: coordonnees, isClientActor: !!ctx.isClient
+      });
+  }
+
+  // window.-prefixed: called both internally (handleReservesMarkerClick)
+  // and from an inline onclick= in the intervention card's "Réactiver"
+  // button — this whole file is IIFE-wrapped, so a plain top-level
+  // `function` declaration is invisible to inline HTML event attributes
+  // (which evaluate in global scope), unlike every other bare in-IIFE call.
+  window.reservesMarkAutocontroleUnused = function (interventionId, makeUnused) {
+    const ctx = WorkspaceCore.buildContext();
+    (async function () {
+      let reason = '';
+      if (makeUnused) {
+        const { isConfirmed, value } = await Swal.fire({
+          title: 'Supprimer cet autocontrôle',
+          html: '<div class="text-left text-xs text-slate-500 mb-2">Reste visible (grisé, marqué) — ce n’est pas une suppression définitive.</div>' +
+                '<textarea id="ac-unused-reason" rows="2" class="w-full rounded-lg border-slate-300 shadow-sm text-sm" placeholder="Raison (optionnel)"></textarea>',
+          showCancelButton: true, confirmButtonText: 'Supprimer', cancelButtonText: 'Annuler', confirmButtonColor: '#dc2626',
+          focusConfirm: false, preConfirm: function () { return document.getElementById('ac-unused-reason').value.trim(); }
+        });
+        if (!isConfirmed) return;
+        reason = value || '';
+      }
+      google.script.run
+        .withSuccessHandler(function () {
+          const item = interventionsCache.filter(function (i) { return i.id === interventionId; })[0];
+          if (item) { item.unused = makeUnused; item.unusedReason = makeUnused ? reason : ''; }
+          renderInterventionsList(interventionsCache, ctx);
+          showToast(makeUnused ? 'Autocontrôle marqué supprimé.' : 'Autocontrôle réactivé.', 'success');
+          appLog(ctx.currentView, interventionId, makeUnused ? 'Autocontrôle marqué supprimé' : 'Autocontrôle réactivé', 'Private', 'Milestone', { Raison: reason || '(aucune)' });
+        })
+        .withFailureHandler(function (err) {
+          appErrorLog(err, 'gsSetAutocontroleUnused', { interventionId: interventionId });
+          showModal({ icon: 'error', title: 'Erreur', text: "Impossible de mettre à jour l'autocontrôle." });
+        })
+        .gsSetAutocontroleUnused(APP_DATA.token, APP_DATA.projectId, { view: ctx.currentView, interventionId: interventionId, unused: makeUnused, reason: reason });
+    })();
+  };
+
   function mount(container) {
     container.classList.add('flex', 'flex-col', 'gap-6', 'max-w-3xl', 'mx-auto', 'pb-10');
     container.innerHTML = `
@@ -2275,53 +2700,171 @@ function submitReferenceCorrection(data) {
     `;
   }
 
+  let reservesLastRenderedActiveId = null;
   function render(ctx) {
+    // A mid-tool "click a marker, then click the destination" gesture
+    // (move/duplicate) or an in-progress annotation's first point no
+    // longer makes sense once the selected apartment changes — the
+    // clipboard itself (Copy/Paste) deliberately survives this, per spec
+    // ("the 'clipboard' must persist across navigating to a different
+    // apartment/ID").
+    if (ctx.activeId !== reservesLastRenderedActiveId) {
+      reservesLastRenderedActiveId = ctx.activeId;
+      if (armedReservesTool !== 'paste') disarmReservesTool();
+      else { moveSourceId = null; duplicateSourceId = null; annotationStart = null; }
+    }
     updateInterventions(ctx);
+    renderReservesAnnotations(ctx);
   }
 
-  function getEditToolsHtml() {
-    return `
-      <button id="reserves-tool-add-reserve" class="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-600 hover:bg-primary hover:text-white rounded-lg border border-slate-200 transition-colors" title="Ajouter une Réserve">
-        <span class="material-symbols-outlined !text-[18px]">add_location_alt</span>
-      </button>
-      <button id="reserves-tool-trace-liaison" class="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-600 hover:bg-primary hover:text-white rounded-lg border border-slate-200 transition-colors" title="Tracer une liaison">
-        <span class="material-symbols-outlined !text-[18px]">draw</span>
-      </button>`;
+  function getEditToolsHtml(ctx) {
+    // Client toolbar is rendered separately (renderReservesToolbars, called
+    // from bindEditTools right after this) since #edit-tools-container
+    // itself carries .edit-only-ui in the static shell — content placed
+    // inside it is unconditionally hidden outside Mode Édition regardless
+    // of what's rendered, which is correct for staff but wrong for
+    // clients (who need this independent of Mode Édition, per spec
+    // section 1.4/4 — they never have the toggle at all).
+    const effectiveClient = ctx.isClient || ctx.isClientViewActive;
+    return effectiveClient ? '' : buildReservesToolbarHtml(false);
   }
 
-  function bindEditTools(container) {
-    // Logic for edit tools interaction
+  function bindEditTools(container, ctx) {
+    bindReservesToolbarButtons(container);
+    renderReservesToolbars(ctx); // also (re)builds the separate client-toolbar container
+  }
+
+  // Delegated plan/marker click listeners — bound ONCE, ever, on
+  // #apartment-plan-visual (part of the static shell, never rebuilt),
+  // rather than on #plan-markers-overlay/#interactive-plan-img (rebuilt
+  // via innerHTML every time a new plan image loads, which would silently
+  // drop any listener attached directly to them). Capture phase on the
+  // container so a marker-targeting tool's stopPropagation() can pre-empt
+  // the shared toggleHighlight() bubble-phase handler on the tag itself.
+  let reservesPlanClickBound = false;
+  function bindReservesPlanClickHandlers() {
+    if (reservesPlanClickBound) return;
+    const viewport = document.getElementById('apartment-plan-visual');
+    if (!viewport) return;
+    viewport.addEventListener('click', function (evt) {
+      if (WorkspaceCore.getActiveLayerId() !== 'reserves' || !reservesToolbarActionsPending()) return;
+      handleReservesMarkerClick(evt);
+    }, true); // capture — runs before the tag's own bubble-phase click handler
+    viewport.addEventListener('click', function (evt) {
+      if (WorkspaceCore.getActiveLayerId() !== 'reserves') return;
+      handleReservesPlanClick(evt);
+    });
+    reservesPlanClickBound = true;
+  }
+
+  // --- line/rectangle annotations (spec section 4) -----------------------
+  // Rendered as an SVG overlay (viewBox 0 0 100 100, preserveAspectRatio
+  //="none") sized to #plan-markers-overlay, so the same 0-100 percentage
+  // coordinates used everywhere else in this file work directly as SVG
+  // units — no separate coordinate system to reconcile.
+  let reservesAnnotations = []; // cache for the current selection, from ctx.activeItem's loaded set
+
+  function reservesCreateAnnotation(ctx, shape, p1, p2) {
+    const payload = {
+      view: ctx.currentView, idLot: ctx.activeId, shape: shape,
+      x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
+      color: '#dc2626', visibility: ctx.isClient ? 'Public' : 'Private'
+    };
+    google.script.run
+      .withSuccessHandler(function (newAnnotation) {
+        reservesAnnotations.push(newAnnotation);
+        renderReservesAnnotations(ctx);
+        showToast((shape === 'line' ? 'Liaison tracée.' : 'Rectangle tracé.'), 'success');
+        appLog(ctx.currentView, newAnnotation.id, 'Annotation ' + shape, payload.visibility, 'Detail', { De: p1.x + ',' + p1.y, A: p2.x + ',' + p2.y });
+      })
+      .withFailureHandler(function (err) {
+        appErrorLog(err, 'gsCreateReservesAnnotation', payload);
+        showModal({ icon: 'error', title: 'Erreur', text: "Impossible d'enregistrer l'annotation." });
+      })
+      .gsCreateReservesAnnotation(APP_DATA.token, APP_DATA.projectId, payload);
+  }
+
+  function renderReservesAnnotations(ctx) {
+    const overlay = document.getElementById('plan-markers-overlay');
+    if (!overlay) return;
+    let svg = document.getElementById('reserves-annotations-svg');
+    if (!svg) {
+      svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.id = 'reserves-annotations-svg';
+      svg.setAttribute('viewBox', '0 0 100 100');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.setAttribute('class', 'absolute inset-0 w-full h-full pointer-events-none');
+      overlay.appendChild(svg);
+    }
+    svg.innerHTML = '';
+    const visible = reservesAnnotations.filter(function (a) {
+      return String(a.idLot) === String(ctx.activeId) && (a.visibility !== 'Private' || (!ctx.isClient && !ctx.isClientViewActive));
+    });
+    visible.forEach(function (a) {
+      let el;
+      if (a.shape === 'rect') {
+        el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        el.setAttribute('x', Math.min(a.x1, a.x2));
+        el.setAttribute('y', Math.min(a.y1, a.y2));
+        el.setAttribute('width', Math.abs(a.x2 - a.x1));
+        el.setAttribute('height', Math.abs(a.y2 - a.y1));
+        el.setAttribute('fill', 'none');
+      } else {
+        el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        el.setAttribute('x1', a.x1); el.setAttribute('y1', a.y1);
+        el.setAttribute('x2', a.x2); el.setAttribute('y2', a.y2);
+      }
+      el.setAttribute('stroke', a.color || '#dc2626');
+      el.setAttribute('stroke-width', '0.6');
+      el.setAttribute('vector-effect', 'non-scaling-stroke');
+      svg.appendChild(el);
+    });
   }
 
   WorkspaceCore.registerLayer('reserves', {
     label: 'Réserves',
     layoutMode: 'data-entry',
-    
+
     mount: function(container, ctx) {
       const roomDropdown = document.getElementById('room-select');
       if (roomDropdown) {
         roomDropdown.disabled = true;
         roomDropdown.classList.add('opacity-50', 'cursor-not-allowed');
       }
-      
+
       const resFilters = document.getElementById('reservesFiltersContainer');
       if (resFilters) resFilters.classList.remove('hidden');
 
       initCalendarBackground();
+      bindReservesPlanClickHandlers();
+
+      google.script.run
+        .withSuccessHandler(function (rows) { reservesAnnotations = rows || []; renderReservesAnnotations(ctx); })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetReservesAnnotations', {}); })
+        .gsGetReservesAnnotations(APP_DATA.token, ctx.currentView);
 
       mount(container, ctx);
     },
-    
+
     render: render,
     getEditToolsHtml: getEditToolsHtml,
     bindEditTools: bindEditTools,
-    
+
     onAssetLoaded: function (ctx) {
       drawTagsFromCache(ctx);
+      renderReservesAnnotations(ctx);
+    },
+
+    onBaseDataLoaded: function () {
+      google.script.run
+        .withSuccessHandler(function (rows) { reservesPhotosCache = rows || []; })
+        .withFailureHandler(function (err) { appErrorLog(err, 'gsGetReservesPhotosData', {}); })
+        .gsGetReservesPhotosData(APP_DATA.token);
     },
     
     onExitEditMode: function(ctx) {
       if (window.unlockRoomDropdown) window.unlockRoomDropdown();
+      disarmReservesTool(); // leaving edit mode mid-tool (staff) shouldn't leave a stale armed state behind
     }
   });
 })();

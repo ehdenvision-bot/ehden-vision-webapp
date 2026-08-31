@@ -35,6 +35,30 @@ below; this file is the *what*, concretely.
   5. Verify against the real page through the proxy in a real browser, not just `curl` — the
      proxy-prefix bug class from earlier today is invisible to `curl`-against-localhost.
 
+## 🔵 ACTIVE (2026-08-31) — Locataires bridge trial + repo hygiene
+
+User decided the **Apps Script-hosted + `/bridge/rpc` model** and to trial it on **Locataires
+only**, then reassess. Server side (`app/src/rpc/locataires.js`, `...003_create-locataires.js`)
+is already done (Phase 2). Remaining:
+
+- [x] Apps Script side (local, not pushed): `Webapp Files/ApiClient.js` (`callApi_`),
+  `Locataires_Code.js` split into `USE_API_LOCATAIRES`-gated dispatchers + `*_sheets_`
+  fallbacks, `backups/Locataires_Code.pre-api.js`.
+- [ ] **`clasp login`** (never done in either env) then **`clasp pull`** and diff — establish
+  whether `Webapp Files/` matches the live Apps Script project. The 6 EDL/Logs files were
+  taken from a separate Windows `clasp` clone believed newer; **must confirm before any
+  `clasp push`.**
+- [ ] Host `app/` on a public HTTPS URL (the friend's server, `api.ehden-vision.<domain>`) +
+  a Postgres the user owns (`DATABASE_URL`). `npm run migrate:up`.
+- [ ] Generate a real `APPSCRIPT_SHARED_SECRET` (`openssl rand -hex 32`); set it in `app/.env`
+  and as Script Property `API_SHARED_SECRET`; set `API_BASE_URL`, `USE_API_LOCATAIRES=false`.
+- [ ] One-time Locataires data load (sheets → Postgres). Needs a guarded bulk-import path in
+  `app/src/rpc/locataires.js` (none yet) or a direct CSV load.
+- [ ] Verify field-for-field via the real web-app URL (desktop + mobile), rehearse rollback,
+  then flip `USE_API_LOCATAIRES=true`. Record in `agents/current-state.md`.
+- [ ] `DEV_MODE=true` in `Webapp Files/Pages.js:17` must go `false` (login re-verified) before
+  the trial URL is shared / used for real.
+
 ## ✅ Phase 0 — Foundation — done 2026-08-25
 
 - [x] `app/src/render.js`: `resolveIncludes()` ported, pointed at `Webapp Files/` directly.

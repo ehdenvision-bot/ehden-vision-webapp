@@ -30,6 +30,23 @@
   const isAuthorized = APP_DATA.isAuthorized || false;
   const isClient     = APP_DATA.isClient;
 
+  // Whether the project/chantier is still open — the third shared
+  // permission primitive alongside isClient/isAuthorized above (see
+  // agents/edl-page-spec.md section 1.4). BUG FIX 2026-08-26: this used to
+  // not exist at all on the EDL page — Réserves' drawInterventionUI()
+  // (EDL_Scripts_3.html) guarded on `typeof projectStatus !== 'undefined'`,
+  // but projectStatus was never declared anywhere in EDL's script files
+  // (ClientLib.html explicitly documents leaving it unset for the generic
+  // nav helper; only Planning_Scripts_1.html declared its own copy). That
+  // made the typeof check always false, so isProjectActive was always
+  // false, so Réserves' discipline/équipe/date/heure/notes fields were
+  // unconditionally disabled for every user, always. Declared here now so
+  // every layer gets it for free via buildContext(), same as isClient/
+  // isAuthorized — computed once at the core level, not re-derived per
+  // layer (spec section 1.3/1.4).
+  const projectStatus  = APP_DATA.projectStatus;
+  const isProjectActive = (String(projectStatus || '').toLowerCase() === 'active');
+
   // Strictly role === 'admin' (not 'directeur') — gates the "Config Travaux"
   // button only, independent of isAuthorized above. NOTE: navSettings/
   // navUsers further below use a broader 'admin' || 'directeur' check for
@@ -147,6 +164,7 @@
         roomName: roomSelect ? roomSelect.value : null,
         isClient: isClient,
         isAuthorized: isAuthorized,
+        isProjectActive: isProjectActive,
         isClientViewActive: !!window.isClientViewActive
       }, extra || {});
     }
@@ -183,6 +201,7 @@
       activeLayerId = id;
       workspace.setAttribute('data-mode', layer.layoutMode || 'data-entry');
       if (layer.label) safeSetText('pageMainTitle', layer.label);
+      updateTravauxAdminButtonsVisibility();
 
       // Clean slate, then let the new layer build its own markup.
       if (panelRoot) {
@@ -243,6 +262,25 @@
       return generatePlanFilename(val);
     }
 
+    // Shared "client action independent of Mode Édition" pattern (spec
+    // sections 1.4 and 8 — the single most-reused rule across Travaux/
+    // Réserves/Élec/Sanit). Because isAuthorized is always false for a
+    // client session, clients never see the Mode Édition toggle and can
+    // never enter it — so any action a client IS allowed to perform must be
+    // gated on its own condition and rendered live regardless of the
+    // shell's edit-mode state, never behind the same check staff's
+    // equivalent action uses. Usage, per action:
+    //   staffVisible  = isAuthorized && editModeOn && extraStaffCondition
+    //   clientVisible = WorkspaceCore.isClientActionEnabled(extraClientCondition)
+    // `extra` defaults to true — pass false to force it off (e.g. an action
+    // a client should never get regardless of project state), or a
+    // finer-grained boolean for anything beyond the base isClient +
+    // isProjectActive gate. Does not decide staff visibility — that stays
+    // whatever each action's own Mode-Édition-gated condition already is.
+    function isClientActionEnabled(extraCondition) {
+      return isClient && isProjectActive && (extraCondition !== false);
+    }
+
     return {
       registerLayer: registerLayer,
       getLayer: getLayer,
@@ -253,7 +291,10 @@
       refreshActiveLayer: refreshActiveLayer,
       notifyBaseDataLoaded: notifyBaseDataLoaded,
       notifyAssetLoaded: notifyAssetLoaded,
-      resolveAssetFilename: resolveAssetFilename
+      resolveAssetFilename: resolveAssetFilename,
+      isClientActionEnabled: isClientActionEnabled,
+      showImageInPlanViewer: showImageInPlanViewer,
+      restorePlanViewer: restorePlanViewer
     };
   })();
 
@@ -660,22 +701,31 @@
     });
   }
 
-  // "Config Travaux" admin button, sitting right beside Mode Édition (see
-  // Workspace.html). Gated purely on isAdmin (role === 'admin', see the
-  // global above) — completely separate gate from isAuthorized, which only
-  // governs #mode-toggle-btn. The actual popup (list/add/edit/delete
-  // against the "Config Travaux" sheet) is owned by the Travaux layer —
-  // see openTravauxConfigManager() in Travaux_Scripts.html — this function
-  // only shows/hides the button and forwards the click.
+  // "Config Travaux" / "Sous-catégories" admin buttons, sitting right
+  // beside Mode Édition (see Workspace.html). Gated on isAdmin (role ===
+  // 'admin', see the global above — permanent for the session, so wiring
+  // is skipped entirely for non-admins) AND, as of 2026-08-26
+  // (agents/edl-page-spec.md section 3, "New: admin buttons scoped to the
+  // layer"), on the Travaux layer actually being active — re-evaluated on
+  // every layer switch via updateTravauxAdminButtonsVisibility(), called
+  // from WorkspaceCore.activateLayer() below, not just once at page init.
+  // The actual popups (list/add/edit/delete against "Config Travaux" /
+  // "Sous Categories Travaux") are owned by the Travaux layer — see
+  // openTravauxConfigManager()/openSousCategoriesManager() in
+  // Travaux_Scripts.html — these functions only show/hide the buttons and
+  // forward the click.
+  function updateTravauxAdminButtonsVisibility() {
+    if (!isAdmin) return; // stays hidden forever for non-admins, nothing to re-evaluate
+    const isTravauxActive = WorkspaceCore.getActiveLayerId() === 'travaux';
+    const configBtn = document.getElementById('admin-config-travaux-btn');
+    const scBtn = document.getElementById('admin-souscategories-travaux-btn');
+    if (configBtn) configBtn.classList.toggle('hidden', !isTravauxActive);
+    if (scBtn) scBtn.classList.toggle('hidden', !isTravauxActive);
+  }
+
   function setupAdminConfigTravauxButton() {
     const btn = document.getElementById('admin-config-travaux-btn');
-    if (!btn) return;
-
-    if (!isAdmin) {
-      btn.classList.add('hidden');
-      return;
-    }
-    btn.classList.remove('hidden');
+    if (!btn || !isAdmin) return;
 
     btn.addEventListener('click', () => {
       if (typeof window.openTravauxConfigManager === 'function') {
@@ -686,21 +736,9 @@
     });
   }
 
-  // "Sous-catégories" admin button, same gate/shape as
-  // setupAdminConfigTravauxButton() just above — the popup itself (the
-  // 3-column drag-and-drop grid against the new "Sous Categories Travaux"
-  // sheet) is owned by the Travaux layer — see openSousCategoriesManager()
-  // in Travaux_Scripts.html — this function only shows/hides the button and
-  // forwards the click.
   function setupAdminSousCategoriesButton() {
     const btn = document.getElementById('admin-souscategories-travaux-btn');
-    if (!btn) return;
-
-    if (!isAdmin) {
-      btn.classList.add('hidden');
-      return;
-    }
-    btn.classList.remove('hidden');
+    if (!btn || !isAdmin) return;
 
     btn.addEventListener('click', () => {
       if (typeof window.openSousCategoriesManager === 'function') {
@@ -1381,6 +1419,39 @@ function loadPlanGraphicAsset(filename, token) {
             <p class="text-[11px] text-slate-400 mt-2 font-mono break-words max-w-[400px]">${error.message}</p>
           </div>`;
       }).fetchPlanAssetAsBase64(filename);
+  }
+
+  /**
+   * NEW 2026-08-26 (agents/edl-page-spec.md section 2 — EDL's photo
+   * viewer): shows an arbitrary image URL in the plan-container, reusing
+   * its existing zoom/pan and #plan-markers-overlay DOM shape instead of a
+   * second image-viewing system, per the spec's explicit instruction. Not
+   * routed through loadAssetForSelection()/fetchPlanAssetAsBase64() — the
+   * photo URL is already a direct https://lh3.googleusercontent.com/d/...
+   * link (same convention EDL's gallery already uses), no server round
+   * trip needed to display it. Bumps planContainerToken so any in-flight
+   * plan-photo fetch is dropped as stale, and sets planContainerSource to
+   * a value refreshPlanPanelForActiveLayer()'s comparisons will never
+   * match, so switching layers away and back still reloads the real plan
+   * correctly afterward. Call restorePlanViewer() to go back to the plan.
+   */
+  function showImageInPlanViewer(imgUrl) {
+    planContainerToken++;
+    const wrapper = document.getElementById('plan-wrapper');
+    if (!wrapper) return;
+    wrapper.innerHTML = `
+      <div class="relative inline-block max-w-full max-h-full">
+        <img src="${imgUrl}" id="interactive-plan-img" class="max-w-full max-h-full object-contain drop-shadow-md"/>
+        <div id="plan-markers-overlay" class="absolute inset-0 z-10 pointer-events-none"></div>
+      </div>`;
+    resetZoomPanState();
+    planContainerSource = 'viewer:override';
+  }
+
+  /** Restores the normal plan/photo for whatever's currently selected — the
+   *  "back to plan" half of showImageInPlanViewer() above. */
+  function restorePlanViewer() {
+    loadAssetForSelection(lastAssetSelectionVal);
   }
 
   /** Clears the interactive plan zone and restores its placeholder */

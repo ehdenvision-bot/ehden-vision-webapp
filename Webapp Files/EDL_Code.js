@@ -491,6 +491,65 @@ function getEDLNotesData() {
 }
 
 /**
+ * Writes one {pub, priv} JSON cell into 'EDL Notes' for a given ID, at
+ * either the fixed "Général" column (colTarget === 2) or a room name
+ * (colTarget is a string — looked up in the header row, or appended as a
+ * new column if it doesn't exist yet). Extracted out of saveEDLNotesData()
+ * 2026-08-26 so the new "Toutes les pièces" general-note case (below) can
+ * reuse the exact same column-resolution/row-upsert logic that whole-level
+ * and specific-room saves already used, instead of a third copy of it.
+ */
+function _saveEDLNoteToColumn_(id, colTarget, jsonString) {
+  const ss = SpreadsheetApp.openById(EDL_SS_ID);
+  let sheet = ss.getSheetByName('EDL Notes');
+  if (!sheet) sheet = ss.insertSheet('EDL Notes');
+
+  const data = sheet.getDataRange().getValues();
+
+  // Ensure we have headers on Row 6 if the sheet was just created
+  if (data.length < 6 || !data[5] || !data[5][1]) {
+    sheet.getRange(6, 2).setValue("ID");
+    sheet.getRange(6, 3).setValue("Général");
+  }
+
+  const currentData = sheet.getDataRange().getValues();
+  const headers = currentData[5]; // Row 6
+
+  let colIndex = -1;
+  if (colTarget === 2) {
+    colIndex = 2; // Column C exactly — "Général"
+  } else {
+    // Search for the room name starting from Column D (index 3)
+    colIndex = headers.indexOf(colTarget);
+    if (colIndex === -1) {
+      // Room header doesn't exist, append it at the end
+      colIndex = Math.max(headers.length, 3);
+      sheet.getRange(6, colIndex + 1).setValue(colTarget);
+    }
+  }
+
+  // Find the row for this ID in Column B (Index 1)
+  let rowIndex = -1;
+  for (let i = 6; i < currentData.length; i++) {
+    if (String(currentData[i][1]).trim() === String(id).trim()) {
+      rowIndex = i;
+      break;
+    }
+  }
+
+  if (rowIndex === -1) {
+    // ID doesn't exist, append new row
+    const newRow = new Array(colIndex + 1).fill("");
+    newRow[1] = id; // Col B
+    newRow[colIndex] = jsonString; // Target Column
+    sheet.appendRow(newRow);
+  } else {
+    // ID exists, update specific cell
+    sheet.getRange(rowIndex + 1, colIndex + 1).setValue(jsonString);
+  }
+}
+
+/**
  * Saves EDL notes and status. Routes to either Planning or specific columns in EDL Notes.
  * Called by EDL_Scripts.html's saveCurrentNotesInBackground() (autosave on
  * blur, and on exiting Mode Édition).
@@ -508,64 +567,79 @@ function saveEDLNotesData(token, projectId, payload) {
       planPrivateNote: payload.privNote
     };
     updatePlanningData(planningPayload);
+
+    // ROUTE 1.5 (NEW 2026-08-26, agents/edl-page-spec.md section 2): a
+    // second, EDL-specific general note pair — distinct from the Planning
+    // note above (cross-page occupant/work-progress status) — for "Toutes
+    // les pièces" on a NORMAL APARTMENT only (payload.currentView ===
+    // 'locataires'; Communs/Façades general saves also take ROUTE 1 but
+    // don't get this second note). Reuses the same 'Général' column
+    // whole-building entries already write, via the extracted helper above.
+    if (payload.currentView === 'locataires') {
+      const edlGeneralJson = JSON.stringify({
+        pub: payload.edlGeneralPub || '',
+        priv: payload.edlGeneralPriv || ''
+      });
+      _saveEDLNoteToColumn_(payload.id, 2, edlGeneralJson);
+    }
+
     return true;
   }
 
   // ROUTE 2: 'EDL Notes' (Whole Level General Notes & Specific Rooms)
-  const ss = SpreadsheetApp.openById(EDL_SS_ID);
-  let sheet = ss.getSheetByName('EDL Notes');
-  if (!sheet) sheet = ss.insertSheet('EDL Notes');
-
-  const data = sheet.getDataRange().getValues();
-
-  // Ensure we have headers on Row 6 if the sheet was just created
-  if (data.length < 6 || !data[5] || !data[5][1]) {
-    sheet.getRange(6, 2).setValue("ID");
-    sheet.getRange(6, 3).setValue("Général");
-  }
-
-  const currentData = sheet.getDataRange().getValues();
-  const headers = currentData[5]; // Row 6
-
-  let colIndex = -1;
-  if (payload.isWholeLevel) {
-    colIndex = 2; // Target Column C exactly for whole floors/facades
-  } else {
-    // Search for the room name starting from Column D (index 3)
-    colIndex = headers.indexOf(payload.room);
-    if (colIndex === -1) {
-      // Room header doesn't exist, append it at the end
-      colIndex = Math.max(headers.length, 3);
-      sheet.getRange(6, colIndex + 1).setValue(payload.room);
-    }
-  }
-
-  // Find the row for this ID in Column B (Index 1)
-  let rowIndex = -1;
-  for (let i = 6; i < currentData.length; i++) {
-    if (String(currentData[i][1]).trim() === String(payload.id).trim()) {
-      rowIndex = i;
-      break;
-    }
-  }
-
-  if (rowIndex === -1) {
-    // ID doesn't exist, append new row
-    const newRow = new Array(colIndex + 1).fill("");
-    newRow[1] = payload.id; // Col B
-    newRow[colIndex] = jsonString; // Target Column
-    sheet.appendRow(newRow);
-  } else {
-    // ID exists, update specific cell
-    sheet.getRange(rowIndex + 1, colIndex + 1).setValue(jsonString);
-  }
+  const colTarget = payload.isWholeLevel ? 2 : payload.room;
+  _saveEDLNoteToColumn_(payload.id, colTarget, jsonString);
 
   return true;
+}
+
+// Canonical header set for 'EDL Photos' — row 1, matching the sheet's
+// original layout (NOT the row-6/row-7 convention most other sheets in
+// this app use; kept as-is rather than migrated, since that would mean
+// moving every existing photo row). Caption/Uploader/Unused/UnusedReason
+// added 2026-08-26 (agents/edl-page-spec.md section 2). Both read and
+// write below look these up by name via _findLogCol() (defined in
+// Logs.js, globally callable — same generic column-name resolver, no
+// point duplicating it) rather than fixed positions, exactly like Logs.js
+// itself, so a sheet that predates these columns gets migrated forward
+// automatically instead of silently misaligning.
+const EDL_PHOTO_HEADERS = ["ID_Photo", "ID_Lot", "Room", "Drive_ID", "Timestamp", "Caption", "Uploader", "Unused", "UnusedReason"];
+
+function _ensureEDLPhotoSheetHeaders_(sheet) {
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const existing = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const missing = EDL_PHOTO_HEADERS.filter(h => _findLogCol(existing, [h]) === -1);
+  if (missing.length) {
+    const range = sheet.getRange(1, lastCol + 1, 1, missing.length);
+    range.setValues([missing]);
+    range.setFontWeight("bold").setBackground("#e2e8f0");
+  }
+}
+
+function _edlPhotoCols_(headers) {
+  return {
+    photoId:  _findLogCol(headers, ['id_photo', 'idphoto']),
+    idLot:    _findLogCol(headers, ['id_lot', 'idlot']),
+    room:     _findLogCol(headers, ['room', 'piece', 'pièce']),
+    driveId:  _findLogCol(headers, ['drive_id', 'driveid']),
+    timestamp:_findLogCol(headers, ['timestamp', 'date']),
+    caption:  _findLogCol(headers, ['caption', 'legende', 'légende']),
+    uploader: _findLogCol(headers, ['uploader', 'ajoutepar', 'ajoutépar']),
+    unused:   _findLogCol(headers, ['unused', 'inutilisee', 'inutilisée']),
+    reason:   _findLogCol(headers, ['unusedreason', 'raison'])
+  };
 }
 
 /**
  * Saves a photo: 1. Uploads to Drive, 2. Logs to "EDL Photos" sheet
  * Called by EDL_Scripts.html's bindPhotoUpload().
+ *
+ * BUG FIXED 2026-08-26: this used to take no token at all and perform no
+ * server-side auth check whatsoever — unlike every other write endpoint in
+ * this file (found during EDL exploration 2026-08-25, deferred at the
+ * user's request until this exact function was touched again for the
+ * caption/uploader work below; see agents/todo.md's now-closed item).
+ * Now gated the same way every other EDL write is: assertCanEdit_.
  *
  * The mechanics here (compress on the client, upload blob to the project's
  * Drive folder, log a row) aren't inherently EDL-only — if Travaux or another
@@ -573,7 +647,9 @@ function saveEDLNotesData(token, projectId, payload) {
  * copy into that layer's own _Server.gs (pointing at its own log sheet)
  * rather than trying to generalize this one across layers prematurely.
  */
-function uploadEDLPhoto(idLot, room, fileName, base64Data, mimeType) {
+function uploadEDLPhoto(token, projectId, idLot, room, fileName, base64Data, mimeType, caption) {
+  const user = assertCanEdit_(token, projectId);
+
   const folderId = PropertiesService.getScriptProperties().getProperty('PROJECT_PHOTOS_FILE');
   const folder = DriveApp.getFolderById(folderId);
 
@@ -583,33 +659,285 @@ function uploadEDLPhoto(idLot, room, fileName, base64Data, mimeType) {
 
   // 2. Append to "EDL Photos" Sheet
   const ss = SpreadsheetApp.openById(EDL_SS_ID);
-  const sheet = ss.getSheetByName('EDL Photos');
+  let sheet = ss.getSheetByName('EDL Photos');
+  if (!sheet) {
+    sheet = ss.insertSheet('EDL Photos');
+    sheet.appendRow(EDL_PHOTO_HEADERS);
+    sheet.getRange(1, 1, 1, EDL_PHOTO_HEADERS.length).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.setFrozenRows(1);
+  } else {
+    _ensureEDLPhotoSheetHeaders_(sheet);
+  }
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const col = _edlPhotoCols_(headers);
 
   const photoId = 'PHO-' + new Date().getTime(); // Unique ID
   const timestamp = new Date().toISOString();
+  const uploader = user.email || 'Inconnu';
 
-  // Columns: ID_Photo, ID_Lot, Room, Drive_ID, Timestamp
-  sheet.appendRow([photoId, idLot, room, file.getId(), timestamp]);
+  const row = new Array(headers.length).fill("");
+  const set = (idx, val) => { if (idx !== -1) row[idx] = val; };
+  set(col.photoId, photoId);
+  set(col.idLot, idLot);
+  set(col.room, room);
+  set(col.driveId, file.getId());
+  set(col.timestamp, timestamp);
+  set(col.caption, caption || '');
+  set(col.uploader, uploader);
+  set(col.unused, '');
+  set(col.reason, '');
 
-  return { photoId, driveId: file.getId(), timestamp };
+  sheet.appendRow(row);
+
+  return { photoId, driveId: file.getId(), timestamp, caption: caption || '', uploader, unused: false, unusedReason: '' };
 }
 
 /**
  * Returns all photos as an array for the frontend to cache
  * Called from EDL_Scripts.html's onBaseDataLoaded() hook.
+ *
+ * Takes a token now (2026-08-26) — a valid session is required, matching
+ * every other page-load read; still just getSession_, not assertCanEdit_,
+ * since this is a read available to any signed-in role (clients included).
  */
-function getEDLPhotosData() {
+function getEDLPhotosData(token) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+
   const ss = SpreadsheetApp.openById(EDL_SS_ID);
   const sheet = ss.getSheetByName('EDL Photos');
+  if (!sheet) return [];
+
   const data = sheet.getDataRange().getValues();
-  // Skip header, return objects
+  if (data.length < 2) return [];
+  const headers = data[0];
+  const col = _edlPhotoCols_(headers);
+
   return data.slice(1).map(row => ({
-    photoId: row[0],
-    idLot: row[1],
-    room: row[2],
-    driveId: row[3],
-    timestamp: row[4]
-  }));
+    photoId:      col.photoId  !== -1 ? row[col.photoId]  : '',
+    idLot:        col.idLot    !== -1 ? row[col.idLot]    : '',
+    room:         col.room     !== -1 ? row[col.room]     : '',
+    driveId:      col.driveId  !== -1 ? row[col.driveId]  : '',
+    timestamp:    col.timestamp!== -1 ? row[col.timestamp]: '',
+    caption:      col.caption  !== -1 ? String(row[col.caption]  || '') : '',
+    uploader:     col.uploader !== -1 ? String(row[col.uploader] || '') : '',
+    unused:       col.unused   !== -1 ? (String(row[col.unused]  || '').toLowerCase() === 'true') : false,
+    unusedReason: col.reason   !== -1 ? String(row[col.reason]   || '') : ''
+  })).filter(p => p.photoId); // skip fully-blank trailing rows
+}
+
+/**
+ * Marks (or unmarks) one photo as unused — NEVER a true delete, per
+ * agents/edl-page-spec.md section 2: preserves the audit trail and removes
+ * any way to use deletion to hide a problem. Reversible, staff-only
+ * (assertCanEdit_ — no isClient exclusion needed since clients never pass
+ * that gate), optional reason. Client-side logs this to the Journal via
+ * appLog() after a successful call, matching this file's existing
+ * convention of never calling gsWriteUniversalLog directly (see the note
+ * atop the EDL LAYER — SERVER FUNCTIONS section above).
+ */
+function gsSetEDLPhotoUnused(token, projectId, photoId, unused, reason) {
+  assertCanEdit_(token, projectId);
+
+  const ss = SpreadsheetApp.openById(EDL_SS_ID);
+  const sheet = ss.getSheetByName('EDL Photos');
+  if (!sheet) throw new Error("Feuille 'EDL Photos' introuvable.");
+
+  _ensureEDLPhotoSheetHeaders_(sheet);
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const col = _edlPhotoCols_(headers);
+  if (col.photoId === -1) throw new Error("Colonne ID_Photo introuvable.");
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][col.photoId]).trim() === String(photoId).trim()) {
+      if (col.unused !== -1) sheet.getRange(i + 1, col.unused + 1).setValue(unused ? 'TRUE' : '');
+      if (col.reason !== -1) sheet.getRange(i + 1, col.reason + 1).setValue(unused ? (reason || '') : '');
+      return true;
+    }
+  }
+  throw new Error("Photo introuvable : " + photoId);
+}
+
+/**
+ * Reassigns one photo to a different room, apartment, or both — same
+ * underlying mechanism as gsMigrateEDLData's bulk photo move, scoped to a
+ * single row. No conflict handling needed (photos never conflict, per
+ * spec — they just add another row under the new ID/room). Staff-only.
+ */
+function gsMigrateEDLPhoto(token, projectId, photoId, targetIdLot, targetRoom) {
+  assertCanEdit_(token, projectId);
+
+  const ss = SpreadsheetApp.openById(EDL_SS_ID);
+  const sheet = ss.getSheetByName('EDL Photos');
+  if (!sheet) throw new Error("Feuille 'EDL Photos' introuvable.");
+
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const col = _edlPhotoCols_(headers);
+  if (col.photoId === -1) throw new Error("Colonne ID_Photo introuvable.");
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][col.photoId]).trim() === String(photoId).trim()) {
+      if (targetIdLot && col.idLot !== -1) sheet.getRange(i + 1, col.idLot + 1).setValue(targetIdLot);
+      if (targetRoom && col.room !== -1) sheet.getRange(i + 1, col.room + 1).setValue(targetRoom);
+      return true;
+    }
+  }
+  throw new Error("Photo introuvable : " + photoId);
+}
+
+/**
+ * Bulk-migrates every EDL photo/note/status from sourceId to targetId in
+ * one action (agents/edl-page-spec.md section 2). EDL-only — Réserves gets
+ * its own, selective version later (see agents/edl-todo.md). Blocks on
+ * conflict (target already has its own Planning status/note, or its own
+ * EDL Notes value for any column the source also has data in) rather than
+ * silently overwriting; photos never conflict, they just get bulk-
+ * reassigned. "Moves" literally: target gets the values, source's moved
+ * fields are cleared afterward (not deleted rows — an EDL Notes row with
+ * every note column blank is already treated as "no data" by
+ * getEDLNotesData()'s hasData check, so this is equivalent to not
+ * existing without any row-shifting risk).
+ */
+function gsMigrateEDLData(token, projectId, sourceId, targetId) {
+  assertCanEdit_(token, projectId);
+
+  sourceId = String(sourceId || '').trim();
+  targetId = String(targetId || '').trim();
+  if (!sourceId || !targetId) throw new Error("ID source et ID cible requis.");
+  if (sourceId === targetId) throw new Error("La source et la cible doivent être différentes.");
+
+  const planningSheetName = sourceId.startsWith('COM-') ? 'Planning Communs'
+    : sourceId.startsWith('FAC-') ? 'Planning Facades' : 'Planning';
+
+  const planningSs = SpreadsheetApp.openById(PLANNING_SS_ID);
+  const planningSheet = planningSs.getSheetByName(planningSheetName);
+
+  let planningData = [];
+  let sourcePlanRow = -1, targetPlanRow = -1;
+  if (planningSheet && planningSheet.getLastRow() >= 7) {
+    planningData = planningSheet.getRange(7, 1, planningSheet.getLastRow() - 6, 3).getValues();
+    planningData.forEach((row, i) => {
+      const id = String(row[0] || '').trim();
+      if (id === sourceId) sourcePlanRow = i;
+      if (id === targetId) targetPlanRow = i;
+    });
+  }
+
+  // Conflict check 1: Planning (whole-apartment status/note)
+  if (targetPlanRow !== -1) {
+    const targetStatus = String(planningData[targetPlanRow][1] || '').trim();
+    const targetNotes = String(planningData[targetPlanRow][2] || '').trim();
+    if (targetStatus || targetNotes) {
+      throw new Error("Migration bloquée : « " + targetId + " » a déjà un statut/note global. Aucune donnée n'a été déplacée.");
+    }
+  }
+
+  // Conflict check 2: EDL Notes (per-column — 'Général' + each room)
+  const edlSs = SpreadsheetApp.openById(EDL_SS_ID);
+  const notesSheet = edlSs.getSheetByName('EDL Notes');
+  let notesData = [], notesHeaders = [];
+  let sourceNotesRow = -1, targetNotesRow = -1;
+  if (notesSheet) {
+    const all = notesSheet.getDataRange().getValues();
+    if (all.length >= 6) {
+      notesHeaders = all[5];
+      notesData = all;
+      for (let i = 6; i < all.length; i++) {
+        const id = String(all[i][1] || '').trim();
+        if (id === sourceId) sourceNotesRow = i;
+        if (id === targetId) targetNotesRow = i;
+      }
+    }
+  }
+
+  if (sourceNotesRow !== -1 && targetNotesRow !== -1) {
+    for (let j = 2; j < notesHeaders.length; j++) {
+      const srcVal = notesData[sourceNotesRow][j];
+      const tgtVal = notesData[targetNotesRow][j];
+      if (srcVal !== '' && srcVal !== null && tgtVal !== '' && tgtVal !== null) {
+        const colLabel = j === 2 ? 'Général' : String(notesHeaders[j] || ('colonne ' + j));
+        throw new Error("Migration bloquée : « " + targetId + " » a déjà une note EDL pour « " + colLabel + " ». Aucune donnée n'a été déplacée.");
+      }
+    }
+  }
+
+  // No conflicts — perform the move.
+
+  // 1. Photos: bulk-reassign ID_Lot, never conflicts.
+  let movedPhotoCount = 0;
+  const photosSheet = edlSs.getSheetByName('EDL Photos');
+  if (photosSheet) {
+    const pData = photosSheet.getDataRange().getValues();
+    if (pData.length > 1) {
+      const pCol = _edlPhotoCols_(pData[0]);
+      if (pCol.idLot !== -1) {
+        for (let i = 1; i < pData.length; i++) {
+          if (String(pData[i][pCol.idLot]).trim() === sourceId) {
+            photosSheet.getRange(i + 1, pCol.idLot + 1).setValue(targetId);
+            movedPhotoCount++;
+          }
+        }
+      }
+    }
+  }
+
+  // 2. EDL Notes: merge source's non-blank cells into target row, then
+  //    blank the source (conflict check above already guaranteed no
+  //    column is non-blank on both sides).
+  let movedNoteCount = 0;
+  if (sourceNotesRow !== -1) {
+    const sourceRowArr = notesData[sourceNotesRow];
+    if (targetNotesRow === -1) {
+      const newRow = sourceRowArr.slice();
+      newRow[1] = targetId;
+      notesSheet.appendRow(newRow);
+      for (let j = 2; j < newRow.length; j++) {
+        if (newRow[j] !== '' && newRow[j] !== null) movedNoteCount++;
+      }
+    } else {
+      // targetNotesRow is a 0-indexed row index into the same
+      // getDataRange().getValues() array sourceNotesRow uses — the actual
+      // (1-indexed) sheet row is simply targetNotesRow + 1, exactly like
+      // sheetRowNum below for the source row.
+      const targetSheetRowNum = targetNotesRow + 1;
+      for (let j = 2; j < sourceRowArr.length; j++) {
+        const v = sourceRowArr[j];
+        if (v !== '' && v !== null) {
+          notesSheet.getRange(targetSheetRowNum, j + 1).setValue(v);
+          movedNoteCount++;
+        }
+      }
+    }
+    // Clear source row's note columns (whole-building col C onward).
+    const sheetRowNum = sourceNotesRow + 1; // notesData is 0-indexed from getDataRange(); row number = index+1
+    const blankRow = new Array(sourceRowArr.length - 2).fill('');
+    notesSheet.getRange(sheetRowNum, 3, 1, blankRow.length).setValues([blankRow]);
+  }
+
+  // 3. Planning: move status/note the same way (updatePlanningData upserts).
+  let movedPlanning = false;
+  if (sourcePlanRow !== -1) {
+    const srcStatus = String(planningData[sourcePlanRow][1] || '').trim();
+    const srcNotesRaw = String(planningData[sourcePlanRow][2] || '').trim();
+    let srcPub = '', srcPriv = '';
+    if (srcNotesRaw) {
+      try {
+        const parsed = JSON.parse(srcNotesRaw);
+        srcPub = parsed.pub || '';
+        srcPriv = parsed.priv || '';
+      } catch (e) { srcPub = srcNotesRaw; }
+    }
+    if (srcStatus || srcPub || srcPriv) {
+      updatePlanningData({ id: targetId, planStatus: srcStatus, planNote: srcPub, planPrivateNote: srcPriv }, planningSheetName);
+      updatePlanningData({ id: sourceId, planStatus: '', planNote: '', planPrivateNote: '' }, planningSheetName);
+      movedPlanning = true;
+    }
+  }
+
+  return { movedPhotoCount, movedNoteCount, movedPlanning, sourceId, targetId };
 }
 
 /**
@@ -636,23 +964,32 @@ function getReservesInterventionsByLot(token, idLot, viewMode) {
       const lastRow = sh.getLastRow();
       if (lastRow < 7) return;
 
-      const data = sh.getRange(7, 1, lastRow - 6, 12).getValues();
+      // Widened from 12 to 16 columns 2026-08-26 (agents/edl-page-spec.md
+      // section 4) — O/P (unused/unusedReason, indices 14/15) are the new
+      // Supprimer mark-in-place flags, additive columns appended after the
+      // pre-existing M/N (need-validation/secondary-status, indices 12/13,
+      // already used elsewhere via gsGetInterventionDetails but not
+      // previously read here). A row from before this column existed reads
+      // '' for both — .getValues() pads short rows automatically.
+      const data = sh.getRange(7, 1, lastRow - 6, 16).getValues();
       for (let i = 0; i < data.length; i++) {
         const row = data[i];
         const rowLogement = String(row[2]).trim();
 
         if (rowLogement === String(idLot).trim()) {
           results.push({
-            id: String(row[1]).trim(),                            
-            discipline: String(row[3]).trim(),           
-            description: String(row[4]).trim(),                   
-            coordonnees: String(row[5] || '').trim(),             
-            status: String(row[6]).trim(),         
-            equipe: String(row[7] || '').trim(),                  
-            dateIntervention: formatDateFr(row[8]),              
-            heure: formatHeure(row[9]),                           
-            dueDate: formatDateFr(row[10]),                       
-            historique: String(row[11] || '').trim()              
+            id: String(row[1]).trim(),
+            discipline: String(row[3]).trim(),
+            description: String(row[4]).trim(),
+            coordonnees: String(row[5] || '').trim(),
+            status: String(row[6]).trim(),
+            equipe: String(row[7] || '').trim(),
+            dateIntervention: formatDateFr(row[8]),
+            heure: formatHeure(row[9]),
+            dueDate: formatDateFr(row[10]),
+            historique: String(row[11] || '').trim(),
+            unused: String(row[14] || '').trim().toLowerCase() === 'true',
+            unusedReason: String(row[15] || '').trim()
           });
         }
       }
@@ -666,6 +1003,812 @@ function getReservesInterventionsByLot(token, idLot, viewMode) {
     console.error("Erreur getReservesInterventionsByLot: " + e.message);
     throw new Error("Impossible de récupérer les interventions.");
   }
+}
+
+/**
+ * =========================================================
+ * RÉSERVES — TOOLBAR ACTIONS (spec section 4, 2026-08-26)
+ * =========================================================
+ * New: create/move/duplicate interventions, mark an autocontrôle
+ * unused-in-place. All coordinate-carrying — "Coordonnées" is always a
+ * "x,y" PERCENTAGE-of-image-bounds string (see getReservesInterventionsByLot
+ * and the shared renderOverlayTags()/EDL_Scripts_1.html), computed
+ * client-side from the plan image's actual on-screen bounding box, which
+ * already reflects the current zoom/pan transform — no server-side
+ * conversion needed here.
+ */
+
+/**
+ * Next sequential ID for a réserve/autocontrôle, "R-YYYY-NNN" /
+ * "A-YYYY-NNN" (matches the convention already documented elsewhere in
+ * this app, e.g. Logs.js's gsGetUniversalLog doc example 'R-2026-004').
+ * Scans both sheets for the view so a fresh sequence can't collide even if
+ * a row somehow ended up in the "wrong" sheet for its prefix.
+ */
+function _nextReservesId_(ss, names, prefix) {
+  const year = new Date().getFullYear();
+  let maxSeq = 0;
+  const pattern = new RegExp('^' + prefix + '-' + year + '-(\\d+)$');
+  [names.reserves, names.autocontroles].forEach(function (sheetName) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+    const lastRow = sh.getLastRow();
+    if (lastRow < 7) return;
+    sh.getRange(7, 2, lastRow - 6, 1).getValues().forEach(function (row) {
+      const m = String(row[0] || '').trim().match(pattern);
+      if (m) {
+        const seq = parseInt(m[1], 10);
+        if (seq > maxSeq) maxSeq = seq;
+      }
+    });
+  });
+  const seqStr = String(maxSeq + 1);
+  return prefix + '-' + year + '-' + (seqStr.length < 3 ? ('000' + seqStr).slice(-3) : seqStr);
+}
+
+/**
+ * "Ajouter une réserve" / "Ajouter autocontrôle" — creates a new
+ * intervention at a clicked plan coordinate. Starts blank (Discipline/
+ * Équipe empty, status "À planifier", no notes/photos) — filled in
+ * afterward via the existing Éditer/Valider modals. isAuthorized-gated;
+ * client-side toolbar rendering is what actually keeps "Ajouter
+ * autocontrôle" away from clients (see spec section 4's visibility rules)
+ * — this endpoint itself just requires edit rights, same as every other
+ * Réserves write.
+ */
+function gsCreateReservesIntervention(token, projectId, payload) {
+  assertCanEdit_(token, projectId);
+  const view = payload.view || 'locataires';
+  const isAutocontrole = !!payload.isAutocontrole;
+  const idLot = payload.idLot;
+  const coordonnees = payload.coordonnees;
+  if (!idLot || !coordonnees) throw new Error("Emplacement ou logement manquant.");
+
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const names = getSheetNames(view);
+  const sheetName = isAutocontrole ? names.autocontroles : names.reserves;
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error("Feuille introuvable : " + sheetName);
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const id = _nextReservesId_(ss, names, isAutocontrole ? 'A' : 'R');
+    const description = isAutocontrole ? '' : JSON.stringify({ pub: '', priv: '' });
+    const newRow = new Array(12).fill('');
+    newRow[1] = id;
+    newRow[2] = idLot;
+    newRow[4] = description;
+    newRow[5] = coordonnees;
+    newRow[6] = 'À planifier';
+    sheet.appendRow(newRow);
+    return {
+      id: id, discipline: '', description: description, coordonnees: coordonnees,
+      status: 'À planifier', equipe: '', dateIntervention: '', heure: '', dueDate: '',
+      historique: '', unused: false, unusedReason: ''
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * "Move" — drags an existing marker to a new position on the SAME plan
+ * (distinct from gsCorrectInterventionReference, which moves to a
+ * DIFFERENT apartment). Just updates the Coordonnées column.
+ */
+function gsMoveReservesIntervention(token, projectId, payload) {
+  assertCanEdit_(token, projectId);
+  const view = payload.view || 'locataires';
+  const interventionId = String(payload.interventionId || '').trim();
+  const isReserve = interventionId.startsWith('R-');
+
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const names = getSheetNames(view);
+  const sheet = ss.getSheetByName(isReserve ? names.reserves : names.autocontroles);
+  if (!sheet) throw new Error("Feuille introuvable.");
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === interventionId) {
+        sheet.getRange(7 + i, 6).setValue(payload.coordonnees); // column F
+        return { success: true };
+      }
+    }
+  }
+  throw new Error("Intervention introuvable : " + interventionId);
+}
+
+/**
+ * "Duplicate" (same apartment) and "Paste" (possibly a different
+ * apartment — the two-step Copy/Paste flow) both land here: same
+ * mechanics, only `targetIdLot` differs. Field-copying rule (spec section
+ * 4): Discipline + Équipe always copied; for a réserve, which note gets
+ * copied depends on who's acting — `isClientActor` copies the source's
+ * PUBLIC note into the new item's public note, staff copies the PRIVATE
+ * note into the new item's private note. Status and photos are never
+ * copied — the new item starts fresh on both. Autocontrôles have no
+ * public/private split (plain text Description, and clients never
+ * interact with them at all) — their description is copied as-is.
+ */
+function gsDuplicateReservesIntervention(token, projectId, payload) {
+  assertCanEdit_(token, projectId);
+  const view = payload.view || 'locataires';
+  const sourceId = String(payload.sourceId || '').trim();
+  const isAutocontrole = sourceId.startsWith('A-');
+  const targetIdLot = payload.targetIdLot;
+  const coordonnees = payload.coordonnees;
+  if (!sourceId || !targetIdLot || !coordonnees) throw new Error("Source, cible ou emplacement manquant.");
+
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const names = getSheetNames(view);
+  const sheetName = isAutocontrole ? names.autocontroles : names.reserves;
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error("Feuille introuvable : " + sheetName);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) throw new Error("Intervention source introuvable.");
+  const data = sheet.getRange(7, 1, lastRow - 6, 12).getValues();
+  const sourceRow = data.filter(function (r) { return String(r[1]).trim() === sourceId; })[0];
+  if (!sourceRow) throw new Error("Intervention source introuvable : " + sourceId);
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const id = _nextReservesId_(ss, names, isAutocontrole ? 'A' : 'R');
+    let description = '';
+    if (isAutocontrole) {
+      description = String(sourceRow[4] || '');
+    } else {
+      let srcNote = { pub: '', priv: '' };
+      try { srcNote = JSON.parse(String(sourceRow[4] || '{}')); } catch (e) { /* leave blank */ }
+      description = payload.isClientActor
+        ? JSON.stringify({ pub: srcNote.pub || '', priv: '' })
+        : JSON.stringify({ pub: '', priv: srcNote.priv || '' });
+    }
+
+    const newRow = new Array(12).fill('');
+    newRow[1] = id;
+    newRow[2] = targetIdLot;
+    newRow[3] = sourceRow[3]; // Discipline
+    newRow[4] = description;
+    newRow[5] = coordonnees;
+    newRow[6] = 'À planifier';
+    newRow[7] = sourceRow[7]; // Équipe
+    sheet.appendRow(newRow);
+    return {
+      id: id, discipline: String(sourceRow[3] || ''), description: description, coordonnees: coordonnees,
+      status: 'À planifier', equipe: String(sourceRow[7] || ''), dateIntervention: '', heure: '', dueDate: '',
+      historique: '', unused: false, unusedReason: ''
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * "Supprimer" — autocontrôles only, never réserves (a réserve can be
+ * status-corrected but never removed this way). Mark-in-place, never a
+ * true delete, mirroring EDL's photo mark-unused shape (gsSetEDLPhotoUnused):
+ * reversible, optional reason, stays visible (marked) rather than
+ * disappearing. Columns O/P (indices 14/15), additive — appended after the
+ * pre-existing M/N (need-validation/secondary-status) rather than reusing
+ * them.
+ */
+function gsSetAutocontroleUnused(token, projectId, payload) {
+  assertCanEdit_(token, projectId);
+  const view = payload.view || 'locataires';
+  const interventionId = String(payload.interventionId || '').trim();
+  if (!interventionId.startsWith('A-')) throw new Error("Cette action ne s'applique qu'aux autocontrôles.");
+
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const names = getSheetNames(view);
+  const sheet = ss.getSheetByName(names.autocontroles);
+  if (!sheet) throw new Error("Feuille introuvable : " + names.autocontroles);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === interventionId) {
+        const row = 7 + i;
+        sheet.getRange(row, 15).setValue(payload.unused ? 'TRUE' : ''); // O
+        sheet.getRange(row, 16).setValue(payload.unused ? (payload.reason || '') : ''); // P
+        return { success: true };
+      }
+    }
+  }
+  throw new Error("Autocontrôle introuvable : " + interventionId);
+}
+
+/**
+ * =========================================================
+ * RÉSERVES PHOTOS (spec section 4 — "same treatment as EDL's photos, plus
+ * phase tracking") — brand new sheet; before this, Réserves photos had NO
+ * persisted metadata at all, not even a row (see agents/progress-log.md
+ * for the investigation that found this — Drive upload only, discarded
+ * URL). Headers row 6 / data row 7, matching this workbook's own
+ * convention (the OTHER Réserves sheets), not EDL Photos' row-1 legacy
+ * layout — this is a fresh sheet with no precedent to preserve.
+ */
+const RESERVES_PHOTOS_SHEET_ = 'Reserves Photos';
+const RESERVES_PHOTO_HEADERS_ = ['ID_Photo', 'ID_Lot', 'Intervention_ID', 'Phase', 'Correction_Ref', 'Drive_ID', 'Timestamp', 'Caption', 'Uploader', 'Unused', 'UnusedReason'];
+
+function _getReservesPhotosSheet_() {
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  let sheet = ss.getSheetByName(RESERVES_PHOTOS_SHEET_);
+  if (!sheet) {
+    sheet = ss.insertSheet(RESERVES_PHOTOS_SHEET_);
+    const range = sheet.getRange(6, 2, 1, RESERVES_PHOTO_HEADERS_.length);
+    range.setValues([RESERVES_PHOTO_HEADERS_]);
+    range.setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.setFrozenRows(6);
+  }
+  return sheet;
+}
+
+/**
+ * Attaches a photo to an intervention, tagged with its lifecycle phase
+ * ('Signalement' | 'Correction') and, for a Correction-phase photo, a
+ * `correctionRef` grouping it with whichever correction event it
+ * documents (an ISO timestamp is enough — spec section 4 leaves the exact
+ * grouping key open, "e.g. by date, or a direct reference to the
+ * correction record"). Currently called from the existing "Valider" modal
+ * (onValidateInterventionClicked), tagged phase='Correction' there since
+ * validation follows a fix — a dedicated Signalement-time photo capture
+ * (e.g. at intervention-creation) isn't wired up yet, a known gap, not
+ * silently assumed complete.
+ */
+function gsUploadReservesPhoto(token, projectId, interventionId, idLot, phase, correctionRef, fileName, base64Data, mimeType, caption) {
+  const user = assertCanEdit_(token, projectId);
+
+  const folderId = PropertiesService.getScriptProperties().getProperty('PROJECT_PHOTOS_FILE');
+  const folder = DriveApp.getFolderById(folderId);
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType, fileName);
+  const file = folder.createFile(blob);
+
+  const sheet = _getReservesPhotosSheet_();
+  const photoId = 'RPHO-' + new Date().getTime();
+  const timestamp = new Date().toISOString();
+  const uploader = user.email || 'Inconnu';
+  const resolvedPhase = phase || 'Signalement';
+
+  sheet.appendRow(['', photoId, idLot, interventionId, resolvedPhase, correctionRef || '', file.getId(), timestamp, caption || '', uploader, '', '']);
+
+  return {
+    photoId: photoId, idLot: idLot, interventionId: interventionId, phase: resolvedPhase,
+    correctionRef: correctionRef || '', driveId: file.getId(), timestamp: timestamp,
+    caption: caption || '', uploader: uploader, unused: false, unusedReason: ''
+  };
+}
+
+function gsGetReservesPhotosData(token) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const sheet = ss.getSheetByName(RESERVES_PHOTOS_SHEET_);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return [];
+
+  return sheet.getRange(7, 2, lastRow - 6, 11).getValues()
+    .filter(function (r) { return r[0]; })
+    .map(function (r) {
+      return {
+        photoId: r[0], idLot: r[1], interventionId: r[2], phase: r[3], correctionRef: r[4],
+        driveId: r[5], timestamp: r[6], caption: r[7], uploader: r[8],
+        unused: String(r[9] || '').toLowerCase() === 'true', unusedReason: r[10]
+      };
+    });
+}
+
+/** Mark-unused for Réserves photos — same shape as gsSetEDLPhotoUnused. */
+function gsSetReservesPhotoUnused(token, projectId, photoId, unused, reason) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getReservesPhotosSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(photoId).trim()) {
+        const row = 7 + i;
+        sheet.getRange(row, 11).setValue(unused ? 'TRUE' : ''); // K (col 2 + 9 = col 11)
+        sheet.getRange(row, 12).setValue(unused ? (reason || '') : ''); // L
+        return true;
+      }
+    }
+  }
+  throw new Error("Photo introuvable : " + photoId);
+}
+
+/**
+ * =========================================================
+ * RÉSERVES ANNOTATIONS (spec section 4 — line/rectangle, freeform,
+ * not tied to any réserve/autocontrôle)
+ * =========================================================
+ * New sheet, same convention as this workbook's other Réserves sheets
+ * (headers row 6, data row 7). One sheet covers every view (Locataires/
+ * Communs/Façades) — a "View" column disambiguates, since an annotation
+ * has no natural Cible-prefixed ID the way interventions do.
+ */
+const RESERVES_ANNOTATIONS_SHEET_ = 'Reserves Annotations';
+const RESERVES_ANNOTATION_HEADERS_ = ['ID', 'View', 'ID_Lot', 'Shape', 'X1', 'Y1', 'X2', 'Y2', 'Color', 'Visibility'];
+
+function _getReservesAnnotationsSheet_() {
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  let sheet = ss.getSheetByName(RESERVES_ANNOTATIONS_SHEET_);
+  if (!sheet) {
+    sheet = ss.insertSheet(RESERVES_ANNOTATIONS_SHEET_);
+    const range = sheet.getRange(6, 2, 1, RESERVES_ANNOTATION_HEADERS_.length);
+    range.setValues([RESERVES_ANNOTATION_HEADERS_]);
+    range.setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.setFrozenRows(6);
+  }
+  return sheet;
+}
+
+function gsCreateReservesAnnotation(token, projectId, payload) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getReservesAnnotationsSheet_();
+  const id = 'ANN-' + new Date().getTime();
+  sheet.appendRow(['', id, payload.view || 'locataires', payload.idLot, payload.shape, payload.x1, payload.y1, payload.x2, payload.y2, payload.color || '#dc2626', payload.visibility || 'Private']);
+  return {
+    id: id, view: payload.view, idLot: payload.idLot, shape: payload.shape,
+    x1: parseFloat(payload.x1), y1: parseFloat(payload.y1), x2: parseFloat(payload.x2), y2: parseFloat(payload.y2),
+    color: payload.color || '#dc2626', visibility: payload.visibility || 'Private'
+  };
+}
+
+/** Returns every annotation for a view (all apartments) — the client filters to the active one, same pattern as interventions. */
+function gsGetReservesAnnotations(token, view) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  const ss = SpreadsheetApp.openById(RESERVES_SS_ID);
+  const sheet = ss.getSheetByName(RESERVES_ANNOTATIONS_SHEET_);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return [];
+  const isClientUser = !!(user && user.isClient === true);
+  // Width 10 (columns B..K — ID..Visibility, matching
+  // RESERVES_ANNOTATION_HEADERS_'s 10 entries and appendRow's 11-element
+  // row above, index 0 there being the blank column A).
+  return sheet.getRange(7, 2, lastRow - 6, 10).getValues()
+    .filter(function (r) { return r[0] && (!view || String(r[1]) === view); })
+    .filter(function (r) { return !isClientUser || String(r[9]) !== 'Private'; })
+    .map(function (r) {
+      return { id: r[0], view: r[1], idLot: r[2], shape: r[3], x1: parseFloat(r[4]), y1: parseFloat(r[5]), x2: parseFloat(r[6]), y2: parseFloat(r[7]), color: r[8], visibility: r[9] };
+    });
+}
+
+/**
+ * =========================================================
+ * PLAN EDITOR — shared engine for Élec. and Sanit. (spec sections 5+6,
+ * 2026-08-26). One engine, parameterized by `catalogue` ('elec'|'sanit')
+ * — confirmed by the spec itself that the two layers are architecturally
+ * identical, only the catalog CONTENT differs (sockets/switches vs.
+ * sinks/toilets), which is data entry through the admin UI, not code.
+ * All sheets live in EDL_SS_ID (same workbook as Config Travaux/EDL
+ * Notes — no new Script Property needed), headers row 6 / data row 7.
+ *
+ * Four tiers, exactly per spec section 5's data model:
+ *   Item Types    — global catalog: label, icon, PropertiesSchema
+ *                   ("Label:Type;Label:Type", same mini-language shape as
+ *                   Travaux's old per-row extra fields, but here it's a
+ *                   legitimate schema-of-properties-this-TYPE-can-have,
+ *                   not an ad hoc per-row bag — different problem).
+ *   Templates     — named, scoped to exactly one of {apartment type,
+ *                   specific Commun ID} — never both, per spec.
+ *   Template Items — a template's default placed items AND their count
+ *                   constraints. Per spec, constraint fields (min/max/
+ *                   condition/enforcement) live on the same row as a
+ *                   placed item's position — when several default items
+ *                   share a (room, itemType) pair, the constraint is only
+ *                   really meaningful once per pair; _constraintsFor_
+ *                   below takes the first non-blank value it finds for
+ *                   each (room, itemType), an admin-discipline assumption
+ *                   (don't set contradictory constraints on sibling rows)
+ *                   rather than a second constraints table.
+ *   Instances     — real per-apartment/commun placed items, seeded by
+ *                   copy (never a live link) from a template or another
+ *                   ID's instances, per the onboarding flow.
+ */
+function _planEditorSheetName_(catalogue, kind) {
+  const prefix = (catalogue === 'sanit') ? 'Sanit' : 'Elec';
+  return prefix + ' ' + kind; // kind: 'Item Types' | 'Templates' | 'Template Items' | 'Instances'
+}
+
+function _getPlanEditorSheet_(catalogue, kind, headers) {
+  const ss = SpreadsheetApp.openById(EDL_SS_ID);
+  const name = _planEditorSheetName_(catalogue, kind);
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    const range = sheet.getRange(6, 2, 1, headers.length);
+    range.setValues([headers]);
+    range.setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.setFrozenRows(6);
+  }
+  return sheet;
+}
+
+const PE_ITEMTYPE_HEADERS_ = ['ID', 'Label', 'Icon', 'PropertiesSchema'];
+const PE_TEMPLATE_HEADERS_ = ['ID', 'Name', 'Scope', 'ScopeValue'];
+const PE_TEMPLATEITEM_HEADERS_ = ['ID', 'TemplateID', 'ItemTypeID', 'Room', 'X', 'Y', 'Rotation', 'MinCount', 'MaxCount', 'Condition', 'Enforcement'];
+const PE_INSTANCE_HEADERS_ = ['ID', 'IdLot', 'ItemTypeID', 'Room', 'X', 'Y', 'Rotation', 'PropertiesJSON'];
+
+function _peReadAll_(catalogue, kind, headers) {
+  const sheet = _getPlanEditorSheet_(catalogue, kind, headers);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return [];
+  return sheet.getRange(7, 2, lastRow - 6, headers.length).getValues().filter(function (r) { return r[0]; });
+}
+
+// --- Item Types (admin catalog) ----------------------------------------
+
+function gsGetPlanEditorItemTypes(token, catalogue) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  return _peReadAll_(catalogue, 'Item Types', PE_ITEMTYPE_HEADERS_).map(function (r) {
+    return { id: r[0], label: r[1], icon: r[2], propertiesSchema: r[3] };
+  });
+}
+
+function gsSavePlanEditorItemType(token, projectId, catalogue, rowData, isNew) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Item Types', PE_ITEMTYPE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  const ids = lastRow > 6 ? sheet.getRange(7, 2, lastRow - 6, 1).getValues() : [];
+  let targetRow = -1;
+  for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(rowData.id).trim()) { targetRow = 7 + i; break; } }
+  if (isNew) {
+    if (targetRow !== -1) throw new Error("Cet ID existe déjà : " + rowData.id);
+    targetRow = Math.max(lastRow + 1, 7);
+  } else if (targetRow === -1) {
+    throw new Error("Type d'élément introuvable : " + rowData.id);
+  }
+  sheet.getRange(targetRow, 2, 1, 4).setValues([[rowData.id, rowData.label, rowData.icon || '', rowData.propertiesSchema || '']]);
+  return gsGetPlanEditorItemTypes(token, catalogue);
+}
+
+function gsDeletePlanEditorItemType(token, projectId, catalogue, itemTypeId) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Item Types', PE_ITEMTYPE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(itemTypeId).trim()) { sheet.deleteRow(7 + i); break; }
+    }
+  }
+  return gsGetPlanEditorItemTypes(token, catalogue);
+}
+
+// --- Templates -----------------------------------------------------------
+
+function gsGetPlanEditorTemplates(token, catalogue) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  return _peReadAll_(catalogue, 'Templates', PE_TEMPLATE_HEADERS_).map(function (r) {
+    return { id: r[0], name: r[1], scope: r[2], scopeValue: r[3] };
+  });
+}
+
+function gsSavePlanEditorTemplate(token, projectId, catalogue, rowData, isNew) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Templates', PE_TEMPLATE_HEADERS_);
+  let id = rowData.id;
+  if (isNew) { id = 'TPL-' + new Date().getTime(); sheet.appendRow(['', id, rowData.name, rowData.scope, rowData.scopeValue]); }
+  else {
+    const lastRow = sheet.getLastRow();
+    const ids = lastRow > 6 ? sheet.getRange(7, 2, lastRow - 6, 1).getValues() : [];
+    let targetRow = -1;
+    for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(id).trim()) { targetRow = 7 + i; break; } }
+    if (targetRow === -1) throw new Error("Modèle introuvable : " + id);
+    sheet.getRange(targetRow, 2, 1, 4).setValues([[id, rowData.name, rowData.scope, rowData.scopeValue]]);
+  }
+  return gsGetPlanEditorTemplates(token, catalogue);
+}
+
+function gsDeletePlanEditorTemplate(token, projectId, catalogue, templateId) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Templates', PE_TEMPLATE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(templateId).trim()) { sheet.deleteRow(7 + i); break; }
+    }
+  }
+  // Orphaned Template Items (rows referencing this templateId) are left as-is,
+  // same "deliberately don't cascade" choice Travaux's deleteTravauxConfigRow makes.
+  return gsGetPlanEditorTemplates(token, catalogue);
+}
+
+// --- Template Items (a template's default layout + constraints) --------
+
+function gsGetPlanEditorTemplateItems(token, catalogue, templateId) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  return _peReadAll_(catalogue, 'Template Items', PE_TEMPLATEITEM_HEADERS_)
+    .filter(function (r) { return String(r[1]) === String(templateId); })
+    .map(function (r) {
+      return { id: r[0], templateId: r[1], itemTypeId: r[2], room: r[3], x: parseFloat(r[4]), y: parseFloat(r[5]), rotation: parseFloat(r[6]) || 0, minCount: r[7], maxCount: r[8], condition: r[9], enforcement: r[10] };
+    });
+}
+
+function gsSavePlanEditorTemplateItem(token, projectId, catalogue, rowData, isNew) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Template Items', PE_TEMPLATEITEM_HEADERS_);
+  const row = [rowData.id, rowData.templateId, rowData.itemTypeId, rowData.room, rowData.x, rowData.y, rowData.rotation || 0, rowData.minCount, rowData.maxCount, rowData.condition || '', rowData.enforcement || 'blocking'];
+  if (isNew) {
+    row[0] = 'TI-' + new Date().getTime();
+    sheet.appendRow([''].concat(row));
+  } else {
+    const lastRow = sheet.getLastRow();
+    const ids = lastRow > 6 ? sheet.getRange(7, 2, lastRow - 6, 1).getValues() : [];
+    let targetRow = -1;
+    for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(rowData.id).trim()) { targetRow = 7 + i; break; } }
+    if (targetRow === -1) throw new Error("Élément de modèle introuvable : " + rowData.id);
+    sheet.getRange(targetRow, 2, 1, row.length).setValues([row]);
+  }
+  return gsGetPlanEditorTemplateItems(token, catalogue, rowData.templateId);
+}
+
+function gsDeletePlanEditorTemplateItem(token, projectId, catalogue, templateItemId, templateId) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Template Items', PE_TEMPLATEITEM_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(templateItemId).trim()) { sheet.deleteRow(7 + i); break; }
+    }
+  }
+  return gsGetPlanEditorTemplateItems(token, catalogue, templateId);
+}
+
+// --- Instances (real per-apartment/commun placed items) -----------------
+
+function gsGetPlanEditorInstances(token, catalogue, idLot) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  return _peReadAll_(catalogue, 'Instances', PE_INSTANCE_HEADERS_)
+    .filter(function (r) { return String(r[1]) === String(idLot); })
+    .map(function (r) {
+      let props = {};
+      try { props = r[7] ? JSON.parse(r[7]) : {}; } catch (e) {}
+      return { id: r[0], idLot: r[1], itemTypeId: r[2], room: r[3], x: parseFloat(r[4]), y: parseFloat(r[5]), rotation: parseFloat(r[6]) || 0, properties: props };
+    });
+}
+
+// Client full access (spec section 5) — assertCanEdit_ only, no isAdmin
+// requirement, matching every other Élec/Sanit instance-editing endpoint.
+function gsSavePlanEditorInstance(token, projectId, catalogue, rowData, isNew) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Instances', PE_INSTANCE_HEADERS_);
+  const propsJson = JSON.stringify(rowData.properties || {});
+  if (isNew) {
+    const id = 'INS-' + new Date().getTime() + '-' + Math.floor(Math.random() * 1000);
+    sheet.appendRow(['', id, rowData.idLot, rowData.itemTypeId, rowData.room, rowData.x, rowData.y, rowData.rotation || 0, propsJson]);
+    return { id: id, idLot: rowData.idLot, itemTypeId: rowData.itemTypeId, room: rowData.room, x: rowData.x, y: rowData.y, rotation: rowData.rotation || 0, properties: rowData.properties || {} };
+  }
+  const lastRow = sheet.getLastRow();
+  const ids = lastRow > 6 ? sheet.getRange(7, 2, lastRow - 6, 1).getValues() : [];
+  let targetRow = -1;
+  for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(rowData.id).trim()) { targetRow = 7 + i; break; } }
+  if (targetRow === -1) throw new Error("Élément introuvable : " + rowData.id);
+  sheet.getRange(targetRow, 2, 1, 8).setValues([[rowData.id, rowData.idLot, rowData.itemTypeId, rowData.room, rowData.x, rowData.y, rowData.rotation || 0, propsJson]]);
+  return { id: rowData.id, idLot: rowData.idLot, itemTypeId: rowData.itemTypeId, room: rowData.room, x: rowData.x, y: rowData.y, rotation: rowData.rotation || 0, properties: rowData.properties || {} };
+}
+
+// True delete (spec section 5 — configuration data, not evidence; no
+// "never delete" concern here unlike EDL/Réserves photos).
+function gsDeletePlanEditorInstance(token, projectId, catalogue, instanceId) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getPlanEditorSheet_(catalogue, 'Instances', PE_INSTANCE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(instanceId).trim()) { sheet.deleteRow(7 + i); return true; }
+    }
+  }
+  throw new Error("Élément introuvable : " + instanceId);
+}
+
+/**
+ * Onboarding (spec section 5): seeds real instances by COPYING (never a
+ * live link) either a template's default layout or another ID's actual
+ * instances. Blocked if the target ID already has instances — this is a
+ * one-time onboarding action, not a repeatable merge/overwrite.
+ */
+function gsSeedPlanEditorInstances(token, projectId, catalogue, idLot, sourceKind, sourceId) {
+  assertCanEdit_(token, projectId);
+  const existing = gsGetPlanEditorInstances(token, catalogue, idLot);
+  if (existing.length > 0) throw new Error("Cet identifiant a déjà des éléments placés — l'amorçage ne s'applique qu'une fois.");
+
+  const sheet = _getPlanEditorSheet_(catalogue, 'Instances', PE_INSTANCE_HEADERS_);
+  let sourceItems = [];
+  if (sourceKind === 'template') {
+    sourceItems = gsGetPlanEditorTemplateItems(token, catalogue, sourceId).map(function (ti) {
+      return { itemTypeId: ti.itemTypeId, room: ti.room, x: ti.x, y: ti.y, rotation: ti.rotation, properties: {} };
+    });
+  } else if (sourceKind === 'duplicate') {
+    sourceItems = gsGetPlanEditorInstances(token, catalogue, sourceId).map(function (inst) {
+      return { itemTypeId: inst.itemTypeId, room: inst.room, x: inst.x, y: inst.y, rotation: inst.rotation, properties: inst.properties };
+    });
+  } else {
+    throw new Error("sourceKind invalide : " + sourceKind);
+  }
+
+  sourceItems.forEach(function (item, i) {
+    const id = 'INS-' + new Date().getTime() + '-' + i;
+    sheet.appendRow(['', id, idLot, item.itemTypeId, item.room, item.x, item.y, item.rotation || 0, JSON.stringify(item.properties || {})]);
+  });
+  return gsGetPlanEditorInstances(token, catalogue, idLot);
+}
+
+/**
+ * =========================================================
+ * FORMULAIRES (spec section 7, 2026-08-26) — owner sign-off documents.
+ * =========================================================
+ * Two sheets in EDL_SS_ID (same "no new workbook" convention as everything
+ * else this session), headers row 6 / data row 7:
+ *   Form Templates — admin catalog. BodyType 'auto' (fixed text with
+ *     {{merge_token}}s, resolved CLIENT-side at instance-creation time
+ *     against ctx.activeItem/ctx.activeId/today, matching how Travaux's
+ *     recap header already merges data client-side — the server just
+ *     stores whatever bodyHtml it's handed) or 'manuel' (blank, staff
+ *     types the corps directly when creating an instance).
+ *   Form Documents — instances. TemplateId blank = a fully ad hoc custom
+ *     statement (spec's "not necessarily added to the shared catalog").
+ *     BodyHtml here is the FINAL merged/typed corps for this one instance
+ *     (not re-resolved from the template on every read) — a template
+ *     edited later never retroactively changes an already-created
+ *     instance, matching how Config Travaux edits don't rewrite already-
+ *     saved Données Travaux answers either.
+ * No signature pad (session decision, agents/edl-todo.md) — print or
+ * email, then upload the signed/scanned document; gsSendFormulaireEmail
+ * uses MailApp (script.send_mail scope already declared in
+ * appsscript.json).
+ */
+const FORM_TEMPLATES_SHEET_ = 'Form Templates';
+const FORM_TEMPLATE_HEADERS_ = ['ID', 'Name', 'BodyType', 'BodyHtml', 'Active'];
+const FORM_DOCUMENTS_SHEET_ = 'Form Documents';
+const FORM_DOCUMENT_HEADERS_ = ['ID', 'IdLot', 'TemplateID', 'Title', 'BodyHtml', 'Status', 'OwnerSignerName', 'StaffSignerName', 'SignedDriveID', 'CreatedAt', 'CreatedBy'];
+
+function _getFormSheet_(name, headers) {
+  const ss = SpreadsheetApp.openById(EDL_SS_ID);
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    const range = sheet.getRange(6, 2, 1, headers.length);
+    range.setValues([headers]);
+    range.setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.setFrozenRows(6);
+  }
+  return sheet;
+}
+
+// --- Templates (admin catalog; any authorized staff can VIEW, per spec) --
+
+function gsGetFormTemplates(token, projectId) {
+  assertCanEdit_(token, projectId); // "any authorized staff", not clients — spec section 7
+  const sheet = _getFormSheet_(FORM_TEMPLATES_SHEET_, FORM_TEMPLATE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return [];
+  return sheet.getRange(7, 2, lastRow - 6, 5).getValues()
+    .filter(function (r) { return r[0]; })
+    .map(function (r) { return { id: r[0], name: r[1], bodyType: r[2], bodyHtml: r[3], active: String(r[4]).toLowerCase() !== 'false' }; });
+}
+
+function gsSaveFormTemplate(token, projectId, rowData, isNew) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getFormSheet_(FORM_TEMPLATES_SHEET_, FORM_TEMPLATE_HEADERS_);
+  const row = [rowData.name, rowData.bodyType, rowData.bodyHtml || '', rowData.active === false ? 'false' : 'true'];
+  if (isNew) {
+    const id = 'FTPL-' + new Date().getTime();
+    sheet.appendRow([''].concat([id]).concat(row));
+  } else {
+    const lastRow = sheet.getLastRow();
+    const ids = lastRow > 6 ? sheet.getRange(7, 2, lastRow - 6, 1).getValues() : [];
+    let targetRow = -1;
+    for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(rowData.id).trim()) { targetRow = 7 + i; break; } }
+    if (targetRow === -1) throw new Error("Modèle introuvable : " + rowData.id);
+    sheet.getRange(targetRow, 3, 1, 4).setValues([row]);
+  }
+  return gsGetFormTemplates(token, projectId);
+}
+
+function gsDeleteFormTemplate(token, projectId, templateId) {
+  assertIsAdmin_(token, projectId);
+  const sheet = _getFormSheet_(FORM_TEMPLATES_SHEET_, FORM_TEMPLATE_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 7) {
+    const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+    for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(templateId).trim()) { sheet.deleteRow(7 + i); break; } }
+  }
+  return gsGetFormTemplates(token, projectId);
+}
+
+// --- Documents (instances) ------------------------------------------------
+
+// Clients read their own apartment's documents too (spec: "strictly
+// read-only... can view/download their own statements") — getSession_
+// only, not assertCanEdit_, matching every other client-readable endpoint.
+function gsGetFormDocumentsByLot(token, idLot) {
+  const user = getSession_(token);
+  if (!user) throw new Error("Sécurité : Session expirée.");
+  const sheet = _getFormSheet_(FORM_DOCUMENTS_SHEET_, FORM_DOCUMENT_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return [];
+  return sheet.getRange(7, 2, lastRow - 6, 11).getValues()
+    .filter(function (r) { return r[0] && String(r[1]) === String(idLot); })
+    .map(function (r) {
+      return { id: r[0], idLot: r[1], templateId: r[2], title: r[3], bodyHtml: r[4], status: r[5], ownerSignerName: r[6], staffSignerName: r[7], signedDriveId: r[8], createdAt: r[9], createdBy: r[10] };
+    });
+}
+
+function gsCreateFormDocument(token, projectId, payload) {
+  const user = assertCanEdit_(token, projectId); // staff only, never clients — spec section 7
+  const sheet = _getFormSheet_(FORM_DOCUMENTS_SHEET_, FORM_DOCUMENT_HEADERS_);
+  const id = 'FDOC-' + new Date().getTime();
+  const createdAt = new Date().toISOString();
+  sheet.appendRow(['', id, payload.idLot, payload.templateId || '', payload.title, payload.bodyHtml || '', 'Non signé', payload.ownerSignerName || '', payload.staffSignerName || '', '', createdAt, user.email || 'Inconnu']);
+  return { id: id, idLot: payload.idLot, templateId: payload.templateId || '', title: payload.title, bodyHtml: payload.bodyHtml || '', status: 'Non signé', ownerSignerName: payload.ownerSignerName || '', staffSignerName: payload.staffSignerName || '', signedDriveId: '', createdAt: createdAt, createdBy: user.email || 'Inconnu' };
+}
+
+function _findFormDocRow_(sheet, docId) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 7) return -1;
+  const ids = sheet.getRange(7, 2, lastRow - 6, 1).getValues();
+  for (let i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === String(docId).trim()) return 7 + i; }
+  return -1;
+}
+
+function gsUpdateFormDocumentStatus(token, projectId, docId, status) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getFormSheet_(FORM_DOCUMENTS_SHEET_, FORM_DOCUMENT_HEADERS_);
+  const row = _findFormDocRow_(sheet, docId);
+  if (row === -1) throw new Error("Document introuvable : " + docId);
+  sheet.getRange(row, 7).setValue(status); // column G = Status
+  return true;
+}
+
+/** Uploads the signed/scanned document — sets status to "Signé". */
+function gsUploadSignedFormDocument(token, projectId, docId, fileName, base64Data, mimeType) {
+  assertCanEdit_(token, projectId);
+  const sheet = _getFormSheet_(FORM_DOCUMENTS_SHEET_, FORM_DOCUMENT_HEADERS_);
+  const row = _findFormDocRow_(sheet, docId);
+  if (row === -1) throw new Error("Document introuvable : " + docId);
+
+  const folderId = PropertiesService.getScriptProperties().getProperty('PROJECT_PHOTOS_FILE');
+  const folder = DriveApp.getFolderById(folderId);
+  let signedFolder;
+  const subs = folder.getFoldersByName('06- Formulaires Signes');
+  signedFolder = subs.hasNext() ? subs.next() : folder.createFolder('06- Formulaires Signes');
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType, fileName);
+  const file = signedFolder.createFile(blob);
+
+  sheet.getRange(row, 9).setValue(file.getId()); // I = SignedDriveID
+  sheet.getRange(row, 7).setValue('Signé');      // G = Status
+  return { signedDriveId: file.getId(), status: 'Signé' };
+}
+
+/** Sends the document by email to the owner; marks status "Envoyé". */
+function gsSendFormulaireEmail(token, projectId, docId, recipientEmail, subject, bodyText) {
+  assertCanEdit_(token, projectId);
+  if (!recipientEmail) throw new Error("Adresse e-mail du destinataire manquante.");
+  const sheet = _getFormSheet_(FORM_DOCUMENTS_SHEET_, FORM_DOCUMENT_HEADERS_);
+  const row = _findFormDocRow_(sheet, docId);
+  if (row === -1) throw new Error("Document introuvable : " + docId);
+
+  MailApp.sendEmail({ to: recipientEmail, subject: subject, htmlBody: bodyText });
+  sheet.getRange(row, 7).setValue('Envoyé'); // G = Status
+  return true;
 }
 
 /**
@@ -732,6 +1875,30 @@ function validateReservesIntervention(token, projectId, payload) {
 
   if (!targetSheet) {
     throw new Error(`Impossible de localiser l'ID d'intervention ${interventionId} dans le fichier.`);
+  }
+
+  // 2.5 Photo metadata — added 2026-08-26 (agents/edl-page-spec.md section
+  // 4, "same metadata/mark-unused treatment as EDL's photos, plus phase
+  // tracking"). Before this, uploadedPhotos (step 1) were Drive-only, no
+  // sheet row at all. Tagged phase='Correction' since validating an
+  // intervention follows a fix — there's no separate Signalement-time
+  // photo-capture entry point yet (a known gap, see agents/edl-todo.md),
+  // so every photo attached through this existing flow is a Correction
+  // photo. correctionRef groups photos from the SAME validation event
+  // together (spec: "by date, or a direct reference to the correction
+  // record") — an ISO timestamp captured once, shared by every photo in
+  // this one call, is enough for that; the intervention itself may still
+  // get reopened and re-validated later for a genuinely new round, which
+  // would carry a different correctionRef, per spec's "open-ended number
+  // of unsatisfied-client rounds" requirement.
+  if (uploadedPhotos.length > 0) {
+    const idLot = String(targetSheet.getRange(targetRowIndex, 3).getValue() || '').trim();
+    const correctionRef = new Date().toISOString();
+    const photosSheet = _getReservesPhotosSheet_();
+    uploadedPhotos.forEach(function (p) {
+      const photoId = 'RPHO-' + Utilities.getUuid();
+      photosSheet.appendRow(['', photoId, idLot, interventionId, 'Correction', correctionRef, p.id, correctionRef, '', user.email || 'Inconnu', '', '']);
+    });
   }
 
   // 3. Apply structural state mutations
@@ -1553,10 +2720,21 @@ function getTravauxConfigDataHelper() {
   if (lastRow <= 6) return [];
 
   // Fixed layout, row 6 = headers (for humans only), data from row 7,
-  // columns B–J in this order:
+  // columns B–L in this order:
   // B=idWork  C=cible  D=sousCategorie  E=discipline  F=typeTravail
-  // G=piecesApplicables  H=typeChamp  I=detailsChamp  J=options
-  const data = sheet.getRange(7, 2, lastRow - 6, 9).getValues();
+  // G=piecesApplicables  H=typeChamp  I=detailsChamp (legacy, no longer
+  // read — see below)  J=options  K=parentId  L=suffix
+  //
+  // K/L added 2026-08-26 (agents/edl-page-spec.md section 3,
+  // "New: primary/secondary work items" + "New: optional suffix/unit") —
+  // appended after the original 9 columns rather than reusing column I, so
+  // a pre-migration sheet's real (now-unused) Détails de champ text is
+  // never misread as a parentId. A row with fewer than 11 columns (i.e.
+  // K/L don't exist yet on this sheet) simply reads '' for both — no
+  // migration step needed, sheet.getRange below always requests 11 columns
+  // regardless of how many the sheet currently has; Apps Script returns ''
+  // for any cell past the sheet's actual last column.
+  const data = sheet.getRange(7, 2, lastRow - 6, 11).getValues();
 
   const result = [];
   for (let i = 0; i < data.length; i++) {
@@ -1569,8 +2747,9 @@ function getTravauxConfigDataHelper() {
       typeTravail: row[4],
       piecesApplicables: row[5],
       typeChamp: row[6],
-      detailsChamp: row[7],
-      options: row[8]
+      options: row[8],
+      parentId: row[9],
+      suffix: row[10]
     };
     if (rowObj.idWork) {
       result.push(rowObj);
@@ -1718,7 +2897,7 @@ function saveTravauxDonneesData(token, projectId, payload) {
 // 4. NEW — Admin CRUD for 'Config Travaux' ITSELF (the work-item catalog —
 //    not per-ID answers, that's saveTravauxDonneesData above). Powers the
 //    "Config Travaux" admin popup beside Mode Édition (admin-only — see
-//    openTravauxConfigManager() in Travaux_Scripts.html). Same fixed B..J
+//    openTravauxConfigManager() in Travaux_Scripts.html). Same fixed B..L
 //    column layout as getTravauxConfigDataHelper above; read and write
 //    sides must stay in that exact order if this sheet's columns ever move.
 //
@@ -1727,7 +2906,13 @@ function saveTravauxDonneesData(token, projectId, payload) {
 //    already returns) so the client can just replace its cache in one shot
 //    instead of guessing what changed.
 // ---------------------------------------------------------------------------
-const TRAVAUX_CONFIG_COLUMNS_ = ['idWork', 'cible', 'sousCategorie', 'discipline', 'typeTravail', 'piecesApplicables', 'typeChamp', 'detailsChamp', 'options'];
+// detailsChamp (column I) kept as a positional placeholder — always
+// written as '' now (the form no longer populates rowData.detailsChamp,
+// and the .map below defaults any missing key to '') — so columns J/K/L
+// (options/parentId/suffix) never shift out of alignment with rows
+// written before 2026-08-26. parentId/suffix appended at the end (K/L),
+// matching the read side in getTravauxConfigDataHelper above.
+const TRAVAUX_CONFIG_COLUMNS_ = ['idWork', 'cible', 'sousCategorie', 'discipline', 'typeTravail', 'piecesApplicables', 'typeChamp', 'detailsChamp', 'options', 'parentId', 'suffix'];
 
 function saveTravauxConfigRow(token, projectId, rowData, isNew) {
   assertIsAdmin_(token, projectId);
@@ -1953,8 +3138,9 @@ function cascadeSousCategorieRename(token, cible, oldName, newName) {
   if (lastRow <= 6) return false;
 
   // B..J = idWork, cible, sousCategorie, discipline, typeTravail,
-  // piecesApplicables, typeChamp, detailsChamp, options (see
-  // getTravauxConfigDataHelper). We only ever touch index 2 (sousCategorie).
+  // piecesApplicables, typeChamp, detailsChamp (legacy), options (see
+  // getTravauxConfigDataHelper — K/L parentId/suffix don't matter here).
+  // We only ever touch index 2 (sousCategorie).
   const range = sheet.getRange(7, 2, lastRow - 6, 9);
   const data = range.getValues();
   let changed = false;
@@ -2075,50 +3261,7 @@ function reorderSousCategoriesTravaux(token, projectId, cible, layout) {
   }
 }
 
-/**
- * One-time migration helper: seeds a Cible's Sous-catégorie registry from
- * whatever distinct names are already used in "Config Travaux" for that
- * Cible (first-seen sheet order), all placed in Colonne 1 — so pre-existing
- * data never becomes invalid/orphaned once "Ajouter un poste de travaux"
- * starts requiring a defined Sous-catégorie. No-op (returns the current
- * list untouched) if the registry for this Cible isn't actually empty —
- * this is meant to run once, not to be a repeatable merge.
- */
-function seedSousCategoriesFromExistingConfig(token, projectId, cible) {
-  assertIsAdmin_(token, projectId);
-  const targetCible = normalizeCibleForCompare_(cible);
-
-  const existing = getSousCategoriesTravauxHelper().filter(function (r) { return normalizeCibleForCompare_(r.cible) === targetCible; });
-  if (existing.length > 0) return { success: true, rows: getSousCategoriesTravauxHelper() }; // already seeded/managed — don't clobber
-
-  const sheetConfig = SpreadsheetApp.openById(EDL_SS_ID).getSheetByName('Config Travaux');
-  if (!sheetConfig) return { success: true, rows: getSousCategoriesTravauxHelper() };
-
-  const lastRowConfig = sheetConfig.getLastRow();
-  if (lastRowConfig <= 6) return { success: true, rows: getSousCategoriesTravauxHelper() };
-
-  const configData = sheetConfig.getRange(7, 2, lastRowConfig - 6, 9).getValues();
-  const namesInOrder = [];
-  configData.forEach(function (r) {
-    if (normalizeCibleForCompare_(r[1]) !== targetCible) return;
-    const nom = String(r[2] || '').split('|')[0].trim();
-    if (nom && namesInOrder.indexOf(nom) === -1) namesInOrder.push(nom);
-  });
-
-  if (namesInOrder.length === 0) return { success: true, rows: getSousCategoriesTravauxHelper() };
-
-  const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
-  try {
-    const sheet = _getSousCategoriesSheet_(true);
-    const targetRow = Math.max(sheet.getLastRow() + 1, 7);
-    const rows = namesInOrder.map(function (nom, i) {
-      return [String(cible), nom, '#64748b', 1, i + 1];
-    });
-    sheet.getRange(targetRow, 2, rows.length, 5).setValues(rows);
-
-    return { success: true, rows: getSousCategoriesTravauxHelper() };
-  } finally {
-    lock.releaseLock();
-  }
-}
+// seedSousCategoriesFromExistingConfig() removed 2026-08-26
+// (agents/edl-page-spec.md section 3, "New: remove sous-catégorie
+// import") — the "Importer les sous-catégories existantes" button and its
+// client-side wiring in EDL_Scripts_2.html were removed at the same time.
