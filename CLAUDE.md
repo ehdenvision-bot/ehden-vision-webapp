@@ -6,7 +6,7 @@
 
 - No sycophancy.
 - Be direct, matter-of-fact, and concise.
-- Be critical; challenge my reasoning.
+- Be critical; challenge my reasoning.2
 - Don't include timeline estimates in plans.
 - Don't add yourself as a co-author to git commits. (Also set `"includeCoAuthoredBy": false`
   in `.claude/settings.json` — that enforces it at the tool level instead of relying on me
@@ -14,11 +14,15 @@
 
 # Tooling
 
-- This repo currently has one active toolchain: the Google Apps Script project cloned into
-  `Webapp Files/` via `clasp clone`. Edit files there directly, then run `clasp push` to sync to
-  Google Workspace. If changes were ever made in the Apps Script web editor directly, `clasp
-  pull` first — don't assume the local copy is current. There is no separate rewrite codebase
-  yet; when that starts, add its toolchain (commands, package manager, etc.) here too.
+- **Two active toolchains now** (since 2026-08-25 — see `agents/decisions.md`):
+  - `Webapp Files/` — the Google Apps Script project cloned via `clasp clone`. Edit files there
+    directly, then run `clasp push` to sync to Google Workspace. If changes were ever made in
+    the Apps Script web editor directly, `clasp pull` first — don't assume the local copy is
+    current. **This stays live and untouched** — it is not a legacy copy being phased out, it's
+    a parallel build.
+  - `app/` — the Node.js + PostgreSQL rewrite. `npm install`, `npm run migrate:up`, `npm start`
+    (or `npm run dev` for restart-on-change). Needs a local Postgres instance and `app/.env`
+    (copy `app/.env.example`). See `agents/runbook.md` for the full command set.
 - Use your Edit tool for changes; Search tool for searching.
 - Use Mermaid diagrams for complex systems.
 
@@ -33,9 +37,22 @@
   becomes a refactoring nightmare tomorrow. Always choose the long-term solution.
 - **Never assume, always verify.** Don't trust plans, comments, variable names, or your own
   intuition. Read the code. Compare the numbers. Document what you find with file:line
-  references. **[The first time a plan, comment, or assumption turns out to be wrong in this
-  repo, log the specifics here — the files, what was assumed, what actually caught it. A real
-  example is worth more than the abstract rule.]**
+  references.
+  - **Real example (2026-08-25):** the recovered React frontend (`app/frontend/`) was assumed
+    to work as-is once built and served — it had "worked" before, in the abandoned attempt.
+    Wrong: Vite's default absolute asset base (`/assets/...`) and the frontend's own
+    `fetch("/api/...")` calls both resolve against the proxy host's *root* domain, not this
+    app's `/proxy/<port>/` mount path — silently correct on `localhost`, silently broken through
+    any path-prefixed proxy. Caught by the user's actual browser console (404s naming the exact
+    wrong URL: `https://michel.optima-tech.info/api/auth/login` instead of
+    `.../proxy/3001/api/auth/login`) — not by anything short of testing the real proxied URL in
+    a real browser. `curl`ing the app directly on `127.0.0.1:3001` never would have caught this;
+    it only reproduces once something else sits in front of the app at a non-root path. Fixed in
+    `app/frontend/vite.config.js` (`base: './'`), `app/frontend/src/lib/api.js` (`apiUrl()`
+    resolving against `document.baseURI`), `app/frontend/src/components/Layout.jsx` (relative
+    logo path), and `app/frontend/src/main.jsx` (`HashRouter` instead of `BrowserRouter`, so
+    client-side navigation doesn't push an absolute path that drops the proxy prefix). See
+    `agents/decisions.md` for the full record.
 - **"Good enough" is not good enough.** If there's a known issue, raise it. Figure it out. Fix
   it. Don't say "acceptable for now" or "close enough".
 - **The user makes the decisions.** When there's a tradeoff, present the options with evidence
@@ -47,24 +64,31 @@
 
 ## Repo Management
 
-Repo-wide guidance for Claude Code. Read `agents/current-state.md` and `agents/decisions.md`
-first — prior session context (what's been mapped, what's still open) lives there rather than
-here. `agents/runbook.md` has the concrete commands for working with this repo;
-`agents/todo.md` and `agents/progress-log.md` (use `agents/progress-entry-template.md` for new
-entries) track pending work and session history.
+Repo-wide guidance for Claude Code. Read `agents/architecture.md` for the stable structural
+picture (modules, data model, request/auth flow), then `agents/current-state.md` and
+`agents/decisions.md` for prior session context (what's been mapped, what's still open) — that
+lives there rather than here. `agents/runbook.md` has the concrete commands for working with
+this repo; `agents/todo.md` and `agents/progress-log.md` (use `agents/progress-entry-template.md`
+for new entries) track pending work and session history.
 
-Right now this repo holds one thing: `Webapp Files/`, a `clasp clone` of the live Google Apps
-Script project. It is the actual, editable source — not a frozen reference copy — and stays
-deployed to Google Workspace for testing. The plan is a *progressive* migration: keep building
-directly against `Webapp Files/` + Google Sheets as the database (so the app stays testable
-online throughout), and only cut over to a dedicated database once the app is functionally
-complete. Target stack for that final cutover isn't decided yet (see `agents/decisions.md`).
+This repo now holds two live things side by side (as of 2026-08-25 — see `agents/decisions.md`
+for the full reasoning and reversal history):
 
-**There is no "legacy vs. new" split right now — `Webapp Files/` is simply the app.** A prior
-attempt at an early full rewrite (Node.js/Express/Prisma/PostgreSQL, under `app/`) was
-abandoned and removed — Apps Script + Sheets remains the one active codebase. Don't invent a
-migration-in-progress narrative beyond what's actually true: `Webapp Files/` is the live
-source, full stop, until a real cutover starts.
+- **`Webapp Files/`** — a `clasp clone` of the live Google Apps Script project. Still the actual
+  deployed app on Google Workspace, still fully editable, **not being phased out or frozen**.
+- **`app/`** — a Node.js + Express + PostgreSQL rewrite, built in parallel rather than as a later
+  cutover. No ORM (plain `pg` + `node-pg-migrate`). Ported so far, with behavioral fidelity
+  verified against the Apps Script source: auth (login/logout/session TTL, role-based edit gate,
+  project-status lock), users, projects. Everything else (Planning, Locataires, Bâtiments,
+  Réserves, EDL, Logs, the React frontend) is not yet ported — see `agents/todo.md`.
+
+**A prior attempt at this exact rewrite (Node.js/Express/Prisma/PostgreSQL, also under `app/`)
+was abandoned earlier the same day**, in favor of the progressive-migration plan this section
+used to describe. That plan was then explicitly reversed by the user a few hours later — this
+is the second attempt, deliberately redone rather than resumed (different ORM choice, schema
+re-derived from the actual sheet columns rather than assumed). Don't treat this history as
+settled precedent either way — if it happens a third time, that's a signal worth naming, not
+silently repeating.
 
 ## Delegation: match each subtask to the cheapest runner that can do it
 

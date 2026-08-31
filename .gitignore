@@ -1,5 +1,8 @@
-app/node_modules/
-app/.env
-app/uploads/*
-!app/uploads/.gitkeep
-*.zip
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+dist/
+build/

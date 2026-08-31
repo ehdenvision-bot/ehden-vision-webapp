@@ -9,15 +9,35 @@ name) — a French-language construction/renovation project-management web app: 
 ("Locataires") and building info, a multi-view construction Planning/Gantt across three
 sub-views (logements / parties communes / façades), a 6-layer per-lot "Workspace" (EDL = état
 des lieux, Travaux, Élec, Sanit, Réserves/Autocontrôle, Formulaires), a punch-list ("Réserves")
-workflow, and a universal cross-module audit log. Currently a Google Apps Script web app,
-developed and tested directly against Google Workspace. A full rewrite to a different stack is
-planned but hasn't started — target stack not yet decided (see `agents/decisions.md`).
+workflow, and a universal cross-module audit log. Originally, and still also, a Google Apps
+Script web app, developed and tested directly against Google Workspace. A Node.js + PostgreSQL
+rewrite is now being built in parallel (started 2026-08-25 — see `agents/decisions.md`).
 
 - **Live source: `Webapp Files/`** — a `clasp clone` of the actual deployed Apps Script project. This
-  is the real, editable app right now, not a legacy or reference copy.
-- **No rewrite codebase exists yet.** When one starts, record its location and stack here, and
-  update `CLAUDE.md`'s "Repo Management" section to match — it currently assumes only `Webapp Files/`
-  exists.
+  is the real, editable app right now, not a legacy or reference copy. Stays fully intact and
+  deployed — the rewrite below is a parallel build, not a cutover. The user has since populated
+  its real Google Sheets with actual data.
+- **Rewrite: `app/`** — Node.js + Express + PostgreSQL, started 2026-08-25 (second backend
+  attempt; the first, Prisma-based one was abandoned and removed earlier the same day — see
+  `agents/decisions.md`). Serves on port **3001**
+  (`https://michel.optima-tech.info/proxy/3001/` for online testing — **not** port 3000, see
+  `agents/runbook.md`).
+  - **Frontend approach reversed same day**: a recovered React SPA (commit `14ddb41`) was tried
+    and retired again — it was a reinterpretation (different design tokens, missing pieces),
+    not a faithful copy, and the objective is a complete, exact migration. Current approach:
+    serve `Webapp Files/*.html` directly (same templates the live GAS app uses, read in place —
+    zero drift), with a `google.script.run`-compatible RPC bridge replacing Apps Script's server
+    calls. See `agents/decisions.md`'s second 2026-08-25 entry for the full design and
+    `agents/todo.md` for the phased build-out (~165 server functions total across all modules,
+    most not yet ported).
+  - **Backend logic verified so far** (auth, sessions, `users`, `projects` — password hashing
+    incl. legacy `HASHv1` compat, session TTL, project-status lock) is real and being re-homed
+    onto the RPC bridge, not thrown away.
+  - **Apps Script -> Node bridge scaffolded 2026-08-31** (`app/src/appscript-auth.js`,
+    `/bridge/rpc/*` + `/bridge/health`, `X-Api-Key` gated, fail-closed): server side of the
+    "keep the app on Google Workspace, move only the DB to Postgres" option. Same RPC registry
+    as `/rpc`. Nothing on the Apps Script side yet, and browser-served vs Apps Script-hosted is
+    an unresolved open decision — see `agents/decisions.md`.
 
 ## What's built
 
@@ -77,6 +97,16 @@ targeted grep rather than read end-to-end — see "Not yet read" below).
   that before considering this closed). `?page=settings&view=mobile` is still broken:
   `SettingsMobile.html` **doesn't exist as a file at all**, so that route throws at
   `HtmlService.createTemplateFromFile`.
+- **More broken/missing routes than previously logged (confirmed 2026-08-25, via
+  `tools/local-preview/server.js`'s route smoke-test)**: `?page=rapport` has **no
+  implementation at all** — neither `Rapport.html` nor `RapportMobile.html` exists, so both
+  desktop and mobile throw at `HtmlService.createTemplateFromFile`, unlike `settings` where only
+  the mobile variant is missing. `?page=edl&view=mobile` is also broken: `EDLMobile.html`
+  doesn't exist (desktop `EDL.html` is fine). `Sidebar.html`/`GlobalNavModal.html` also link to
+  several more page keys with no case in `doGet`'s switch at all (`auto-controles`,
+  `avancement`, `documents`, `opr`, `passage`, `plans`, `quitus`, `reclamations`, `satisfaction`,
+  `sous-traitants`, `synoptiques`, plus top-level `reserves`/`travaux`/`users`) — same
+  silent-fallthrough-to-portfolio behavior as before, just a longer confirmed list.
 - **Sidebar links outrun `doGet`'s routing.** `Sidebar.html` / `GlobalNavModal.html` list nav
   items for `passage`, `sous-traitants`, `avancement`, `opr`, `synoptiques`, `quitus`,
   `reclamations`, `satisfaction`, `plans`, `documents` — none of these are cases in `Pages.js`'s
@@ -100,5 +130,20 @@ still being worked out.)*
 
 ## Sandbox-specific facts learned this session
 
-*(Empty — see `CLAUDE.md`'s "`Webapp Files/` local dev environment" section, which this mirrors. Fills
-up once something about your actual dev setup turns out to behave unexpectedly.)*
+- **`clasp` was not installed** in this sandbox until 2026-08-25 (now installed globally,
+  `@google/clasp` v3.4.0) and has never been logged in (`~/.clasprc.json` didn't exist) — so
+  `clasp push`/`pull` against the live Apps Script project has not actually been exercised yet
+  this session despite `agents/runbook.md` describing it as the normal workflow. Needs a manual
+  `clasp login --no-localhost` from the user (see `agents/runbook.md`).
+- **`Webapp Files/` was never under git version control until 2026-08-25.** Only a one-time
+  extraction snapshot (`extracted/Web APP/apps-script-src/`, now removed) was tracked. Now
+  fixed — `Webapp Files/` is tracked directly.
+- **The abandoned Node/Express/Prisma rewrite (`app/`) was still running** — its `node
+  src/server.js` process (port 3000) and its Postgres instance (port 5432, db `chantier`) were
+  both live in this sandbox despite the source files having been deleted from the working tree
+  in an earlier, uncommitted session. Both stopped 2026-08-25; the deletion is now committed.
+- **`tools/local-preview/server.js`** (added 2026-08-25) now owns port 3000 instead — a
+  dependency-free Node static preview server for `Webapp Files/`'s HTML shells, for
+  layout/CSS-only iteration. See `agents/runbook.md`'s "Local layout-only preview" section for
+  what it does and doesn't cover. It lives outside `Webapp Files/` deliberately, since anything
+  inside that folder gets pushed to the live Apps Script project by `clasp push`.
