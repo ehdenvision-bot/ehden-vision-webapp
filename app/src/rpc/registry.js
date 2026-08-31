@@ -89,6 +89,9 @@ module.exports = {
   getLocatairesPageData: locataires.getLocatairesPageData,
   updateLocataireData: locataires.updateLocataireData,
   updatePlanningOnlyData: locataires.updatePlanningOnlyData,
+  // One-time migration tool, NOT a client-callable function — extra-gated by
+  // ALLOW_BULK_IMPORT=true on top of the /bridge/rpc X-Api-Key. See locataires.js.
+  importLocatairesBundle: locataires.importLocatairesBundle,
   // Phase 3 (Settings) — see app/src/rpc/settings.js.
   ...settings,
 };

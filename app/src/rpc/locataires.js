@@ -156,4 +156,130 @@ async function updatePlanningOnlyData(token, projectId, view, payload) {
   return true;
 }
 
-module.exports = { getLocatairesPageData, updateLocataireData, updatePlanningOnlyData };
+// ---------------------------------------------------------------------------
+// ONE-TIME MIGRATION IMPORT — not a client RPC, not part of the ported surface.
+// ---------------------------------------------------------------------------
+/**
+ * Bulk-load the current Locataires / Bâtiments / Planning-notes sheet data into
+ * Postgres, called once from the Apps Script side (Webapp Files/Migrate_Locataires.js's
+ * importLocatairesToApi_). Reachable only via POST /bridge/rpc/importLocatairesBundle,
+ * so it is already X-Api-Key gated; on top of that it refuses unless the server was
+ * started with ALLOW_BULK_IMPORT=true. TRUNCATE + INSERT inside one transaction, so
+ * re-running it from the same sheets is idempotent. **Turn ALLOW_BULK_IMPORT off (and
+ * restart) once the load is verified** — while it is on, any re-run wipes rows edited
+ * through the API since the last import.
+ *
+ * `bundle` field names match Webapp Files/Locataires_Code.js's fetchSheetData() output:
+ *   locataires:    [{ id, batiment, hall, etage, empilement, porte, typeLog,
+ *                     configLogement, surface, nom, prenom, adresse, ville,
+ *                     telFixe, telPort1, telPort2, email, email2, reference }]
+ *   communs:       [{ id, batiment, hall, etage, description, ref, abr }]
+ *   facades:       [{ id, id2, batiment, hall, orientation, trame, partie, type }]
+ *   configFacades: [{ type, description }]
+ *   planningNotes: [{ id, view, status, notePub, notePriv }]   // view kept per source sheet
+ *
+ * nom/prenom/phones are normalised exactly as updateLocataireData writes them
+ * (UPPER / properCase / spaces stripped) so imported rows and later-edited rows are
+ * byte-identical in the DB; formatPhoneForUi re-adds spacing at read time.
+ */
+async function importLocatairesBundle(bundle) {
+  if (process.env.ALLOW_BULK_IMPORT !== 'true') {
+    throw new Error('Import en masse désactivé (ALLOW_BULK_IMPORT != "true").');
+  }
+  if (!bundle || typeof bundle !== 'object') throw new Error('Bundle manquant ou invalide.');
+
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const locataires = arr(bundle.locataires);
+  const communs = arr(bundle.communs);
+  const facades = arr(bundle.facades);
+  const configFacades = arr(bundle.configFacades);
+  const planningNotes = arr(bundle.planningNotes);
+
+  const txt = (v) => (v === undefined || v === null || v === '' ? null : String(v));
+  const cleanPhone = (v) => String(v === undefined || v === null ? '' : v).replace(/\s/g, '');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'TRUNCATE locataires, parties_communes, facades, config_facades, planning_notes'
+    );
+
+    for (const r of locataires) {
+      await client.query(
+        `INSERT INTO locataires
+           (id, batiment, hall, etage, empilement, porte, type_log, config_logement, surface,
+            nom, prenom, adresse, ville, tel_fixe, tel_port1, tel_port2, email, email2, reference)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          txt(r.id), txt(r.batiment), txt(r.hall), txt(r.etage), txt(r.empilement), txt(r.porte),
+          txt(r.typeLog), txt(r.configLogement), txt(r.surface),
+          String(r.nom || '').toUpperCase(), formatProperCase(r.prenom),
+          txt(r.adresse), txt(r.ville),
+          cleanPhone(r.telFixe), cleanPhone(r.telPort1), cleanPhone(r.telPort2),
+          txt(r.email), txt(r.email2), txt(r.reference),
+        ]
+      );
+    }
+
+    for (const r of communs) {
+      await client.query(
+        `INSERT INTO parties_communes (id, batiment, hall, etage, description, ref, abr)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`,
+        [txt(r.id), txt(r.batiment), txt(r.hall), txt(r.etage), txt(r.description), txt(r.ref), txt(r.abr)]
+      );
+    }
+
+    for (const r of facades) {
+      await client.query(
+        `INSERT INTO facades (id, id2, batiment, hall, orientation, trame, partie, type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+        [txt(r.id), txt(r.id2), txt(r.batiment), txt(r.hall), txt(r.orientation), txt(r.trame), txt(r.partie), txt(r.type)]
+      );
+    }
+
+    for (const r of configFacades) {
+      await client.query(
+        `INSERT INTO config_facades (type, description) VALUES ($1,$2)`,
+        [txt(r.type), txt(r.description)]
+      );
+    }
+
+    for (const r of planningNotes) {
+      const id = txt(r.id);
+      if (!id) continue;
+      await client.query(
+        `INSERT INTO planning_notes (id, view, status, note_pub, note_priv)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO UPDATE SET view = EXCLUDED.view, status = EXCLUDED.status,
+           note_pub = EXCLUDED.note_pub, note_priv = EXCLUDED.note_priv`,
+        [id, txt(r.view) || 'Planning', txt(r.status), txt(r.notePub), txt(r.notePriv)]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  return {
+    imported: {
+      locataires: locataires.length,
+      parties_communes: communs.length,
+      facades: facades.length,
+      config_facades: configFacades.length,
+      planning_notes: planningNotes.length,
+    },
+  };
+}
+
+module.exports = {
+  getLocatairesPageData,
+  updateLocataireData,
+  updatePlanningOnlyData,
+  importLocatairesBundle,
+};
