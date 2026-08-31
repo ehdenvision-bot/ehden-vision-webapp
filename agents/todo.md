@@ -52,8 +52,14 @@ is already done (Phase 2). Remaining:
   a Postgres the user owns (`DATABASE_URL`). `npm run migrate:up`.
 - [ ] Generate a real `APPSCRIPT_SHARED_SECRET` (`openssl rand -hex 32`); set it in `app/.env`
   and as Script Property `API_SHARED_SECRET`; set `API_BASE_URL`, `USE_API_LOCATAIRES=false`.
-- [ ] One-time Locataires data load (sheets → Postgres). Needs a guarded bulk-import path in
-  `app/src/rpc/locataires.js` (none yet) or a direct CSV load.
+- [x] Guarded bulk-import path: `app/src/rpc/locataires.js` `importLocatairesBundle` (gated by
+  `ALLOW_BULK_IMPORT=true`) + Apps Script `Webapp Files/Migrate_Locataires.js`
+  (`previewLocatairesImport_` / `importLocatairesToApi_`). Commit `587213c`.
+- [x] Tests: `app/test/locataires.test.js` (`npm test`). 6 unit tests pass with no DB; the
+  integration block runs when `TEST_DATABASE_URL` (≠ `DATABASE_URL`) is set — runs the real
+  migrations into that throwaway DB, exercises import + `getLocatairesPageData` +
+  `updateLocataireData` + `updatePlanningOnlyData`, cleans up.
+- [ ] Actually run the one-time load (needs the hosted server + the owned Postgres above).
 - [ ] Verify field-for-field via the real web-app URL (desktop + mobile), rehearse rollback,
   then flip `USE_API_LOCATAIRES=true`. Record in `agents/current-state.md`.
 - [ ] `DEV_MODE=true` in `Webapp Files/Pages.js:17` must go `false` (login re-verified) before
